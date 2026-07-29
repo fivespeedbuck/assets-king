@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+**/build/
+.build-output/
+local.properties
+.idea/
+*.iml
+.externalNativeBuild/
+.cxx/
+.build.out.log
+.gradle-wrapper.out.log
+.gradle-wrapper.err.log
