@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AssetsKing"
-include(":app", ":core-model", ":core-ledger", ":core-database")
+include(":app", ":core-model", ":core-ledger", ":core-database", ":core-ui", ":core-usecase")

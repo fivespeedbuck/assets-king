@@ -11,3 +11,4 @@ local.properties
 .build.out.log
 .gradle-wrapper.out.log
 .gradle-wrapper.err.log
+.reference/

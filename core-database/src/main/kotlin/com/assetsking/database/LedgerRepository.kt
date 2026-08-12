@@ -33,6 +33,31 @@ class LedgerRepository(private val database: AssetsKingDatabase) {
         database.rawNotificationDao().insert(notification)
     }
 
+    suspend fun addAccount(
+        name: String,
+        type: AccountType,
+        openingBalanceCents: Long,
+        cardTail: String?
+    ) {
+        require(name.isNotBlank())
+        require(openingBalanceCents >= 0)
+        database.accountDao().upsert(
+            AccountEntity(
+                id = UUID.randomUUID().toString(),
+                name = name.trim(),
+                type = type.name,
+                balanceCents = openingBalanceCents,
+                cardTail = cardTail?.filter(Char::isDigit)?.takeLast(4)?.takeIf { it.isNotEmpty() },
+                balanceStatus = "CONFIRMED",
+                lastCheckedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    suspend fun updateTransactionCategory(id: String, category: TransactionCategory) {
+        database.transactionDao().updateCategory(id, category.name)
+    }
+
     suspend fun addTransaction(
         accountId: String,
         amountCents: Long,

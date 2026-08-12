@@ -28,6 +28,9 @@ interface TransactionDao {
 
     @Insert
     suspend fun insert(transaction: TransactionEntity)
+
+    @Query("UPDATE transactions SET category = :category WHERE id = :id")
+    suspend fun updateCategory(id: String, category: String)
 }
 
 @Dao
