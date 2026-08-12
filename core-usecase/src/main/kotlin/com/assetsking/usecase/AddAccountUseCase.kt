@@ -8,8 +8,11 @@ class AddAccountUseCase(private val repository: LedgerRepository) {
         name: String,
         type: AccountType,
         openingBalanceCents: Long,
-        cardTail: String?
+        cardTail: String?,
+        statementDay: Int? = null,
+        dueDay: Int? = null,
+        creditLimitCents: Long = 0
     ) {
-        repository.addAccount(name, type, openingBalanceCents, cardTail)
+        repository.addAccount(name, type, openingBalanceCents, cardTail, statementDay, dueDay, creditLimitCents)
     }
 }

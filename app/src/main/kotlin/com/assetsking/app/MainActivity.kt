@@ -18,7 +18,7 @@ class MainActivity : ComponentActivity() {
                 val model: LedgerViewModel = viewModel(
                     factory = LedgerViewModel.factory(app)
                 )
-                HomeScreen(model = model)
+                HomeScreen(model = model, repository = app.repository)
             }
         }
     }

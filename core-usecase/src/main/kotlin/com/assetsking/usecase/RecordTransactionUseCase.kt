@@ -17,11 +17,13 @@ class RecordTransactionUseCase(private val repository: LedgerRepository) {
         accountId: String,
         amountCents: Long,
         type: TransactionType,
-        category: TransactionCategory,
+        categoryStr: String,
         merchant: String?,
-        note: String?
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        isReimbursable: Boolean = false
     ) {
         // Repository 负责持久化 + 同步余额
-        repository.addTransaction(accountId, amountCents, type, category, merchant, note)
+        repository.addTransaction(accountId, amountCents, type, category = categoryStr, merchant = merchant, note = note, occurredAt = occurredAt, isReimbursable = isReimbursable)
     }
 }

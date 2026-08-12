@@ -1,6 +1,6 @@
 package com.assetsking.model
 
-enum class RepaymentMethod { CUSTOM, EQUAL_PAYMENT, EQUAL_PRINCIPAL }
+enum class RepaymentMethod { CUSTOM, EQUAL_PAYMENT, EQUAL_PRINCIPAL, INTEREST_ONLY }
 
 enum class InstallmentStatus { UPCOMING, PAID, OVERDUE }
 

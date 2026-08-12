@@ -19,6 +19,9 @@ interface AccountDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(accounts: List<AccountEntity>)
+
+    @Query("DELETE FROM accounts WHERE id = :id")
+    suspend fun deleteById(id: String)
 }
 
 @Dao
@@ -29,8 +32,38 @@ interface TransactionDao {
     @Insert
     suspend fun insert(transaction: TransactionEntity)
 
+    @Query("SELECT * FROM transactions WHERE id = :id")
+    suspend fun findById(id: String): TransactionEntity?
+
     @Query("UPDATE transactions SET category = :category WHERE id = :id")
     suspend fun updateCategory(id: String, category: String)
+
+    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note WHERE id = :id")
+    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?)
+
+    @Query("DELETE FROM transactions WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id")
+    suspend fun updateRecurringRuleId(id: String, ruleId: String?)
+
+    @Query("SELECT * FROM transactions WHERE recurringRuleId = :ruleId ORDER BY occurredAt DESC")
+    suspend fun findByRecurringRule(ruleId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE occurredAt BETWEEN :start AND :end ORDER BY occurredAt DESC")
+    suspend fun findInRange(start: Long, end: Long): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE merchant LIKE '%' || :query || '%' OR note LIKE '%' || :query || '%' ORDER BY occurredAt DESC")
+    suspend fun search(query: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions ORDER BY occurredAt DESC")
+    suspend fun all(): List<TransactionEntity>
+
+    @Query("UPDATE transactions SET isReimbursable = :isReimbursable WHERE id = :id")
+    suspend fun updateReimbursable(id: String, isReimbursable: Boolean)
+
+    @Query("SELECT * FROM transactions WHERE isReimbursable = 1 ORDER BY occurredAt DESC")
+    fun observeReimbursable(): Flow<List<TransactionEntity>>
 }
 
 @Dao
@@ -49,4 +82,91 @@ interface RawNotificationDao {
 
     @Query("SELECT COUNT(*) FROM raw_notifications WHERE status = 'NEW'")
     fun observeUnprocessedCount(): Flow<Int>
+
+    @Query("SELECT * FROM raw_notifications WHERE status = :status ORDER BY receivedAt DESC")
+    fun observeByStatus(status: String): Flow<List<RawNotificationEntity>>
+
+    @Query("UPDATE raw_notifications SET status = :status WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String)
+
+    @Query("UPDATE raw_notifications SET processingNote = :note WHERE id = :id")
+    suspend fun updateProcessingNote(id: String, note: String)
+}
+
+@Dao
+interface BudgetDao {
+    @Query("SELECT * FROM budgets ORDER BY month DESC, category")
+    fun observeAll(): Flow<List<BudgetEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(budget: BudgetEntity)
+
+    @Query("DELETE FROM budgets WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface LoanPlanDao {
+    @Query("SELECT * FROM loan_plans ORDER BY startDateEpochDay DESC")
+    fun observeAll(): Flow<List<LoanPlanEntity>>
+
+    @Query("SELECT * FROM loan_plans WHERE id = :id")
+    suspend fun findById(id: String): LoanPlanEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(plan: LoanPlanEntity)
+
+    @Query("DELETE FROM loan_plans WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface RecurringRuleDao {
+    @Query("SELECT * FROM recurring_rules WHERE isActive = 1 ORDER BY nextRunAt")
+    fun observeActive(): Flow<List<RecurringRuleEntity>>
+
+    @Query("SELECT * FROM recurring_rules ORDER BY nextRunAt")
+    fun observeAll(): Flow<List<RecurringRuleEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(rule: RecurringRuleEntity)
+
+    @Query("DELETE FROM recurring_rules WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface SnapshotDao {
+    @Query("SELECT * FROM snapshots ORDER BY dateEpochDay DESC")
+    fun observeAll(): Flow<List<SnapshotEntity>>
+
+    @Query("SELECT * FROM snapshots WHERE dateEpochDay = :day LIMIT 1")
+    suspend fun findByDay(day: Long): SnapshotEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(snapshot: SnapshotEntity)
+}
+
+@Dao
+interface GoalDao {
+    @Query("SELECT * FROM goals ORDER BY createdAt DESC LIMIT 1")
+    fun observeLatest(): Flow<GoalEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(goal: GoalEntity)
+
+    @Query("DELETE FROM goals WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface CustomCategoryDao {
+    @Query("SELECT * FROM custom_categories ORDER BY name")
+    fun observeAll(): Flow<List<CustomCategoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(cat: CustomCategoryEntity)
+
+    @Query("DELETE FROM custom_categories WHERE name = :name")
+    suspend fun deleteByName(name: String)
 }
