@@ -77,13 +77,70 @@ class LedgerRepository(
         type: TransactionType,
         category: String,
         merchant: String?,
-        note: String?
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
             addTransaction(accountId, amountCents, type, category, merchant, note)
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+            // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
+            // 顺序不能反，否则增量会把对好的余额又推歪。
+            if (bankBalanceCents != null && bankCardTail != null) {
+                applyBankBalance(accountId, bankCardTail, bankBalanceCents, System.currentTimeMillis())
+            }
         }
+    }
+
+    /**
+     * 用银行通知自报的余额对账：直接覆盖本地余额并标记已对账。
+     *
+     * 只认储蓄卡（ASSET）：信用卡短信报的是可用额度、花呗报的是账单，都不是欠款余额，
+     * 拿来盖会把负债算错。必须尾号对得上才动 —— 不知道是哪张卡的余额一律不用。
+     */
+    private suspend fun applyBankBalance(
+        accountId: String,
+        cardTail: String,
+        balanceCents: Long,
+        checkedAt: Long
+    ) {
+        val account = database.accountDao().find(accountId) ?: return
+        if (account.cardTail != cardTail) return
+        if (AccountType.valueOf(account.type) != AccountType.ASSET) return
+        database.accountDao().upsert(
+            account.copy(
+                balanceCents = balanceCents,
+                balanceStatus = "CONFIRMED",
+                lastCheckedAt = checkedAt
+            )
+        )
+    }
+
+    /**
+     * 通知一到就自动对账，不必等用户确认那笔流水。按尾号找账户，找不到就什么都不做。
+     *
+     * @param postedAt 通知的推送时间。补扫会把旧短信重新读一遍，旧余额不能覆盖新余额，
+     *   所以比 lastCheckedAt 旧的直接丢弃。
+     * @return 是否真的对上了账
+     */
+    suspend fun reconcileFromNotification(
+        cardTail: String,
+        balanceCents: Long,
+        postedAt: Long
+    ): Boolean {
+        val candidates = database.accountDao().findByCardTail(cardTail, AccountType.ASSET.name)
+        // 两张卡尾号相同就无法判断是哪张，宁可不对
+        val account = candidates.singleOrNull() ?: return false
+        if ((account.lastCheckedAt ?: 0L) >= postedAt) return false
+        database.accountDao().upsert(
+            account.copy(
+                balanceCents = balanceCents,
+                balanceStatus = "CONFIRMED",
+                lastCheckedAt = postedAt
+            )
+        )
+        return true
     }
 
     suspend fun addAccount(

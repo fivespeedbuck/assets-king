@@ -14,6 +14,10 @@ interface AccountDao {
     @Query("SELECT * FROM accounts WHERE id = :id")
     suspend fun find(id: String): AccountEntity?
 
+    /** 按卡号尾 4 位找账户 —— 银行通知只给尾号，用来把余额对到正确的卡上 */
+    @Query("SELECT * FROM accounts WHERE cardTail = :cardTail AND type = :type")
+    suspend fun findByCardTail(cardTail: String, type: String): List<AccountEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(account: AccountEntity)
 

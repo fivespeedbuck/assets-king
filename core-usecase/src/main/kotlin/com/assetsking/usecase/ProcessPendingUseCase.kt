@@ -37,6 +37,15 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 continue
             }
 
+            // ── 自动对账 ──
+            // 银行短信自带「尾号3721…余额657.09」，这是银行给的权威数字。一到就按尾号
+            // 把余额对上，不必等用户确认这笔流水。判重之前做：重复的那条余额同样有效。
+            val tail = parsed.cardTail
+            val bankBalance = parsed.balanceCents
+            if (tail != null && bankBalance != null) {
+                repository.reconcileFromNotification(tail, bankBalance, notification.postedAt)
+            }
+
             // ── 判重：同一笔被多个 app 各推一条 ──
             // 判据：金额完全相同 + 收支方向一致 + 5 分钟内 + 商户名不冲突。
             //  · 不能靠「同商户」：银行短信和微信的合并通知都没有商户名；

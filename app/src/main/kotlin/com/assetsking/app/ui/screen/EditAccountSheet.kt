@@ -36,6 +36,7 @@ fun EditAccountSheet(
     var creditLimit by remember { mutableStateOf(if (account.creditLimitCents > 0) "%.2f".format(account.creditLimitCents / 100.0) else "") }
     var statementDue by remember { mutableStateOf(if (account.statementOriginalDueCents > 0) "%.2f".format(account.statementOriginalDueCents / 100.0) else "") }
     var pending by remember { mutableStateOf(if (account.pendingCents > 0) "%.2f".format(account.pendingCents / 100.0) else "") }
+    var cardTail by remember { mutableStateOf(account.cardTail ?: "") }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Sheet(title = "编辑账户", onDismiss = onDismiss) {
@@ -54,6 +55,15 @@ fun EditAccountSheet(
             onValueChange = { balance = it.filter { c -> c.isDigit() || c == '.' } },
             label = "当前总负债/余额",
             isAmount = true
+        )
+
+        // 自动对账靠尾号认卡：银行短信只报「尾号3721…余额657.09」，尾号对得上才敢
+        // 拿那个余额盖本地余额。空着就退回手动对账。
+        Spacer(Modifier.height(8.dp))
+        FormField(
+            value = cardTail,
+            onValueChange = { cardTail = it.filter(Char::isDigit).take(4) },
+            label = "卡号后4位（填了才能用银行短信自动对账）"
         )
 
         if (account.type == com.assetsking.model.AccountType.CREDIT.name) {
@@ -89,6 +99,7 @@ fun EditAccountSheet(
                 }.getOrNull() ?: 0L
                 onSave(account.copy(
                     name = name.trim(), balanceCents = cents,
+                    cardTail = cardTail.takeIf { it.length == 4 },
                     statementDay = stmtDay.toIntOrNull(),
                     dueDay = dueDay.toIntOrNull(),
                     creditLimitCents = limit,

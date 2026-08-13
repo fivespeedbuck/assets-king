@@ -11,7 +11,14 @@ data class ParsedNotification(
     val amountCents: Long?,
     val merchant: String?,
     val isExpense: Boolean?,
-    val bankHint: String?
+    val bankHint: String?,
+    /**
+     * 银行在通知里自报的账户余额（分）。这是**权威数字**，确认这笔流水时可以直接
+     * 拿来对账 —— 比让用户自己去银行 app 看一眼再打勾强得多。
+     */
+    val balanceCents: Long? = null,
+    /** 卡号后 4 位。余额必须配尾号才敢用：否则不知道这个余额是哪张卡的。 */
+    val cardTail: String? = null
 )
 
 /**
@@ -118,6 +125,18 @@ object NotificationParser {
         Regex("""给\s*(\S+?)\s*(付款|支付|转账)""")
     )
 
+    /**
+     * 银行自报余额：「余额657.09」「余额人民币657.09」「余额为92.36元」。
+     * 和交易金额分开抓 —— 交易金额那边是特意排除「余额人民币…」的，这里正好相反。
+     */
+    private val balancePattern = Regex("""余额[为是]?\s*(?:人民币|RMB|CNY)?\s*$NUM""")
+
+    /** 卡号尾 4 位：「尾号3721」（宁波/广发）、「您账户3683」（招行）。 */
+    private val cardTailPatterns = listOf(
+        Regex("""尾号(\d{4})"""),
+        Regex("""账户(\d{4})""")
+    )
+
     // ── 银行/卡模式 ──
     private val bankPatterns = listOf(
         // 微信：招商银行储蓄卡(1234)、兴业银行信用卡(5678)
@@ -170,6 +189,14 @@ object NotificationParser {
                 ?.takeIf { it.isNotBlank() && it.length < 20 }
         }
 
+        // 余额只在这确实是一笔交易时才取：营销短信里的数字没有对账价值。
+        // 余额可以是 0，所以下限是 >=0 而不是 >0。
+        val balanceCents = if (amountCents == null) null else
+            balancePattern.find(text)?.groupValues?.getOrNull(1)
+                ?.replace(",", "")?.toDoubleOrNull()
+                ?.takeIf { it >= 0 && it <= 100_000_000 }
+                ?.let { Math.round(it * 100) }
+
         return ParsedNotification(
             amountCents = amountCents,
             merchant = merchant,
@@ -179,7 +206,11 @@ object NotificationParser {
                 looksLikeExpense -> true
                 else -> null
             },
-            bankHint = bankHint
+            bankHint = bankHint,
+            balanceCents = balanceCents,
+            cardTail = cardTailPatterns.firstNotNullOfOrNull {
+                it.find(text)?.groupValues?.getOrNull(1)
+            }
         )
     }
 

@@ -139,6 +139,15 @@ private fun PendingNotificationCard(
             color = MaterialTheme.colorScheme.primary
         )
 
+        // 银行自报余额 —— 确认后直接盖成账户余额并标记已对账，不用再手动打勾
+        if (parsed.balanceCents != null && parsed.cardTail != null) {
+            Text(
+                "银行余额 ${formatMoney(parsed.balanceCents!!)}（尾号${parsed.cardTail}）· 确认后自动对账",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
         Spacer(Modifier.height(4.dp))
         Text(
             item.notification.content.ifBlank { item.notification.title ?: "" },
@@ -199,7 +208,10 @@ private fun PendingNotificationCard(
                         type = selectedType,
                         category = selectedCategory.name,
                         merchant = merchant,
-                        note = null
+                        note = null,
+                        // 尾号对得上选中的账户才会生效，对不上就只记流水不动余额
+                        bankBalanceCents = parsed.balanceCents,
+                        bankCardTail = parsed.cardTail
                     )
                 },
                 modifier = Modifier.weight(1f)

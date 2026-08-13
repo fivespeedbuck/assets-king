@@ -385,10 +385,15 @@ class LedgerViewModel(
         type: TransactionType,
         category: String,
         merchant: String?,
-        note: String?
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
     ) {
         viewModelScope.launch {
-            repository.confirmNotification(notificationId, accountId, amountCents, type, category, merchant, note)
+            repository.confirmNotification(
+                notificationId, accountId, amountCents, type, category, merchant, note,
+                bankBalanceCents, bankCardTail
+            )
             repository.learnRule(merchant, accountId, type.name, category)
         }
     }

@@ -230,6 +230,45 @@ class NotificationParserTest {
         assertNull(NotificationParser.parse("[8条]微信支付: 已支付¥24.99", "微信支付").merchant)
     }
 
+    // ── 自动对账：银行自报余额 + 尾号 ──
+    @Test
+    fun `宁波银行短信同时给出余额和尾号`() {
+        val p = NotificationParser.parse(
+            content = "【宁波银行】您尾号3721账户支出（网络支付充值）人民币1.00，余额657.09。",
+            title = "宁波银行"
+        )
+        assertEquals(100L, p.amountCents, "交易金额是 1.00")
+        assertEquals(65709L, p.balanceCents, "余额是 657.09，两个数不能串")
+        assertEquals("3721", p.cardTail)
+    }
+
+    @Test
+    fun `招行短信的账户号也算尾号`() {
+        val p = NotificationParser.parse("您账户3683于08月13日15:52收款人民币1.00", "招商银行")
+        assertEquals("3683", p.cardTail)
+    }
+
+    @Test
+    fun `余额为零要能对账`() {
+        val p = NotificationParser.parse("您尾号3721账户支出人民币10.00，余额0.00。", null)
+        assertEquals(0L, p.balanceCents, "余额 0 是真实状态，不能当成没抓到")
+    }
+
+    @Test
+    fun `没有余额的通知不瞎给余额`() {
+        val p = NotificationParser.parse("[8条]微信支付: 已支付¥24.99", "微信支付")
+        assertNull(p.balanceCents)
+        assertNull(p.cardTail)
+    }
+
+    @Test
+    fun `不是交易的短信不给余额`() {
+        // 话费余额不是银行卡余额，且没有尾号，不能拿去对账
+        val p = NotificationParser.parse("【账单提醒】本期应付金额为38.94元，您的账户余额为92.36元。", null)
+        assertNull(p.amountCents)
+        assertNull(p.balanceCents)
+    }
+
     @Test
     fun `空内容不崩`() {
         val p = NotificationParser.parse(null, null)
