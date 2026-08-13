@@ -314,7 +314,7 @@ class LedgerRepository(
         }
     }
 
-    suspend fun addTransfer(fromAccountId: String, toAccountId: String, amountCents: Long, note: String?) {
+    suspend fun addTransfer(fromAccountId: String, toAccountId: String, amountCents: Long, note: String?, occurredAt: Long) {
         require(amountCents > 0)
         require(fromAccountId != toAccountId)
         database.withTransaction {
@@ -332,10 +332,26 @@ class LedgerRepository(
                     fromAccountId = fromAccountId,
                     toAccountId = toAccountId,
                     amountCents = amountCents,
-                    occurredAt = System.currentTimeMillis(),
+                    occurredAt = occurredAt,
                     note = note?.trim()?.takeIf { it.isNotEmpty() }
                 )
             )
+        }
+    }
+
+    /** 删除转账：反向回滚两边余额。账户已删的跳过余额回滚（删账户本身已吞掉余额） */
+    suspend fun deleteTransfer(id: String) {
+        database.withTransaction {
+            val tf = database.transferDao().findById(id) ?: return@withTransaction
+            database.accountDao().find(tf.fromAccountId)?.let { from ->
+                val delta = if (AccountType.valueOf(from.type) == AccountType.ASSET) tf.amountCents else -tf.amountCents
+                database.accountDao().upsert(from.copy(balanceCents = from.balanceCents + delta))
+            }
+            database.accountDao().find(tf.toAccountId)?.let { to ->
+                val delta = if (AccountType.valueOf(to.type) == AccountType.ASSET) -tf.amountCents else tf.amountCents
+                database.accountDao().upsert(to.copy(balanceCents = to.balanceCents + delta))
+            }
+            database.transferDao().delete(id)
         }
     }
 

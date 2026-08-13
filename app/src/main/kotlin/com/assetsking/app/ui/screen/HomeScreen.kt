@@ -162,8 +162,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 model.addTransaction(aid, amount, mode, catStr, merchant, note, occurredAt, isReimbursable)
                 showSheet = false
             },
-            onSaveTransfer = { from, to, amount, note ->
-                model.addTransfer(from, to, amount, note)
+            onSaveTransfer = { from, to, amount, note, occurredAt ->
+                model.addTransfer(from, to, amount, note, occurredAt)
                 showSheet = false
             },
             onSaveLoanDisbursement = { aid, amount, planId, note, occurredAt ->
@@ -220,6 +220,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     editingTransaction?.let { tx ->
         EditTransactionSheet(
             transaction = tx,
+            accountName = state.accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty(),
             onSave = { id, amountCents, type, category, merchant, note ->
                 model.updateTransaction(id, amountCents, type, category, merchant, note)
                 editingTransaction = null

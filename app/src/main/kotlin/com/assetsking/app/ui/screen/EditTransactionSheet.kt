@@ -43,6 +43,7 @@ private fun txTypeLabel(type: TransactionType): String = when (type) {
 @Composable
 fun EditTransactionSheet(
     transaction: TransactionEntity,
+    accountName: String,
     onSave: (String, Long, TransactionType, String, String?, String?) -> Unit,
     onDelete: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -62,6 +63,16 @@ fun EditTransactionSheet(
     var confirmDelete by remember { mutableStateOf(false) }
 
     Sheet(title = "编辑流水", onDismiss = onDismiss) {
+        // 钱从哪出 / 进到哪：账户不可改（要换账户删了重记），但必须让用户看得见
+        Text(
+            if (currentType == TransactionType.INCOME || currentType == TransactionType.REFUND)
+                "钱进到「$accountName」" else "钱从「$accountName」出",
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Spacer(Modifier.height(8.dp))
+
         FormField(
             value = amount,
             onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },

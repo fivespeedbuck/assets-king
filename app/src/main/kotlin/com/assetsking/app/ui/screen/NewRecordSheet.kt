@@ -45,7 +45,7 @@ fun NewRecordSheet(
     state: LedgerUiState,
     categorize: (String?, String?) -> TransactionCategory,
     onSaveTransaction: (String, String, RecordMode, String, String?, String?, Long, Boolean) -> Unit,
-    onSaveTransfer: (String, String, String, String?) -> Unit,
+    onSaveTransfer: (String, String, String, String?, Long) -> Unit,
     onSaveLoanDisbursement: (String, String, String?, String?, Long) -> Unit,
     onSaveLoanPayment: (String, String, String, String, String, String, String?, Long) -> Unit,
     onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit,
@@ -88,7 +88,7 @@ private fun RecordTab(
     accounts: List<AccountEntity>,
     categorize: (String?, String?) -> TransactionCategory,
     onSaveTransaction: (String, String, RecordMode, String, String?, String?, Long, Boolean) -> Unit,
-    onSaveTransfer: (String, String, String, String?) -> Unit,
+    onSaveTransfer: (String, String, String, String?, Long) -> Unit,
     onSaveLoanDisbursement: (String, String, String?, String?, Long) -> Unit,
     onSaveLoanPayment: (String, String, String, String, String, String, String?, Long) -> Unit,
     loanPlans: List<LoanPlanEntity> = emptyList(),
@@ -293,7 +293,7 @@ private fun RecordTab(
     Button(
         onClick = {
             when (mode) {
-                RecordMode.TRANSFER -> onSaveTransfer(accountId, targetId, amount, note)
+                RecordMode.TRANSFER -> onSaveTransfer(accountId, targetId, amount, note, occurredAt)
                 RecordMode.LOAN_DISBURSEMENT -> onSaveLoanDisbursement(accountId, amount, selectedPlan?.id, note, occurredAt)
                 RecordMode.LOAN_PAYMENT -> selectedPlan?.let { p ->
                     onSaveLoanPayment(accountId, p.id, total, principal, interest, fee, note, occurredAt)

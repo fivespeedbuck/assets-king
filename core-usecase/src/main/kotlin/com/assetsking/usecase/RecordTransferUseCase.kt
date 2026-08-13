@@ -7,8 +7,9 @@ class RecordTransferUseCase(private val repository: LedgerRepository) {
         fromAccountId: String,
         toAccountId: String,
         amountCents: Long,
-        note: String?
+        note: String?,
+        occurredAt: Long
     ) {
-        repository.addTransfer(fromAccountId, toAccountId, amountCents, note)
+        repository.addTransfer(fromAccountId, toAccountId, amountCents, note, occurredAt)
     }
 }

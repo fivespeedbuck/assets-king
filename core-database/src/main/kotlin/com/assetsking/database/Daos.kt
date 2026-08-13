@@ -77,6 +77,12 @@ interface TransferDao {
 
     @Insert
     suspend fun insert(transfer: TransferEntity)
+
+    @Query("SELECT * FROM transfers WHERE id = :id")
+    suspend fun findById(id: String): TransferEntity?
+
+    @Query("DELETE FROM transfers WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 @Dao

@@ -3,6 +3,7 @@ package com.assetsking.app.ui.screen
 import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +32,7 @@ import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.TransferEntity
 import com.assetsking.ledger.V5Metrics
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.EmptyState
@@ -40,6 +43,11 @@ import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 
 private val Green = Color(0xFF66BB6A)
+
+/** 最近流水统一行：流水或转账（transfers 表）二选一 */
+private data class RecentRow(val tx: TransactionEntity?, val transfer: TransferEntity?) {
+    val time: Long get() = tx?.occurredAt ?: transfer?.occurredAt ?: 0L
+}
 
 @Composable
 fun HomeTab(
@@ -59,6 +67,7 @@ fun HomeTab(
     onShowWindfall: () -> Unit = {}
 ) {
     var txFilter by remember { mutableStateOf("ALL") }
+    var transferToDelete by remember { mutableStateOf<TransferEntity?>(null) }
     val reconciliationIntervalMs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
         .getLong("reconciliation_interval_ms", 7 * 24 * 60 * 60 * 1000L) // default 7 days
     val overdueAccounts = state.accounts.filter { account ->
@@ -66,6 +75,8 @@ fun HomeTab(
         System.currentTimeMillis() - lastChecked > reconciliationIntervalMs
     }
     val v5 = state.v5
+    // Box 只是给删除确认 AlertDialog 一个挂点，列表本身不动
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -201,31 +212,67 @@ fun HomeTab(
                 )
             }
         }
-        val filteredTxs = state.transactions
-            .let { if (txFilter == "ALL") it else it.filter { tx -> tx.type == txFilter || (txFilter == "INCOME" && tx.type == "REFUND") } }
-            .let { if (searchQuery.isBlank()) it else it.filter { tx ->
-                (tx.merchant ?: "").contains(searchQuery, ignoreCase = true) ||
-                (tx.note ?: "").contains(searchQuery, ignoreCase = true)
-            } }
-            .take(20)
-        if (filteredTxs.isEmpty()) {
+        val accountNames = state.accounts.associate { it.id to it.name }
+        // 转账存 transfers 表，与流水按时间合并展示；筛选只在「全部」时包含转账
+        val filteredRows = buildList {
+            state.transactions.forEach { tx ->
+                if (txFilter == "ALL" || tx.type == txFilter || (txFilter == "INCOME" && tx.type == "REFUND"))
+                    add(RecentRow(tx, null))
+            }
+            if (txFilter == "ALL") state.transfers.forEach { add(RecentRow(null, it)) }
+        }.filter { row ->
+            if (searchQuery.isBlank()) true
+            else row.tx?.let { (it.merchant ?: "").contains(searchQuery, ignoreCase = true) || (it.note ?: "").contains(searchQuery, ignoreCase = true) }
+                ?: (row.transfer?.note ?: "").contains(searchQuery, ignoreCase = true)
+        }.sortedByDescending { it.time }.take(20)
+        if (filteredRows.isEmpty()) {
             item { GlassCard { EmptyState(if (searchQuery.isBlank()) "还没有流水，点右下角 ＋ 开始。" else "未找到匹配的流水") } }
         } else {
             // 流水保持 items()：20 条也让 LazyColumn 自己回收，且每条独立卡片点击区域更清楚
-            items(filteredTxs, key = { it.id }) { tx ->
-                val accountName = state.accounts
-                    .firstOrNull { it.id == tx.accountId }
-                    ?.name.orEmpty()
+            items(filteredRows, key = { it.tx?.id ?: "transfer-${it.transfer?.id}" }) { row ->
+                val tx = row.tx
                 GlassCard(contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    TransactionRow(
-                        transaction = tx,
-                        accountName = accountName,
-                        onCategoryChange = { id, cat -> model.updateTransactionCategory(id, cat) },
-                        onClick = { onEditTransaction(tx) }
-                    )
+                    if (tx != null) {
+                        TransactionRow(
+                            transaction = tx,
+                            accountName = accountNames[tx.accountId].orEmpty(),
+                            onCategoryChange = { id, cat -> model.updateTransactionCategory(id, cat) },
+                            onClick = { onEditTransaction(tx) }
+                        )
+                    } else {
+                        val tf = requireNotNull(row.transfer)
+                        TransferRow(
+                            fromName = accountNames[tf.fromAccountId].orEmpty(),
+                            toName = accountNames[tf.toAccountId].orEmpty(),
+                            amountCents = tf.amountCents,
+                            occurredAt = tf.occurredAt,
+                            note = tf.note,
+                            onClick = { transferToDelete = tf }
+                        )
+                    }
                 }
             }
         }
+    }
+    }
+    // 转账删除确认：回滚两边余额
+    transferToDelete?.let { tf ->
+        val fromName = state.accounts.firstOrNull { it.id == tf.fromAccountId }?.name.orEmpty()
+        val toName = state.accounts.firstOrNull { it.id == tf.toAccountId }?.name.orEmpty()
+        AlertDialog(
+            onDismissRequest = { transferToDelete = null },
+            title = { Text("删除这笔转账？") },
+            text = { Text("$fromName → $toName ${formatMoney(tf.amountCents)}\n两边账户余额会按原样回滚。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    model.deleteTransfer(tf.id)
+                    transferToDelete = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { transferToDelete = null }) { Text("取消") }
+            }
+        )
     }
 }
 

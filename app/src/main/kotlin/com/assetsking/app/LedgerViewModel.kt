@@ -365,9 +365,13 @@ class LedgerViewModel(
         }
     }
 
-    fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?) {
+    fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
-        viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note) }
+        viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
+    }
+
+    fun deleteTransfer(id: String) {
+        viewModelScope.launch { repository.deleteTransfer(id) }
     }
 
     // ── 通知处理 ──

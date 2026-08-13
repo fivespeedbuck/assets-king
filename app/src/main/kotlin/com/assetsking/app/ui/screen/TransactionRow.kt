@@ -97,15 +97,16 @@ fun TransactionRow(
     onClick: () -> Unit = {}
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    val category = runCatching { TransactionCategory.valueOf(transaction.category) }
-        .getOrDefault(TransactionCategory.UNCATEGORIZED)
+    // 自定义分类（如"转账"）不在枚举里：valueOf 失败时直接显示存储的原始名字，不回退成"未分类"
+    val category = runCatching { TransactionCategory.valueOf(transaction.category) }.getOrNull()
+    val categoryText = category?.let { categoryLabel(it) } ?: transaction.category
     val isLoanTx = transaction.type == "LOAN_DISBURSEMENT" || transaction.type == "LOAN_PAYMENT" || transaction.type == "LOAN_PREPAYMENT"
     // V5：借款/还款/提前还款流水不可编辑分类（与贷款计划联动），只读展示
     val title = when {
         transaction.type == "LOAN_DISBURSEMENT" -> "借款到账"
         transaction.type == "LOAN_PAYMENT" -> "贷款还款"
         transaction.type == "LOAN_PREPAYMENT" -> "提前还款"
-        else -> transaction.merchant ?: categoryLabel(category)
+        else -> transaction.merchant ?: categoryText
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
@@ -146,7 +147,7 @@ fun TransactionRow(
         if (!isLoanTx) {
             Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
                 Text(
-                    categoryLabel(category),
+                    categoryText,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable { menuExpanded = true }
@@ -160,6 +161,48 @@ fun TransactionRow(
                     }
                 }
             }
+        }
+        HorizontalDivider(modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+/** 转账行：钱从哪出 → 进到哪（transfers 表，与流水合并展示） */
+@Composable
+fun TransferRow(
+    fromName: String,
+    toName: String,
+    amountCents: Long,
+    occurredAt: Long,
+    note: String?,
+    onClick: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "$fromName → $toName",
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    "转账 · ${formatTime(occurredAt)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                note?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Text(
+                formatMoney(amountCents),
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(start = 8.dp)
+            )
         }
         HorizontalDivider(modifier = Modifier.padding(top = 6.dp))
     }
