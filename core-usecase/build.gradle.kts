@@ -24,4 +24,5 @@ dependencies {
     implementation(project(":core-ledger"))
     implementation(project(":core-database"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    testImplementation(kotlin("test"))
 }

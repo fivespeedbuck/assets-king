@@ -31,6 +31,10 @@ class AssetsNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         isConnected = true
+        // App 更新、重启、系统解绑期间推的通知，系统不会补发，原先一律永久丢失。
+        // 绑定成功后补扫一遍通知栏：RawNotification 主键是 "key:postTime"，
+        // DAO 是 onConflict=IGNORE，同一条扫几次都只入库一次。
+        runCatching { activeNotifications?.forEach { onNotificationPosted(it) } }
     }
 
     override fun onListenerDisconnected() {

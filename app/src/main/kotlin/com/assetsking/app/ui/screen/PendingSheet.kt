@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -16,6 +14,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,9 +52,14 @@ fun PendingSheet(
         if (items.isEmpty()) {
             Text("没有待确认的通知", style = MaterialTheme.typography.bodyMedium)
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(items, key = { it.notification.id }) { item ->
-                    PendingNotificationCard(item, accounts, viewModel)
+            // 不能用 LazyColumn：Sheet 外层是 verticalScroll，套进去就是无限高约束，
+            // 一点开待确认箱必崩（IllegalStateException: infinity maximum height）。
+            // 待确认条目就几条，Sheet 自己会滚，普通 Column 够了。
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items.forEach { item ->
+                    key(item.notification.id) {
+                        PendingNotificationCard(item, accounts, viewModel)
+                    }
                 }
             }
         }

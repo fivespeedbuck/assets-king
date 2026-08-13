@@ -25,6 +25,10 @@ import androidx.compose.ui.unit.dp
  *  - skipPartiallyExpanded：直接全屏展开，不停在半屏
  *  - verticalScroll：内容超过一屏可以滚
  *  - imePadding：软键盘顶起内容，不盖住底部保存键
+ *
+ * **content 里不能放 LazyColumn/LazyRow（纵向）**：外层 verticalScroll 给的是无限高约束，
+ * Lazy 容器一测量就抛 IllegalStateException 直接闪退。列表用 Column + forEach，
+ * 滚动交给这里的 verticalScroll。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
