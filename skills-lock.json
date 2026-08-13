@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "vibehub": {
+      "source": "oil-oil/vibe-hub-skill",
+      "sourceType": "github",
+      "skillPath": "skills/vibehub/SKILL.md",
+      "computedHash": "bfa9ea06ede6025fca5cae7fabdf849b1d473d0f608023181c009e4742f8d6af"
+    }
+  }
+}
