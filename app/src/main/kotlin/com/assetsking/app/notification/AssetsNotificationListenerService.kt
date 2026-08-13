@@ -1,56 +1,77 @@
 package com.assetsking.app.notification
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Intent
+import android.content.ComponentName
+import android.content.Context
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.assetsking.app.MainActivity
-import com.assetsking.database.RawNotificationEntity
 import com.assetsking.app.AssetsKingApplication
+import com.assetsking.database.RawNotificationEntity
+import com.assetsking.usecase.NotificationParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * 通知读取服务。
+ *
+ * 这里**没有前台服务**，是刻意的：NotificationListenerService 由系统绑定并保活，
+ * 本来就不需要 startForeground。原先那段 startForeground 在 Android 12+ 会抛
+ * ForegroundServiceStartNotAllowedException（后台不允许起前台服务），异常连带把
+ * onListenerConnected 打挂，正是「授权了却收不到通知」的元凶之一 —— 用户反馈
+ * 「那条常驻通知我从没见到过」即为实锤。
+ */
 class AssetsNotificationListenerService : NotificationListenerService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    override fun onCreate() {
-        super.onCreate()
-        createNotificationChannel()
-    }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
         isConnected = true
-        startForegroundService()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         isConnected = false
+        // 系统在 app 更新/重启后会断开绑定且不主动重连，这里主动要一次
+        runCatching { requestRebind(componentName(this)) }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // 自己的通知、常驻通知（音乐/下载）、分组摘要（内容重复）一律不看
+        if (sbn.packageName == packageName) return
+        val flags = sbn.notification.flags
+        if (flags and Notification.FLAG_ONGOING_EVENT != 0) return
+        if (flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+
+        val app = application as? AssetsKingApplication ?: return
+        val repository = app.repository
+
+        val appLabel = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+        }.getOrNull()
+
+        // 先登记来源（不放行的也记）——设置页据此列出开关，漏配的银行一键就能打开
+        repository.recordNotificationSource(sbn.packageName, appLabel)
+        if (!repository.isWhitelisted(sbn.packageName)) return
+
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
         val content = listOfNotNull(
             extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
             extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
         ).distinct().joinToString("\n").ifBlank { sbn.notification.tickerText?.toString().orEmpty() }
-        val appLabel = runCatching {
-            packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
-        }.getOrNull()
+        if (content.isBlank() && title.isNullOrBlank()) return
+
+        // 白名单挡不住微信——它必须放行（要收支付通知），但聊天消息远多于付款。
+        // 解析不出金额的直接不入库，否则一天几百条聊天记录白占数据库。
+        if (NotificationParser.parse(content, title).amountCents == null) return
 
         serviceScope.launch {
             try {
-                val app = application as? AssetsKingApplication ?: return@launch
-                val repository = app.repository
                 repository.saveRawNotification(
                     RawNotificationEntity(
                         id = "${sbn.key}:${sbn.postTime}",
@@ -63,9 +84,6 @@ class AssetsNotificationListenerService : NotificationListenerService() {
                     )
                 )
                 app.processPending.invoke()
-
-                // 更新前台通知的净资产数据
-                updateForegroundNotification(app)
             } catch (_: Exception) {
                 // ponytail: 静默失败比服务崩溃好
             }
@@ -78,72 +96,27 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         super.onDestroy()
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "后台运行",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "资产大王后台监听通知所需"
-            setShowBadge(false)
-        }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
-    }
-
-    private fun startForegroundService() {
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("记账监听运行中")
-            .setContentText("正在后台监听支付通知")
-            .setSmallIcon(android.R.drawable.ic_menu_manage)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-        startForeground(FOREGROUND_ID, notification)
-    }
-
-    private fun updateForegroundNotification(app: AssetsKingApplication) {
-        serviceScope.launch {
-            try {
-                val repo = app.repository
-                val accounts = repo.accounts.first()
-                val assets = accounts.filter { it.type == "ASSET" }.sumOf { it.balanceCents }
-                val debts = accounts.filter { it.type != "ASSET" }.sumOf { it.balanceCents }
-                val net = assets - debts
-                val txs = repo.allTransactions()
-                val thisMonth = txs.filter { tx ->
-                    val cal = java.util.Calendar.getInstance()
-                    cal.timeInMillis = tx.occurredAt
-                    cal.get(java.util.Calendar.MONTH) == java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)
-                }
-                val expense = thisMonth.filter { it.type == "EXPENSE" }.sumOf { it.amountCents }
-                val text = "净值 ¥%.2f · 本月支出 ¥%.2f".format(net / 100.0, expense / 100.0)
-                val intent = Intent(this@AssetsNotificationListenerService, MainActivity::class.java)
-                val pendingIntent = PendingIntent.getActivity(
-                    this@AssetsNotificationListenerService, 0, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val notification = Notification.Builder(this@AssetsNotificationListenerService, CHANNEL_ID)
-                    .setContentTitle("记账监听运行中")
-                    .setContentText(text)
-                    .setSmallIcon(android.R.drawable.ic_menu_manage)
-                    .setContentIntent(pendingIntent)
-                    .setOngoing(true)
-                    .build()
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(FOREGROUND_ID, notification)
-            } catch (_: Exception) { }
-        }
-    }
-
     companion object {
-        @Volatile
-        var isConnected = false
-        private const val CHANNEL_ID = "assets_king_foreground"
-        private const val FOREGROUND_ID = 1
+        // StateFlow 而非普通 Boolean：绑定是异步完成的，UI 得能在完成那一刻自己更新，
+        // 否则刚点完「重新绑定」还会继续显示「已断开」直到下次进前台
+        private val _connected = MutableStateFlow(false)
+        val connected: StateFlow<Boolean> = _connected
+
+        var isConnected: Boolean
+            get() = _connected.value
+            private set(value) { _connected.value = value }
+
+        fun componentName(context: Context) =
+            ComponentName(context, AssetsNotificationListenerService::class.java)
+
+        /**
+         * 已授权但未连接时把绑定要回来。
+         * 装了新 APK 后系统保留授权却不重新 bind，服务会静默收不到任何东西 ——
+         * 以前只能靠「设置里关掉再打开」恢复，这行代替了那个手工步骤。
+         */
+        fun rebindIfNeeded(context: Context) {
+            if (isConnected) return
+            runCatching { requestRebind(componentName(context)) }
+        }
     }
 }

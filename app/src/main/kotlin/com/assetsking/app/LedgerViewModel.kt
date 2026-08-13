@@ -12,6 +12,8 @@ import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.SnapshotEntity
 import com.assetsking.database.TransferEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.ledger.DetectedRecurring
+import com.assetsking.ledger.NecessaryLivingSuggestion
 import com.assetsking.ledger.V5Metrics
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
@@ -24,9 +26,12 @@ import com.assetsking.usecase.ProcessPendingUseCase
 import com.assetsking.usecase.RecordTransactionUseCase
 import com.assetsking.usecase.RecordTransferUseCase
 import com.assetsking.usecase.SeedAccountsUseCase
+import com.assetsking.usecase.SpendPatternsUseCase
 import com.assetsking.usecase.UpdateCategoryUseCase
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -71,6 +76,7 @@ class LedgerViewModel(
     private val updateCategory: UpdateCategoryUseCase,
     getV5Metrics: GetV5MetricsUseCase,
     private val processPending: ProcessPendingUseCase,
+    private val spendPatterns: SpendPatternsUseCase,
     private val repository: com.assetsking.database.LedgerRepository
 ) : ViewModel() {
     // V5 指标在 ViewModel 里算（一个 Flow 发射 → 一套新数字），严禁在 Composable 内现算
@@ -108,6 +114,21 @@ class LedgerViewModel(
     val monthlyIncomeCents: Flow<Long> = repository.monthlyIncomeCents
     val necessaryLivingCents: Flow<Long> = repository.necessaryLivingCents
     val optionalCategories: Flow<Set<String>> = repository.optionalCategories
+    /** 自动发现的通知来源：包名 → 应用名 */
+    val notificationSources: Flow<Map<String, String>> = repository.notificationSources
+    val notificationWhitelist: Flow<Set<String>> = repository.notificationWhitelist
+
+    // ── 从流水反推的两个建议（用户填不准的那两项）──
+
+    private val _necessaryLivingSuggestion = MutableStateFlow<NecessaryLivingSuggestion?>(null)
+    val necessaryLivingSuggestion: StateFlow<NecessaryLivingSuggestion?> = _necessaryLivingSuggestion
+
+    private val _detectedRecurring = MutableStateFlow<List<DetectedRecurring>>(emptyList())
+    val detectedRecurring: StateFlow<List<DetectedRecurring>> = _detectedRecurring
+
+    /** 本月未分类支出：笔数 → 金额。未分类越多，必要生活建议越不准 */
+    private val _uncategorized = MutableStateFlow(0 to 0L)
+    val uncategorized: StateFlow<Pair<Int, Long>> = _uncategorized
 
     init {
         viewModelScope.launch {
@@ -117,6 +138,47 @@ class LedgerViewModel(
             // 当月无锚点 → 用当前 V5 总负债建档（从今天起记录，不回填历史）
             val v5 = getV5Metrics().first()
             repository.ensureMonthAnchor(v5.totalDebtCents)
+        }
+        refreshSpendPatterns()
+    }
+
+    /** 重算建议。一次性扫全表，别放进 Flow 里跟着每笔流水重跑 */
+    fun refreshSpendPatterns() {
+        viewModelScope.launch {
+            runCatching {
+                _necessaryLivingSuggestion.value = spendPatterns.necessaryLiving()
+                _detectedRecurring.value = spendPatterns.recurringCharges()
+                _uncategorized.value = spendPatterns.uncategorizedThisMonth()
+            }
+        }
+    }
+
+    /**
+     * 把识别出的固定扣款确认为周期账单。
+     * isSubscription 标 true，进设置页「含订阅」合计；不会重复记账 ——
+     * processRecurring 到点会先找有没有真实扣款，有就认领而不是再造一笔。
+     */
+    fun confirmDetectedRecurring(detected: DetectedRecurring) {
+        viewModelScope.launch {
+            val today = java.time.LocalDate.now()
+            val next = generateSequence(java.time.YearMonth.from(today)) { it.plusMonths(1) }
+                .map { ym -> ym.atDay(detected.dayOfMonth.coerceAtMost(ym.lengthOfMonth())) }
+                .first { it.isAfter(today) }
+            repository.saveRecurringRule(
+                RecurringRuleEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    accountId = detected.accountId,
+                    amountCents = detected.amountCents,
+                    type = TransactionType.EXPENSE.name,
+                    category = detected.category,
+                    merchant = detected.merchant,
+                    note = "自动识别：近${detected.occurrences}次固定扣款",
+                    interval = "MONTHLY",
+                    nextRunAt = next.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                    isSubscription = true
+                )
+            )
+            refreshSpendPatterns()
         }
     }
 
@@ -280,6 +342,11 @@ class LedgerViewModel(
         repository.setOptionalCategories(categories)
     }
 
+    /** 通知来源开关：只有白名单里的 app 会被读取入库 */
+    fun setNotificationWhitelist(packages: Set<String>) {
+        repository.setNotificationWhitelist(packages)
+    }
+
     /** 提前还款：只减本金、不当消费、不标普通期次（铁律 3） */
     fun addLoanPrepayment(cashAccountId: String, planId: String, principalCents: Long, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         viewModelScope.launch {
@@ -344,6 +411,7 @@ class LedgerViewModel(
                         updateCategory = app.updateCategory,
                         getV5Metrics = app.getV5Metrics,
                         processPending = app.processPending,
+                        spendPatterns = app.spendPatterns,
                         repository = app.repository
                     ) as T
             }

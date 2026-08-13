@@ -89,6 +89,7 @@ enum class DebtStage { DEBT_FREE, CASH_SURVIVAL, LIVE_TO_BONUS, BONUS_PAYDOWN, S
 
 data class V5Metrics(
     val totalDebtCents: Long,
+    val availableCashCents: Long,   // 手上真能动的钱 = ASSET 账户余额之和；未到账年终奖不算（铁律 8）
     val cardDebtCents: Long,
     val loanAccountDebtCents: Long,
     val loanPlanDebtCents: Long,
@@ -150,6 +151,9 @@ fun computeV5Metrics(
             .sumOf { it.interestCents + it.feeCents }
     }
     val totalDebt = cardDebt + loanAccountDebt + loanPlanDebt + accruedInterest
+
+    // 可用现金：只认真实到账的资产账户余额。EXPECTED 年终奖不在任何账户余额里，天然不计入（铁律 8）
+    val availableCash = accounts.filter { it.type == "ASSET" }.sumOf { it.balanceCents }
 
     // ── ② 本月必须还款（方案A：录原始账单，系统扣已还）──
     val transferredByCard = cardTransfers.associate { it.cardAccountId to it.transferredCents }
@@ -252,6 +256,7 @@ fun computeV5Metrics(
 
     return V5Metrics(
         totalDebtCents = totalDebt,
+        availableCashCents = availableCash,
         cardDebtCents = cardDebt,
         loanAccountDebtCents = loanAccountDebt,
         loanPlanDebtCents = loanPlanDebt,

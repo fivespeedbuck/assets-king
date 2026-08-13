@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -27,7 +28,7 @@ import com.assetsking.ui.theme.GlassCardLight
 fun GlassCard(
     modifier: Modifier = Modifier,
     contentPadding: Modifier = Modifier.padding(20.dp),
-    content: @Composable () -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
     val glassBg = if (isDark) GlassCardDark else GlassCardLight

@@ -12,3 +12,5 @@ local.properties
 .gradle-wrapper.out.log
 .gradle-wrapper.err.log
 .reference/
+.claude/settings.local.json
+screenshot*.png

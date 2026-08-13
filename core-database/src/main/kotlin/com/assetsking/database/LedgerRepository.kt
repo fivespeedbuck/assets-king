@@ -405,7 +405,13 @@ class LedgerRepository(
         database.recurringRuleDao().deleteById(id)
     }
 
-    /** 处理到期的周期性账单：插入流水 + 计算下次执行时间。循环补漏多周期。 */
+    /**
+     * 处理到期的周期性账单：插入流水 + 计算下次执行时间。循环补漏多周期。
+     *
+     * 关键：**真实扣款已经被通知抓到时，绝不再造一笔**，改为把已有那笔认领给规则。
+     * 否则「周期账单自动生成」+「通知自动记账」会把同一笔房租/订阅记两次，
+     * 余额和 V5 的必须还/缺口全部虚高。
+     */
     suspend fun processRecurring(): Int {
         val now = System.currentTimeMillis()
         val due = database.recurringRuleDao().observeActive().let { it.first() }
@@ -417,23 +423,44 @@ class LedgerRepository(
             for (rule in due) {
                 var cursor = rule.nextRunAt
                 while (cursor <= now) {
-                    addTransaction(
-                        accountId = rule.accountId,
-                        amountCents = rule.amountCents,
-                        type = TransactionType.valueOf(rule.type),
-                        category = rule.category,
-                        merchant = rule.merchant,
-                        note = rule.note,
-                        occurredAt = cursor,
-                        recurringRuleId = rule.id
-                    )
+                    val existing = findRealChargeFor(rule, cursor)
+                    if (existing != null) {
+                        database.transactionDao().updateRecurringRuleId(existing.id, rule.id)
+                    } else {
+                        addTransaction(
+                            accountId = rule.accountId,
+                            amountCents = rule.amountCents,
+                            type = TransactionType.valueOf(rule.type),
+                            category = rule.category,
+                            merchant = rule.merchant,
+                            note = rule.note,
+                            occurredAt = cursor,
+                            recurringRuleId = rule.id
+                        )
+                        inserted++
+                    }
                     cursor = nextRun(cursor, rule.interval)
-                    inserted++
                 }
                 database.recurringRuleDao().upsert(rule.copy(nextRunAt = cursor))
             }
         }
         return inserted
+    }
+
+    /**
+     * 该周期内是否已经有一笔真实扣款（通知抓的或手工记的）。
+     * 匹配条件：同商户 + 同类型 + 金额相差 15% 以内 + 应扣日前后 5 天，且还没被别的规则认领。
+     */
+    private suspend fun findRealChargeFor(rule: RecurringRuleEntity, dueAt: Long): TransactionEntity? {
+        val merchant = rule.merchant?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val window = 5L * 24 * 60 * 60 * 1000
+        return database.transactionDao().findInRange(dueAt - window, dueAt + window)
+            .firstOrNull {
+                it.recurringRuleId == null &&
+                    it.type == rule.type &&
+                    it.merchant?.trim() == merchant &&
+                    kotlin.math.abs(it.amountCents - rule.amountCents) * 100 <= rule.amountCents * 15
+            }
     }
 
     private fun nextRun(from: Long, interval: String): Long {
@@ -721,6 +748,48 @@ class LedgerRepository(
     fun setOptionalCategories(categories: Set<String>) {
         _optionalCategories.value = categories
         prefs.edit().putString("v5_optional_categories", categories.joinToString(",")).apply()
+    }
+
+    // ── 通知来源白名单：只收「能扣钱」的 app，避免聊天/外卖/系统通知淹没待确认箱 ──
+
+    private val _notificationWhitelist = MutableStateFlow(
+        prefs.getString("notif_whitelist", null)
+            ?.split(",")?.filter { it.isNotBlank() }?.toSet()
+            ?: DEFAULT_PAYMENT_PACKAGES
+    )
+    val notificationWhitelist: Flow<Set<String>> = _notificationWhitelist
+
+    fun setNotificationWhitelist(packages: Set<String>) {
+        _notificationWhitelist.value = packages
+        prefs.edit().putString("notif_whitelist", packages.joinToString(",")).apply()
+    }
+
+    /** 监听服务在 onNotificationPosted 里同步调用，等不了 Flow */
+    fun isWhitelisted(packageName: String): Boolean = packageName in _notificationWhitelist.value
+
+    /** 自动发现的通知来源：包名 → 应用名。设置页据此列出可开关的清单 */
+    private val _notificationSources = MutableStateFlow(readNotificationSources())
+    val notificationSources: Flow<Map<String, String>> = _notificationSources
+
+    private fun readNotificationSources(): Map<String, String> =
+        prefs.getStringSet("notif_sources", emptySet()).orEmpty()
+            .mapNotNull { entry ->
+                val sep = entry.indexOf('|')
+                if (sep <= 0) null else entry.substring(0, sep) to entry.substring(sep + 1)
+            }.toMap()
+
+    /**
+     * 登记一个通知来源（不放行的也记）。已存在则不动。
+     * ponytail: 上限 200 条，防止异常 app 刷爆 prefs；到顶后不再收新来源，够用了。
+     */
+    fun recordNotificationSource(packageName: String, label: String?) {
+        val current = _notificationSources.value
+        if (packageName in current || current.size >= 200) return
+        val updated = current + (packageName to (label?.takeIf { it.isNotBlank() } ?: packageName))
+        _notificationSources.value = updated
+        prefs.edit()
+            .putStringSet("notif_sources", updated.map { "${it.key}|${it.value}" }.toSet())
+            .apply()
     }
 
     // ── Stats ──

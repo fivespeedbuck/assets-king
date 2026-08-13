@@ -5,7 +5,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.ui.screen.HomeScreen
+import com.assetsking.app.ui.screen.isListenerEnabled
 import com.assetsking.ui.theme.AssetsKingTheme
 
 class MainActivity : ComponentActivity() {
@@ -20,6 +22,17 @@ class MainActivity : ComponentActivity() {
                 )
                 HomeScreen(model = model, repository = app.repository)
             }
+        }
+    }
+
+    /**
+     * 装了新 APK 后系统保留通知授权、却不重新绑定监听服务，于是「授权明明开着但一条都收不到」。
+     * 每次回到前台顺手把绑定要回来，代替原先只能手工「关掉再打开授权」的恢复步骤。
+     */
+    override fun onResume() {
+        super.onResume()
+        if (isListenerEnabled(this)) {
+            AssetsNotificationListenerService.rebindIfNeeded(this)
         }
     }
 }

@@ -162,6 +162,25 @@ class V5MetricsTest {
         assertNull(received.runwayToWindfallDays)                     // 只有 EXPECTED 才有 runway
     }
 
+    // ── 可用现金：只认 ASSET 余额，不被负债账户污染，未到账年终奖不算（铁律 8）──
+
+    @Test
+    fun `available cash sums only asset accounts`() {
+        val m = metrics(
+            accounts = listOf(
+                card(id = "nbbank", balance = 320_000, statementOriginalDue = 0, dueDay = null, type = "ASSET"),
+                card(id = "cmb", balance = 80_055, statementOriginalDue = 0, dueDay = null, type = "ASSET"),
+                card(id = "cgb", balance = 4_000_000, statementOriginalDue = 600_000),   // CREDIT 不计入现金
+                card(id = "huabei", balance = 1_000_000, statementOriginalDue = 0, dueDay = null, type = "LOAN")
+            ),
+            windfalls = listOf(
+                V5WindfallInput(5_000_000, LocalDate.of(2026, 12, 31).toEpochDay(), status = WindfallStatus.EXPECTED)
+            )
+        )
+        assertEquals(400_055, m.availableCashCents)   // 3200.00 + 800.55，信用卡/贷款/年终奖都不算
+        assertEquals(5_000_000, m.totalDebtCents)     // 负债口径不受现金影响
+    }
+
     // ── V5 §63 Case 6/13：缺口为负时自由消费=0、阶段=现金流生存 ──
 
     @Test

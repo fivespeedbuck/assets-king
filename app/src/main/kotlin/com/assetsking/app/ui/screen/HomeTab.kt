@@ -1,8 +1,6 @@
 package com.assetsking.app.ui.screen
 
 import android.content.Context
-import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -47,7 +45,7 @@ private val Green = Color(0xFF66BB6A)
 fun HomeTab(
     padding: PaddingValues,
     state: LedgerUiState,
-    listenerEnabled: Boolean,
+    listenerStatus: ListenerStatus,
     context: Context,
     model: LedgerViewModel,
     searchQuery: String,
@@ -75,21 +73,27 @@ fun HomeTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Notification permission prompt
-        if (!listenerEnabled) {
+        // 通知监听状态：未授权 / 授权了但没连上（最坑的一种）/ 正常时不打扰
+        if (listenerStatus != ListenerStatus.OK) {
             item {
                 GlassCard {
-                    Text("自动记账尚未开启", fontWeight = FontWeight.Bold)
+                    val disabled = listenerStatus == ListenerStatus.DISABLED
+                    Text(
+                        if (disabled) "自动记账尚未开启" else "通知监听已断开",
+                        fontWeight = FontWeight.Bold,
+                        color = if (disabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "开启通知读取后，支付通知自动入账。",
+                        if (disabled) "开启通知读取后，支付通知自动入账。"
+                        else "权限还在，但系统没有把监听服务绑上（装新版本后常见）。回到首页会自动重连，还不行就去设置里关掉再打开。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = {
-                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    }) { Text("去开启") }
+                    TextButton(onClick = { openListenerSettings(context) }) {
+                        Text(if (disabled) "去开启" else "去重新绑定")
+                    }
                 }
             }
         }
@@ -125,26 +129,30 @@ fun HomeTab(
         }
 
         // Accounts section
-        item { SectionHeader("账户") }
-        items(state.accounts, key = { it.id }) { account ->
-            Column {
-                AccountRow(account = account, onClick = { onEditAccount(account) })
-                // V5：信用卡剩余应还（统一口径：原始账单−已还）/ Pending
-                val remainingDue = v5?.cardRemainingDueByCard?.get(account.id) ?: 0L
-                if (account.type == com.assetsking.model.AccountType.CREDIT.name &&
-                    (remainingDue > 0 || account.pendingCents > 0)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(start = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        if (remainingDue > 0) {
-                            Text("本期待还 ${formatMoney(remainingDue)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                            if (account.statementOriginalDueCents > remainingDue) {
-                                Text("账单 ${formatMoney(account.statementOriginalDueCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        item { SectionHeader("账户", modifier = Modifier.padding(horizontal = 4.dp)) }
+        item {
+            GlassCard {
+                state.accounts.forEach { account ->
+                    Column(Modifier.padding(vertical = 2.dp)) {
+                        AccountRow(account = account, onClick = { onEditAccount(account) })
+                        // V5：信用卡剩余应还（统一口径：原始账单−已还）/ Pending
+                        val remainingDue = v5?.cardRemainingDueByCard?.get(account.id) ?: 0L
+                        if (account.type == com.assetsking.model.AccountType.CREDIT.name &&
+                            (remainingDue > 0 || account.pendingCents > 0)
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(start = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                if (remainingDue > 0) {
+                                    Text("本期待还 ${formatMoney(remainingDue)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                                    if (account.statementOriginalDueCents > remainingDue) {
+                                        Text("账单 ${formatMoney(account.statementOriginalDueCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                if (account.pendingCents > 0) Text("Pending ${formatMoney(account.pendingCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        if (account.pendingCents > 0) Text("Pending ${formatMoney(account.pendingCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -153,40 +161,45 @@ fun HomeTab(
         // Reimbursable section
         val reimbursableTxs = state.transactions.filter { it.isReimbursable }
         if (reimbursableTxs.isNotEmpty()) {
-            item { SectionHeader("待报销（${reimbursableTxs.size}笔 · ${formatMoney(reimbursableTxs.sumOf { it.amountCents })}）") }
-            items(reimbursableTxs, key = { it.id }) { tx ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(tx.merchant ?: "未知", fontWeight = FontWeight.Medium)
-                        Text(formatTime(tx.occurredAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item { SectionHeader("待报销（${reimbursableTxs.size}笔 · ${formatMoney(reimbursableTxs.sumOf { it.amountCents })}）", modifier = Modifier.padding(horizontal = 4.dp)) }
+            item {
+                GlassCard {
+                    reimbursableTxs.forEach { tx ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(tx.merchant ?: "未知", fontWeight = FontWeight.Medium)
+                                Text(formatTime(tx.occurredAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(formatMoney(tx.amountCents), fontWeight = FontWeight.SemiBold)
+                            TextButton(onClick = { model.toggleReimbursable(tx.id, false) }) { Text("✓ 已报销") }
+                        }
                     }
-                    Text(formatMoney(tx.amountCents), fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = { model.toggleReimbursable(tx.id, false) }) { Text("✓ 已报销") }
                 }
             }
         }
 
         // Transactions section
-        item { SectionHeader("最近流水") }
+        item { SectionHeader("最近流水", modifier = Modifier.padding(horizontal = 4.dp)) }
         item {
-            FormField(
-                value = searchQuery,
-                onValueChange = onSearchChange,
-                label = "搜索流水（商户/备注）"
-            )
-        }
-        item {
-            ChipRow(
-                items = listOf("ALL", "EXPENSE", "INCOME"),
-                selected = txFilter,
-                onSelected = { txFilter = it },
-                label = { when (it) { "ALL" -> "全部"; "EXPENSE" -> "支出"; "INCOME" -> "收入"; else -> it } },
-                id = { it }
-            )
+            GlassCard {
+                FormField(
+                    value = searchQuery,
+                    onValueChange = onSearchChange,
+                    label = "搜索流水（商户/备注）"
+                )
+                Spacer(Modifier.height(8.dp))
+                ChipRow(
+                    items = listOf("ALL", "EXPENSE", "INCOME"),
+                    selected = txFilter,
+                    onSelected = { txFilter = it },
+                    label = { when (it) { "ALL" -> "全部"; "EXPENSE" -> "支出"; "INCOME" -> "收入"; else -> it } },
+                    id = { it }
+                )
+            }
         }
         val filteredTxs = state.transactions
             .let { if (txFilter == "ALL") it else it.filter { tx -> tx.type == txFilter || (txFilter == "INCOME" && tx.type == "REFUND") } }
@@ -196,18 +209,21 @@ fun HomeTab(
             } }
             .take(20)
         if (filteredTxs.isEmpty()) {
-            item { EmptyState(if (searchQuery.isBlank()) "还没有流水，点右下角 ＋ 开始。" else "未找到匹配的流水") }
+            item { GlassCard { EmptyState(if (searchQuery.isBlank()) "还没有流水，点右下角 ＋ 开始。" else "未找到匹配的流水") } }
         } else {
+            // 流水保持 items()：20 条也让 LazyColumn 自己回收，且每条独立卡片点击区域更清楚
             items(filteredTxs, key = { it.id }) { tx ->
                 val accountName = state.accounts
                     .firstOrNull { it.id == tx.accountId }
                     ?.name.orEmpty()
-                TransactionRow(
-                    transaction = tx,
-                    accountName = accountName,
-                    onCategoryChange = { id, cat -> model.updateTransactionCategory(id, cat) },
-                    onClick = { onEditTransaction(tx) }
-                )
+                GlassCard(contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    TransactionRow(
+                        transaction = tx,
+                        accountName = accountName,
+                        onCategoryChange = { id, cat -> model.updateTransactionCategory(id, cat) },
+                        onClick = { onEditTransaction(tx) }
+                    )
+                }
             }
         }
     }
@@ -234,6 +250,14 @@ private fun V5DashboardCard(
             style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.error
+        )
+        Spacer(Modifier.height(6.dp))
+        // 可用现金：与总负债成对出现——「欠多少 / 手上有多少」一眼可比
+        Text(
+            text = "可用现金 ${formatMoney(v5.availableCashCents)}",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = if (v5.availableCashCents > 0) Green else MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
         val breakdown = buildString {

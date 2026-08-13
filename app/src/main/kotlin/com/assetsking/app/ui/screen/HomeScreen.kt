@@ -12,7 +12,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.RecordMode
@@ -40,6 +39,11 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
     val necessaryLivingCents by model.necessaryLivingCents.collectAsStateWithLifecycle(initialValue = 0L)
     val optionalCategories by model.optionalCategories.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
+    val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val necessaryLivingSuggestion by model.necessaryLivingSuggestion.collectAsStateWithLifecycle()
+    val detectedRecurring by model.detectedRecurring.collectAsStateWithLifecycle()
+    val uncategorized by model.uncategorized.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
     var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
@@ -51,9 +55,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var selectedTab by remember { mutableStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     var showReconciliation by remember { mutableStateOf(false) }
-    val listenerEnabled = NotificationManagerCompat
-        .getEnabledListenerPackages(context)
-        .contains(context.packageName)
+    val listenerStatus = rememberListenerStatus()
 
     Scaffold(
         bottomBar = {
@@ -85,7 +87,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     ) { padding ->
         when (selectedTab) {
             0 -> HomeTab(
-                padding = padding, state = state, listenerEnabled = listenerEnabled,
+                padding = padding, state = state, listenerStatus = listenerStatus,
                 context = context, model = model, searchQuery = searchQuery,
                 editingAccount = editingAccount, editingTransaction = editingTransaction,
                 onSearchChange = { searchQuery = it },
@@ -136,7 +138,16 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
                     onSetNecessaryLiving = { model.setNecessaryLivingCents(it) },
                     optionalCategories = optionalCategories,
-                    onSetOptionalCategories = { model.setOptionalCategories(it) }
+                    onSetOptionalCategories = { model.setOptionalCategories(it) },
+                    listenerStatus = listenerStatus,
+                    notificationSources = notificationSources,
+                    notificationWhitelist = notificationWhitelist,
+                    onSetNotificationWhitelist = { model.setNotificationWhitelist(it) },
+                    necessaryLivingSuggestion = necessaryLivingSuggestion,
+                    detectedRecurring = detectedRecurring,
+                    uncategorized = uncategorized,
+                    onConfirmDetectedRecurring = { model.confirmDetectedRecurring(it) },
+                    onRefreshSpendPatterns = { model.refreshSpendPatterns() }
                 )
             }
         }

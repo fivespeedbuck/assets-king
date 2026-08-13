@@ -12,13 +12,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.graphics.Color
-import com.assetsking.ui.component.FormField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +38,7 @@ import com.assetsking.model.Money
 import com.assetsking.model.RepaymentMethod
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.FormField
+import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.formatMoney
 import org.json.JSONArray
@@ -130,10 +129,11 @@ fun LoanScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // V5 负债仪表盘（统一口径，来自 GetV5MetricsUseCase）
         item {
+            GlassCard {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("负债仪表盘", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 if (v5 != null) {
@@ -171,18 +171,22 @@ fun LoanScreen(
                         }
                     }
                 }
-                HorizontalDivider()
+            }
             }
         }
 
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text("贷款计划", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { showSheet = true }) { Text("＋ 新增") }
             }
         }
         if (plans.isEmpty()) {
-            item { Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { GlassCard { Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         } else {
             items(plans, key = { it.id }) { plan ->
                 val account = accounts.firstOrNull { it.id == plan.accountId }
@@ -196,6 +200,7 @@ fun LoanScreen(
                         installments = installments
                     )
                 )
+                GlassCard {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
@@ -276,24 +281,28 @@ fun LoanScreen(
                         OutlinedButton(onClick = { onDelete(plan.id) }) { Text("删除") }
                     }
                 }
-                HorizontalDivider()
+                }
             }
         }
 
         // ── 信用卡分期（只展示与预测，绝不进总负债）──
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text("信用卡分期", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Button(onClick = { showInstallmentSheet = true }) { Text("＋ 添加") }
             }
         }
         if (cardInstallments.isEmpty()) {
-            item { Text("暂无信用卡分期", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { GlassCard { Text("暂无信用卡分期", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         } else {
             items(cardInstallments, key = { it.id }) { inst ->
                 val card = accounts.firstOrNull { it.id == inst.cardAccountId }
-                Column(Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                GlassCard {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("${card?.name ?: "信用卡"} · ${inst.label}", fontWeight = FontWeight.Medium)
                             Text(
@@ -304,7 +313,6 @@ fun LoanScreen(
                         }
                         OutlinedButton(onClick = { onDeleteInstallment(inst.id) }) { Text("删除") }
                     }
-                    HorizontalDivider()
                 }
             }
         }

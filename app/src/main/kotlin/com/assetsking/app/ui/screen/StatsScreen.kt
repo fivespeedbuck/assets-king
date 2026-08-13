@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +32,7 @@ import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.ledger.V5Metrics
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
+import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.usecase.GetStatsUseCase
@@ -74,11 +74,12 @@ fun StatsScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // ── V5 本月现金流 ──
         if (v5 != null) {
             item {
+                GlassCard {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("本月现金流", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -102,13 +103,14 @@ fun StatsScreen(
                         )
                     }
                     Text("资金缺口 = 收入 − 必要生活 − 必须还款", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    HorizontalDivider()
+                }
                 }
             }
         }
 
         // Prediction card
         item {
+            GlassCard {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("未来30天预测", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 if (upcoming.isEmpty()) {
@@ -154,6 +156,7 @@ fun StatsScreen(
                     )
                 }
             }
+            }
         }
 
         // Spend alerts
@@ -171,111 +174,130 @@ fun StatsScreen(
             } else null
         }
         if (alerts.isNotEmpty()) {
-            item { Text("消费预警", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = Color(0xFFEF5350)) }
-            items(alerts) { (cat, projected, over) ->
-                Text(
-                    "⚠ ${categoryLabel(cat)}：预计本月 ${formatMoney(projected)}，超预算 ${formatMoney(over)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
+            item {
+                GlassCard {
+                    Text("消费预警", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = Color(0xFFEF5350))
+                    Spacer(Modifier.height(8.dp))
+                    alerts.forEach { (cat, projected, over) ->
+                        Text(
+                            "⚠ ${categoryLabel(cat)}：预计本月 ${formatMoney(projected)}，超预算 ${formatMoney(over)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                    }
+                }
             }
         }
 
         // Snapshot curve
         if (snapshots.isNotEmpty()) {
-            item { Spacer(Modifier.height(8.dp)) }
-            item { Text("资产快照（最近）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
-            items(snapshots.take(30)) { snap ->
-                val date = java.time.LocalDate.ofEpochDay(snap.dateEpochDay)
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(date.toString(), style = MaterialTheme.typography.bodySmall)
-                    Text(formatMoney(snap.netWorth), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            item {
+                GlassCard {
+                    Text("资产快照（最近）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    snapshots.take(30).forEach { snap ->
+                        val date = java.time.LocalDate.ofEpochDay(snap.dateEpochDay)
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(date.toString(), style = MaterialTheme.typography.bodySmall)
+                            Text(formatMoney(snap.netWorth), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
+                    }
                 }
             }
         }
 
-        item { Spacer(Modifier.height(8.dp)) }
-
         // Category breakdown
-        item { Text("支出分类（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
-        if (data.categorySlices.isEmpty()) {
-            item { Text("暂无支出数据", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        } else {
-            val total = data.categorySlices.sumOf { it.totalCents }.toFloat()
-            items(data.categorySlices) { slice ->
-                val pct = if (total > 0) slice.totalCents / total else 0f
-                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(categoryLabel(slice.category), style = MaterialTheme.typography.bodyMedium)
-                        Text("${formatMoney(slice.totalCents)} (${(pct * 100).toInt()}%)", style = MaterialTheme.typography.bodySmall)
+        item {
+            GlassCard {
+                Text("支出分类（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                if (data.categorySlices.isEmpty()) {
+                    Text("暂无支出数据", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    val total = data.categorySlices.sumOf { it.totalCents }.toFloat()
+                    data.categorySlices.forEach { slice ->
+                        val pct = if (total > 0) slice.totalCents / total else 0f
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(categoryLabel(slice.category), style = MaterialTheme.typography.bodyMedium)
+                                Text("${formatMoney(slice.totalCents)} (${(pct * 100).toInt()}%)", style = MaterialTheme.typography.bodySmall)
+                            }
+                            LinearProgressIndicator(
+                                progress = { pct },
+                                modifier = Modifier.fillMaxWidth().height(8.dp)
+                            )
+                        }
                     }
-                    LinearProgressIndicator(
-                        progress = { pct },
-                        modifier = Modifier.fillMaxWidth().height(8.dp)
-                    )
                 }
             }
         }
 
         // Budget progress
         if (budgets.isNotEmpty()) {
-            item { Spacer(Modifier.height(8.dp)) }
-            item { Text("预算执行（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
-            items(budgets) { budget ->
-                val cat = runCatching { TransactionCategory.valueOf(budget.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED)
-                val spent = data.categorySlices.firstOrNull { it.category == cat }?.totalCents ?: 0L
-                val pct = if (budget.monthlyLimitCents > 0) (spent.toFloat() / budget.monthlyLimitCents).coerceIn(0f, 1.5f) else 0f
-                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(categoryLabel(cat), style = MaterialTheme.typography.bodyMedium)
-                        Text("${formatMoney(spent)} / ${formatMoney(budget.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
+            item {
+                GlassCard {
+                    Text("预算执行（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    budgets.forEach { budget ->
+                        val cat = runCatching { TransactionCategory.valueOf(budget.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED)
+                        val spent = data.categorySlices.firstOrNull { it.category == cat }?.totalCents ?: 0L
+                        val pct = if (budget.monthlyLimitCents > 0) (spent.toFloat() / budget.monthlyLimitCents).coerceIn(0f, 1.5f) else 0f
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(categoryLabel(cat), style = MaterialTheme.typography.bodyMedium)
+                                Text("${formatMoney(spent)} / ${formatMoney(budget.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            LinearProgressIndicator(
+                                progress = { pct.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(8.dp),
+                                color = if (pct > 1f) Color(0xFFEF5350) else Color(0xFF66BB6A),
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        }
                     }
-                    LinearProgressIndicator(
-                        progress = { pct.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(8.dp),
-                        color = if (pct > 1f) Color(0xFFEF5350) else Color(0xFF66BB6A),
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
                 }
             }
         }
 
         // Monthly summary
-        item { Spacer(Modifier.height(8.dp)) }
-        item { Text("月度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
-        items(data.monthlyBars.reversed()) { bar ->
-            val net = bar.incomeCents - bar.expenseCents
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(bar.month, style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("收 ${formatMoney(bar.incomeCents)}", color = Color(0xFF66BB6A), style = MaterialTheme.typography.bodySmall)
-                    Text("支 ${formatMoney(bar.expenseCents)}", color = Color(0xFFEF5350), style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        if (net >= 0) "+${formatMoney(net)}" else formatMoney(net),
-                        fontWeight = FontWeight.Medium,
-                        style = MaterialTheme.typography.bodySmall
-                    )
+        item {
+            GlassCard {
+                Text("月度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                data.monthlyBars.reversed().forEach { bar ->
+                    IncomeExpenseRow(bar.month, bar.incomeCents, bar.expenseCents)
                 }
             }
         }
 
         // Yearly summary
-        item { Spacer(Modifier.height(8.dp)) }
-        item { Text("年度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) }
-        items(data.yearlyBars) { bar ->
-            val net = bar.incomeCents - bar.expenseCents
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(bar.year, style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("收 ${formatMoney(bar.incomeCents)}", color = Color(0xFF66BB6A), style = MaterialTheme.typography.bodySmall)
-                    Text("支 ${formatMoney(bar.expenseCents)}", color = Color(0xFFEF5350), style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        if (net >= 0) "+${formatMoney(net)}" else formatMoney(net),
-                        fontWeight = FontWeight.Medium,
-                        style = MaterialTheme.typography.bodySmall
-                    )
+        item {
+            GlassCard {
+                Text("年度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                data.yearlyBars.forEach { bar ->
+                    IncomeExpenseRow(bar.year, bar.incomeCents, bar.expenseCents)
                 }
             }
+        }
+    }
+}
+
+/** 月度/年度收支共用一行：标签 + 收/支/净额 */
+@Composable
+private fun IncomeExpenseRow(label: String, incomeCents: Long, expenseCents: Long) {
+    val net = incomeCents - expenseCents
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("收 ${formatMoney(incomeCents)}", color = Color(0xFF66BB6A), style = MaterialTheme.typography.bodySmall)
+            Text("支 ${formatMoney(expenseCents)}", color = Color(0xFFEF5350), style = MaterialTheme.typography.bodySmall)
+            Text(
+                if (net >= 0) "+${formatMoney(net)}" else formatMoney(net),
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
