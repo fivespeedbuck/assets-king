@@ -71,6 +71,12 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         if (content.isBlank() && title.isNullOrBlank()) return
 
         // 白名单挡不住微信——它必须放行（要收支付通知），但聊天消息远多于付款。
+        // 聊天消息不进流水：真机取证——微信支付推 VPushChannel_1，聊天走
+        // message_channel_new_id 且 category=msg。聊天内容带"75元一斤"会被当成
+        // 金额冲进待确认箱（用户实报），按通道拦掉，不能靠文本判断。
+        if (sbn.notification.category == Notification.CATEGORY_MESSAGE) return
+        if (sbn.packageName == "com.tencent.mm" && sbn.notification.channelId == "message_channel_new_id") return
+
         // 解析不出金额的直接不入库，否则一天几百条聊天记录白占数据库。
         if (NotificationParser.parse(content, title).amountCents == null) return
 
