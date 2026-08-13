@@ -36,17 +36,51 @@ abstract class AssetsKingDatabase : RoomDatabase() {
         @Volatile private var instance: AssetsKingDatabase? = null
 
         /**
-         * v9→v10 是最后一次允许清库的版本：显式删除全部旧表（v9 数据为测试数据），
-         * Room 迁移完成后按新 schema 重建。
+         * v9→v10 是最后一次允许清库的版本：DROP 全部旧表（v9 数据为测试数据）后
+         * 按新 schema 重建（DDL 与 Room 生成的 createAllTables 完全一致，迁移后校验才能通过）。
          * 从 v11 起必须手写 Migration——没有 destructive fallback，
          * 缺迁移会拒绝启动（抛异常），绝不可能静默清掉真实负债数据。
          */
         private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                // 1. 删除 v9 全部旧表（goals 永久删除，其余重建）
                 listOf(
                     "goals", "accounts", "transactions", "transfers", "raw_notifications",
                     "budgets", "loan_plans", "recurring_rules", "snapshots", "custom_categories"
-                ).forEach { db.execSQL("DROP TABLE IF EXISTS $it") }
+                ).forEach { db.execSQL("DROP TABLE IF EXISTS `$it`") }
+                listOf(
+                    "index_accounts_cardTail", "index_transactions_accountId", "index_transactions_occurredAt",
+                    "index_transfers_fromAccountId", "index_transfers_toAccountId", "index_transfers_occurredAt",
+                    "index_raw_notifications_packageName", "index_raw_notifications_postedAt", "index_raw_notifications_status",
+                    "index_loan_plans_accountId", "index_snapshots_dateEpochDay"
+                ).forEach { db.execSQL("DROP INDEX IF EXISTS `$it`") }
+
+                // 2. 按新 schema 重建（复制自 Room 生成的 createAllTables，勿手改）
+                db.execSQL("CREATE TABLE IF NOT EXISTS `accounts` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `type` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `cardTail` TEXT, `balanceStatus` TEXT NOT NULL, `lastCheckedAt` INTEGER, `groupName` TEXT, `statementDay` INTEGER, `dueDay` INTEGER, `creditLimitCents` INTEGER NOT NULL, `statementOriginalDueCents` INTEGER NOT NULL, `pendingCents` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_accounts_cardTail` ON `accounts` (`cardTail`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `transactions` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `type` TEXT NOT NULL, `category` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `merchant` TEXT, `note` TEXT, `status` TEXT NOT NULL, `isReimbursable` INTEGER NOT NULL, `recurringRuleId` TEXT, `principalCents` INTEGER NOT NULL, `interestCents` INTEGER NOT NULL, `feeCents` INTEGER NOT NULL, `loanPlanId` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transactions_accountId` ON `transactions` (`accountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transactions_occurredAt` ON `transactions` (`occurredAt`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `transfers` (`id` TEXT NOT NULL, `fromAccountId` TEXT NOT NULL, `toAccountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `occurredAt` INTEGER NOT NULL, `note` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transfers_fromAccountId` ON `transfers` (`fromAccountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transfers_toAccountId` ON `transfers` (`toAccountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_transfers_occurredAt` ON `transfers` (`occurredAt`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `raw_notifications` (`id` TEXT NOT NULL, `packageName` TEXT NOT NULL, `sourceLabel` TEXT, `title` TEXT, `content` TEXT NOT NULL, `postedAt` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `processingNote` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_raw_notifications_packageName` ON `raw_notifications` (`packageName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_raw_notifications_postedAt` ON `raw_notifications` (`postedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_raw_notifications_status` ON `raw_notifications` (`status`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `budgets` (`id` TEXT NOT NULL, `category` TEXT NOT NULL, `monthlyLimitCents` INTEGER NOT NULL, `month` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `loan_plans` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `principalCents` INTEGER NOT NULL, `startDateEpochDay` INTEGER NOT NULL, `repaymentMethod` TEXT NOT NULL, `installmentsJson` TEXT NOT NULL, `annualRateBps` INTEGER NOT NULL, `remainingPrincipalCents` INTEGER NOT NULL, `earlyRepaidCents` INTEGER NOT NULL, `repaymentDay` INTEGER, `status` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_loan_plans_accountId` ON `loan_plans` (`accountId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `recurring_rules` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `type` TEXT NOT NULL, `category` TEXT NOT NULL, `merchant` TEXT, `note` TEXT, `interval` TEXT NOT NULL, `nextRunAt` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `isSubscription` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `snapshots` (`id` TEXT NOT NULL, `dateEpochDay` INTEGER NOT NULL, `totalAssets` INTEGER NOT NULL, `totalDebts` INTEGER NOT NULL, `netWorth` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_snapshots_dateEpochDay` ON `snapshots` (`dateEpochDay`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `custom_categories` (`name` TEXT NOT NULL, PRIMARY KEY(`name`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `credit_card_installments` (`id` TEXT NOT NULL, `cardAccountId` TEXT NOT NULL, `label` TEXT NOT NULL, `originalPrincipalCents` INTEGER NOT NULL, `remainingPrincipalCents` INTEGER NOT NULL, `monthlyPaymentCents` INTEGER NOT NULL, `feeCentsPerPeriod` INTEGER NOT NULL, `periodsRemaining` INTEGER NOT NULL, `startDateEpochDay` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installments_cardAccountId` ON `credit_card_installments` (`cardAccountId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `windfalls` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `expectedAmountCents` INTEGER NOT NULL, `expectedDateEpochDay` INTEGER NOT NULL, `plannedDebtPaymentCents` INTEGER NOT NULL, `status` TEXT NOT NULL, `receivedAmountCents` INTEGER NOT NULL, `receivedAtEpochDay` INTEGER, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_windfalls_status` ON `windfalls` (`status`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `month_debt_anchors` (`yearMonth` TEXT NOT NULL, `totalDebtCents` INTEGER NOT NULL, PRIMARY KEY(`yearMonth`))")
             }
         }
 
