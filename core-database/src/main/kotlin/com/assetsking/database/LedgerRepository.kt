@@ -546,6 +546,7 @@ class LedgerRepository(
             fallbackPrincipalCents = (plan.principalCents - plan.earlyRepaidCents).coerceAtLeast(0),
             annualRateBps = plan.annualRateBps,
             repaymentDay = plan.repaymentDay,
+            status = plan.status,
             installments = jsonToInstallments(plan.installmentsJson).map {
                 com.assetsking.ledger.V5InstallmentInput(
                     dueDateEpochDay = it.dueDateEpochDay,
@@ -826,8 +827,11 @@ class LedgerRepository(
     // ── Loan 分期 JSON 序列化（core-database 不能依赖 app，此处自持副本）──
 
     private fun remainingEffective(plan: LoanPlanEntity): Long =
-        if (plan.remainingPrincipalCents > 0) plan.remainingPrincipalCents
-        else (plan.principalCents - plan.earlyRepaidCents).coerceAtLeast(0)
+        com.assetsking.ledger.effectiveRemainingPrincipalCents(
+            plan.remainingPrincipalCents,
+            (plan.principalCents - plan.earlyRepaidCents).coerceAtLeast(0),
+            plan.status
+        )
 
     private fun installmentsToJson(list: List<LoanInstallment>): String =
         JSONArray().apply {

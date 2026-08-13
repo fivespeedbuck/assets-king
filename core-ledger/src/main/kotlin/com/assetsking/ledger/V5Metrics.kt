@@ -32,11 +32,21 @@ data class V5PlanInput(
     val fallbackPrincipalCents: Long,   // principalCents - earlyRepaidCents，remaining=0 时回退
     val annualRateBps: Int,
     val repaymentDay: Int?,
+    val status: String = "ACTIVE",      // ACTIVE / PAID_OFF；结清后剩余本金必须为 0，不回退
     val installments: List<V5InstallmentInput>
 ) {
     val remainingEffectiveCents: Long
-        get() = if (remainingPrincipalCents > 0) remainingPrincipalCents else fallbackPrincipalCents
+        get() = effectiveRemainingPrincipalCents(remainingPrincipalCents, fallbackPrincipalCents, status)
 }
+
+/** 剩余有效本金唯一计算点——LedgerRepository.remainingEffective() 复用同一份，禁止另起公式。
+ *  PAID_OFF 结清后直接为 0：不能因为 earlyRepaidCents 未同步而回退出原始本金（曾导致结清后负债复活）。 */
+fun effectiveRemainingPrincipalCents(remainingPrincipalCents: Long, fallbackPrincipalCents: Long, status: String): Long =
+    when {
+        status == "PAID_OFF" -> 0
+        remainingPrincipalCents > 0 -> remainingPrincipalCents
+        else -> fallbackPrincipalCents
+    }
 
 // 信用卡分期：仅展示与预测，绝不进 totalDebt（已在卡 balance 内）
 data class V5CardInstallmentInput(

@@ -30,9 +30,11 @@ class V5MetricsTest {
     private fun plan(
         accountId: String = "huabei",
         remaining: Long = 1_000_000,
+        fallback: Long = remaining,
+        status: String = "ACTIVE",
         installments: List<V5InstallmentInput> = emptyList()
-    ) = V5PlanInput(accountId, remaining, fallbackPrincipalCents = remaining, annualRateBps = 450,
-        repaymentDay = 20, installments = installments)
+    ) = V5PlanInput(accountId, remaining, fallbackPrincipalCents = fallback, annualRateBps = 450,
+        repaymentDay = 20, status = status, installments = installments)
 
     private fun metrics(
         accounts: List<V5AccountInput> = emptyList(),
@@ -238,6 +240,18 @@ class V5MetricsTest {
         )
         assertEquals(500_000, accountOnly.totalDebtCents)        // 无计划覆盖的 LOAN 账户计入
         assertEquals(500_000, accountOnly.loanAccountDebtCents)
+    }
+
+    // ── 回归：结清贷款不能让负债复活 ──
+    // settleLoanPlan() 只清零 remainingPrincipalCents + 置 PAID_OFF，不会同步 earlyRepaidCents。
+    // 若 fallback 分支不认 status，没提前还过款的贷款（earlyRepaid=0，最常见）结清后会回退成原始本金。
+    @Test
+    fun `paid off loan plan contributes zero debt even though fallback would imply full principal`() {
+        val m = metrics(
+            plans = listOf(plan(remaining = 0, fallback = 1_000_000, status = "PAID_OFF"))
+        )
+        assertEquals(0, m.loanPlanDebtCents)
+        assertEquals(0, m.totalDebtCents)
     }
 
     // ── 6 阶段全分支 ──
