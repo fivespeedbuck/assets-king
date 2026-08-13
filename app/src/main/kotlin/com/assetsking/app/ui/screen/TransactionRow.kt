@@ -78,6 +78,17 @@ fun AccountRow(account: AccountEntity, onClick: () -> Unit = {}) {
     }
 }
 
+private fun txTypeLabel(type: String): String = when (type) {
+    "EXPENSE" -> "支出"
+    "INCOME" -> "收入"
+    "REFUND" -> "退款"
+    "FEE" -> "手续费"
+    "LOAN_DISBURSEMENT" -> "借款到账"
+    "LOAN_PAYMENT" -> "贷款还款"
+    "LOAN_PREPAYMENT" -> "提前还款"
+    else -> type
+}
+
 @Composable
 fun TransactionRow(
     transaction: TransactionEntity,
@@ -88,20 +99,42 @@ fun TransactionRow(
     var menuExpanded by remember { mutableStateOf(false) }
     val category = runCatching { TransactionCategory.valueOf(transaction.category) }
         .getOrDefault(TransactionCategory.UNCATEGORIZED)
+    val isLoanTx = transaction.type == "LOAN_DISBURSEMENT" || transaction.type == "LOAN_PAYMENT" || transaction.type == "LOAN_PREPAYMENT"
+    // V5：借款/还款/提前还款流水不可编辑分类（与贷款计划联动），只读展示
+    val title = when {
+        transaction.type == "LOAN_DISBURSEMENT" -> "借款到账"
+        transaction.type == "LOAN_PAYMENT" -> "贷款还款"
+        transaction.type == "LOAN_PREPAYMENT" -> "提前还款"
+        else -> transaction.merchant ?: categoryLabel(category)
+    }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    transaction.merchant ?: categoryLabel(category),
+                    title,
                     fontWeight = FontWeight.Medium,
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    "$accountName · ${transaction.type} · ${formatTime(transaction.occurredAt)}",
+                    "$accountName · ${txTypeLabel(transaction.type)} · ${formatTime(transaction.occurredAt)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (transaction.type == "LOAN_PAYMENT" &&
+                    (transaction.principalCents > 0 || transaction.interestCents > 0 || transaction.feeCents > 0)
+                ) {
+                    val split = buildString {
+                        if (transaction.principalCents > 0) append("本金 ${formatMoney(transaction.principalCents)}")
+                        if (transaction.interestCents > 0) append(" · 利息 ${formatMoney(transaction.interestCents)}")
+                        if (transaction.feeCents > 0) append(" · 费 ${formatMoney(transaction.feeCents)}")
+                    }
+                    Text(
+                        split,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Text(
                 formatMoney(transaction.amountCents),
@@ -110,19 +143,21 @@ fun TransactionRow(
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
-        Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
-            Text(
-                categoryLabel(category),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { menuExpanded = true }
-            )
-            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                TransactionCategory.entries.forEach { cat ->
-                    DropdownMenuItem(
-                        text = { Text(categoryLabel(cat)) },
-                        onClick = { menuExpanded = false; onCategoryChange(transaction.id, cat) }
-                    )
+        if (!isLoanTx) {
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                Text(
+                    categoryLabel(category),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { menuExpanded = true }
+                )
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    TransactionCategory.entries.forEach { cat ->
+                        DropdownMenuItem(
+                            text = { Text(categoryLabel(cat)) },
+                            onClick = { menuExpanded = false; onCategoryChange(transaction.id, cat) }
+                        )
+                    }
                 }
             }
         }

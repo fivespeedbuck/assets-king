@@ -148,15 +148,45 @@ interface SnapshotDao {
 }
 
 @Dao
-interface GoalDao {
-    @Query("SELECT * FROM goals ORDER BY createdAt DESC LIMIT 1")
-    fun observeLatest(): Flow<GoalEntity?>
+interface CreditCardInstallmentDao {
+    @Query("SELECT * FROM credit_card_installments ORDER BY startDateEpochDay DESC")
+    fun observeAll(): Flow<List<CreditCardInstallmentEntity>>
+
+    @Query("SELECT * FROM credit_card_installments WHERE id = :id")
+    suspend fun findById(id: String): CreditCardInstallmentEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(goal: GoalEntity)
+    suspend fun upsert(installment: CreditCardInstallmentEntity)
 
-    @Query("DELETE FROM goals WHERE id = :id")
+    @Query("DELETE FROM credit_card_installments WHERE id = :id")
     suspend fun deleteById(id: String)
+}
+
+@Dao
+interface WindfallDao {
+    @Query("SELECT * FROM windfalls ORDER BY expectedDateEpochDay")
+    fun observeAll(): Flow<List<WindfallEntity>>
+
+    @Query("SELECT * FROM windfalls WHERE id = :id")
+    suspend fun findById(id: String): WindfallEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(windfall: WindfallEntity)
+
+    @Query("DELETE FROM windfalls WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface MonthDebtAnchorDao {
+    @Query("SELECT * FROM month_debt_anchors ORDER BY yearMonth DESC")
+    fun observeAll(): Flow<List<MonthDebtAnchorEntity>>
+
+    @Query("SELECT * FROM month_debt_anchors WHERE yearMonth = :yearMonth")
+    suspend fun findByYearMonth(yearMonth: String): MonthDebtAnchorEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(anchor: MonthDebtAnchorEntity)
 }
 
 @Dao

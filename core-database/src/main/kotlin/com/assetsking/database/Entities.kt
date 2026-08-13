@@ -16,7 +16,9 @@ data class AccountEntity(
     val groupName: String? = null,      // "资产", "负债"
     val statementDay: Int? = null,      // 账单日 (1-28)
     val dueDay: Int? = null,            // 还款日 (1-31)
-    val creditLimitCents: Long = 0      // 信用额度，0=无
+    val creditLimitCents: Long = 0,     // 信用额度，0=无
+    val statementOriginalDueCents: Long = 0, // V5 本期待还【原始账单金额】：录账单上的数字后勿重录；已还部分由系统按账期扣减（方案A）
+    val pendingCents: Long = 0          // V5 银行 pending 消费：单独展示，不计正式总负债
 )
 
 @Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt")])
@@ -31,7 +33,11 @@ data class TransactionEntity(
     val note: String? = null,
     val status: String = "CONFIRMED",
     val isReimbursable: Boolean = false,
-    val recurringRuleId: String? = null  // 关联的周期账单ID
+    val recurringRuleId: String? = null, // 关联的周期账单ID
+    val principalCents: Long = 0,        // LOAN_PAYMENT: 本金部分
+    val interestCents: Long = 0,         // LOAN_PAYMENT: 利息部分
+    val feeCents: Long = 0,              // LOAN_PAYMENT: 手续费部分
+    val loanPlanId: String? = null       // LOAN_* 关联的贷款计划，删除回滚用
 )
 
 @Entity(tableName = "transfers", indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt")])
@@ -76,7 +82,8 @@ data class LoanPlanEntity(
     val annualRateBps: Int = 0,   // 年利率，基点（如 4.5% = 450）
     val remainingPrincipalCents: Long = 0,  // 剩余本金，0=未设置则默认等于本金
     val earlyRepaidCents: Long = 0,  // 已提前还款金额
-    val repaymentDay: Int? = null   // 每月还款日（几号）
+    val repaymentDay: Int? = null,   // 每月还款日（几号）
+    val status: String = "ACTIVE"    // ACTIVE / PAID_OFF（提前结清后取消未来计划）
 )
 
 @Entity(tableName = "snapshots", indices = [Index("dateEpochDay")])
@@ -93,13 +100,38 @@ data class CustomCategoryEntity(
     @PrimaryKey val name: String     // e.g. "宠物", "旅行"
 )
 
-@Entity(tableName = "goals")
-data class GoalEntity(
+// V5 信用卡分期：只做展示与未来预测，绝不进 totalDebt（已在卡 balance 内）
+@Entity(tableName = "credit_card_installments", indices = [Index("cardAccountId")])
+data class CreditCardInstallmentEntity(
     @PrimaryKey val id: String,
-    val targetCents: Long,
-    val deadlineEpochDay: Long,  // days since epoch
-    val label: String = "净资产目标",
-    val createdAt: Long = System.currentTimeMillis()
+    val cardAccountId: String,
+    val label: String,                 // 分期名称，如 "iPhone 24期"
+    val originalPrincipalCents: Long,
+    val remainingPrincipalCents: Long,
+    val monthlyPaymentCents: Long,     // 每期还款（含利息）
+    val feeCentsPerPeriod: Long = 0,
+    val periodsRemaining: Int,
+    val startDateEpochDay: Long
+)
+
+// V5 年终奖 Windfall：EXPECTED 不算现金；RECEIVED 才入账
+@Entity(tableName = "windfalls", indices = [Index("status")])
+data class WindfallEntity(
+    @PrimaryKey val id: String,
+    val name: String,                  // "2026年终奖"
+    val expectedAmountCents: Long,
+    val expectedDateEpochDay: Long,
+    val plannedDebtPaymentCents: Long = 0, // 计划用于降债的金额（指引，不自动执行）
+    val status: String,                // WindfallStatus.name
+    val receivedAmountCents: Long = 0, // 到账实际金额
+    val receivedAtEpochDay: Long? = null
+)
+
+// V5 月度负债锚点：净降债 = 锚点 − 当前总负债
+@Entity(tableName = "month_debt_anchors")
+data class MonthDebtAnchorEntity(
+    @PrimaryKey val yearMonth: String, // "2026-08"
+    val totalDebtCents: Long           // 当月首个建档日的 V5 总负债
 )
 
 @Entity(tableName = "recurring_rules")

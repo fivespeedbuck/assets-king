@@ -60,4 +60,25 @@ class LedgerTest {
         assertEquals(Money.yuan(970), ledger.account("cmb").balance)
         assertEquals(Money.yuan(330), ledger.account("cgb").balance)
     }
+
+    @Test
+    fun `loan disbursement increases asset cash`() {
+        val ledger = ledger()
+        ledger.post(Transaction("t1", "cmb", Money.yuan(300), TransactionType.LOAN_DISBURSEMENT, 1))
+        assertEquals(Money.yuan(1300), ledger.account("cmb").balance)
+    }
+
+    @Test
+    fun `loan payment decreases asset cash`() {
+        val ledger = ledger()
+        ledger.post(Transaction("t1", "cmb", Money.yuan(110), TransactionType.LOAN_PAYMENT, 1))
+        assertEquals(Money.yuan(890), ledger.account("cmb").balance)
+    }
+
+    @Test
+    fun `loan prepayment decreases asset cash`() {
+        val ledger = ledger()
+        ledger.post(Transaction("t1", "cmb", Money.yuan(300), TransactionType.LOAN_PREPAYMENT, 1))
+        assertEquals(Money.yuan(700), ledger.account("cmb").balance)
+    }
 }

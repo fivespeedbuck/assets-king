@@ -15,13 +15,16 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
+import com.assetsking.app.RecordMode
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
+import com.assetsking.database.CreditCardInstallmentEntity
 import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.WindfallEntity
 import com.assetsking.ui.theme.AssetsKingTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -32,9 +35,17 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val loanPlans by model.loanPlans.collectAsStateWithLifecycle(initialValue = emptyList<LoanPlanEntity>())
     val recurringRules by model.recurringRules.collectAsStateWithLifecycle(initialValue = emptyList<RecurringRuleEntity>())
     val customCategories by model.customCategories.collectAsStateWithLifecycle(initialValue = emptyList<CustomCategoryEntity>())
+    val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
+    val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
+    val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
+    val necessaryLivingCents by model.necessaryLivingCents.collectAsStateWithLifecycle(initialValue = 0L)
+    val optionalCategories by model.optionalCategories.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val context = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
+    var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
+    var recordInitialPlanId by remember { mutableStateOf<String?>(null) }
     var showPending by remember { mutableStateOf(false) }
+    var showWindfall by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
@@ -60,7 +71,11 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         floatingActionButton = {
             if (selectedTab == 0) {
                 FloatingActionButton(
-                    onClick = { showSheet = true },
+                    onClick = {
+                        recordInitialMode = RecordMode.EXPENSE
+                        recordInitialPlanId = null
+                        showSheet = true
+                    },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 ) { Text("＋", style = MaterialTheme.typography.headlineSmall) }
@@ -77,16 +92,32 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onShowPending = { showPending = it },
                 onEditAccount = { editingAccount = it },
                 onEditTransaction = { editingTransaction = it },
-                onShowReconciliation = { showReconciliation = true }
+                onShowReconciliation = { showReconciliation = true },
+                onShowWindfall = { showWindfall = true }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
-                StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts)
+                StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts, v5 = state.v5)
             }
             2 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 LoanScreen(
                     plans = loanPlans, accounts = state.accounts,
                     onSave = { model.saveLoanPlan(it) },
-                    onDelete = { model.deleteLoanPlan(it) }
+                    onDelete = { model.deleteLoanPlan(it) },
+                    v5 = state.v5,
+                    cardInstallments = cardInstallments,
+                    onSaveInstallment = { model.saveCardInstallment(it) },
+                    onDeleteInstallment = { model.deleteCardInstallment(it) },
+                    onRecordPayment = { plan ->
+                        recordInitialMode = RecordMode.LOAN_PAYMENT
+                        recordInitialPlanId = plan.id
+                        showSheet = true
+                    },
+                    onPrepay = { cashId, planId, principalCents, note ->
+                        model.addLoanPrepayment(cashId, planId, principalCents, note)
+                    },
+                    onSettle = { cashId, planId, principalCents, interestCents, feeCents, note ->
+                        model.settleLoanPlan(cashId, planId, principalCents, interestCents, feeCents, note)
+                    }
                 )
             }
             3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -99,7 +130,13 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     onSaveRecurring = { model.saveRecurringRule(it) },
                     onDeleteRecurring = { model.deleteRecurringRule(it) },
                     onAddCustomCategory = { model.addCustomCategory(it) },
-                    onDeleteCustomCategory = { model.deleteCustomCategory(it) }
+                    onDeleteCustomCategory = { model.deleteCustomCategory(it) },
+                    monthlyIncomeCents = monthlyIncomeCents,
+                    necessaryLivingCents = necessaryLivingCents,
+                    onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
+                    onSetNecessaryLiving = { model.setNecessaryLivingCents(it) },
+                    optionalCategories = optionalCategories,
+                    onSetOptionalCategories = { model.setOptionalCategories(it) }
                 )
             }
         }
@@ -118,11 +155,36 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 model.addTransfer(from, to, amount, note)
                 showSheet = false
             },
+            onSaveLoanDisbursement = { aid, amount, planId, note, occurredAt ->
+                model.addLoanDisbursement(aid, amount, planId, note, occurredAt)
+                showSheet = false
+            },
+            onSaveLoanPayment = { aid, planId, total, principal, interest, fee, note, occurredAt ->
+                model.addLoanPayment(aid, planId, total, principal, interest, fee, note, occurredAt)
+                showSheet = false
+            },
             onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit ->
                 model.addAccount(name, type, balance, card, stmtDay, dueDay, limit)
             },
             onDismiss = { showSheet = false },
-            customCategoryNames = customCategories.map { it.name }
+            loanPlans = loanPlans,
+            customCategoryNames = customCategories.map { it.name },
+            initialMode = recordInitialMode,
+            initialPlanId = recordInitialPlanId
+        )
+    }
+
+    if (showWindfall) {
+        WindfallSheet(
+            windfalls = windfalls,
+            accounts = state.accounts,
+            currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
+            onSave = { model.saveWindfall(it) },
+            onDelete = { model.deleteWindfall(it) },
+            onMarkReceived = { id, actualCents, cashAccountId ->
+                model.markWindfallReceived(id, actualCents, cashAccountId)
+            },
+            onDismiss = { showWindfall = false }
         )
     }
 

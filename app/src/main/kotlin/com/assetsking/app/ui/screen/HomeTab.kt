@@ -32,12 +32,16 @@ import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.ledger.V5Metrics
+import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.EmptyState
 import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.SectionHeader
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+
+private val Green = Color(0xFF66BB6A)
 
 @Composable
 fun HomeTab(
@@ -53,7 +57,8 @@ fun HomeTab(
     onShowPending: (Boolean) -> Unit,
     onEditAccount: (AccountEntity?) -> Unit,
     onEditTransaction: (TransactionEntity?) -> Unit,
-    onShowReconciliation: () -> Unit = {}
+    onShowReconciliation: () -> Unit = {},
+    onShowWindfall: () -> Unit = {}
 ) {
     var txFilter by remember { mutableStateOf("ALL") }
     val reconciliationIntervalMs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
@@ -62,6 +67,7 @@ fun HomeTab(
         val lastChecked = account.lastCheckedAt ?: 0L
         System.currentTimeMillis() - lastChecked > reconciliationIntervalMs
     }
+    val v5 = state.v5
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -88,48 +94,12 @@ fun HomeTab(
             }
         }
 
-        // Net worth overview
-        item {
-            GlassCard {
-                Text(
-                    text = "当前净资产",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = formatMoney(state.overview.netWorth),
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "资产 ${formatMoney(state.overview.totalAssets)}  ·  待还 ${formatMoney(state.overview.totalDebts)}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (state.unprocessedNotifications > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "待处理通知 ${state.unprocessedNotifications} 条 — 点击处理",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.clickable {
-                            model.processNotifications()
-                            onShowPending(true)
-                        }
-                    )
-                }
-                if (state.pendingItems.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "待确认 ${state.pendingItems.size} 条 — 点击查看",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { onShowPending(true) }
-                    )
-                }
-            }
+        // ── V5 还债驾驶舱 ──
+        if (v5 != null) {
+            item { V5DashboardCard(v5, state, model, onShowPending) }
+            item { V5SixGrid(v5) }
+            item { V5WindfallCard(v5, onShowWindfall) }
+            item { V5FutureCard(v5) }
         }
 
         // Reconciliation reminder
@@ -159,37 +129,22 @@ fun HomeTab(
         items(state.accounts, key = { it.id }) { account ->
             Column {
                 AccountRow(account = account, onClick = { onEditAccount(account) })
-                // 信用卡本期应还 / 未出账单
-                if (account.type == com.assetsking.model.AccountType.CREDIT.name && account.statementDay != null) {
-                    val now = System.currentTimeMillis()
-                    val cal = java.util.Calendar.getInstance()
-                    cal.timeInMillis = now
-                    val today = cal.get(java.util.Calendar.DAY_OF_MONTH)
-                    val stmtDay = account.statementDay!!
-                    // 计算上个出账日和本出账日
-                    cal.set(java.util.Calendar.DAY_OF_MONTH, stmtDay)
-                    if (today < stmtDay) cal.add(java.util.Calendar.MONTH, -1)
-                    cal.set(java.util.Calendar.HOUR_OF_DAY, 0); cal.set(java.util.Calendar.MINUTE, 0); cal.set(java.util.Calendar.SECOND, 0); cal.set(java.util.Calendar.MILLISECOND, 0)
-                    val lastStmt = cal.timeInMillis
-                    cal.add(java.util.Calendar.MONTH, 1)
-                    val thisStmt = cal.timeInMillis
-                    val stmtTxs = state.transactions.filter { tx -> tx.accountId == account.id && tx.occurredAt in lastStmt..thisStmt }
-                    val stmtAmount = stmtTxs.filter { it.type == "EXPENSE" }.sumOf { it.amountCents }
-                    val unbilledTxs = state.transactions.filter { tx -> tx.accountId == account.id && tx.occurredAt >= thisStmt }
-                    val unbilledAmount = unbilledTxs.filter { it.type == "EXPENSE" }.sumOf { it.amountCents }
-                    // 本期已还 = 本出账周期内转入该信用卡的金额
-                    val repaid = state.transfers
-                        .filter { it.toAccountId == account.id && it.occurredAt in lastStmt..thisStmt }
-                        .sumOf { it.amountCents }
-                    if (stmtAmount > 0 || unbilledAmount > 0 || repaid > 0) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(start = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            if (stmtAmount > 0) Text("本期应还 ${formatMoney(stmtAmount)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                            if (repaid > 0) Text("本期已还 ${formatMoney(repaid)}", style = MaterialTheme.typography.labelSmall, color = Color(0xFF66BB6A))
-                            if (unbilledAmount > 0) Text("未出账单 ${formatMoney(unbilledAmount)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // V5：信用卡剩余应还（统一口径：原始账单−已还）/ Pending
+                val remainingDue = v5?.cardRemainingDueByCard?.get(account.id) ?: 0L
+                if (account.type == com.assetsking.model.AccountType.CREDIT.name &&
+                    (remainingDue > 0 || account.pendingCents > 0)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        if (remainingDue > 0) {
+                            Text("本期待还 ${formatMoney(remainingDue)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            if (account.statementOriginalDueCents > remainingDue) {
+                                Text("账单 ${formatMoney(account.statementOriginalDueCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
+                        if (account.pendingCents > 0) Text("Pending ${formatMoney(account.pendingCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -225,7 +180,7 @@ fun HomeTab(
             )
         }
         item {
-            com.assetsking.ui.component.ChipRow(
+            ChipRow(
                 items = listOf("ALL", "EXPENSE", "INCOME"),
                 selected = txFilter,
                 onSelected = { txFilter = it },
@@ -255,5 +210,208 @@ fun HomeTab(
                 )
             }
         }
+    }
+}
+
+// ── V5 驾驶舱组件 ──
+
+@Composable
+private fun V5DashboardCard(
+    v5: V5Metrics,
+    state: LedgerUiState,
+    model: LedgerViewModel,
+    onShowPending: (Boolean) -> Unit
+) {
+    GlassCard {
+        Text(
+            text = "当前总负债",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = formatMoney(v5.totalDebtCents),
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.error
+        )
+        Spacer(Modifier.height(8.dp))
+        val breakdown = buildString {
+            append("信用卡 ${formatMoney(v5.cardDebtCents)}")
+            if (v5.loanAccountDebtCents > 0) append(" · 贷款账户 ${formatMoney(v5.loanAccountDebtCents)}")
+            if (v5.loanPlanDebtCents > 0) append(" · 贷款计划 ${formatMoney(v5.loanPlanDebtCents)}")
+            if (v5.accruedInterestCents > 0) append(" · 已发生利息 ${formatMoney(v5.accruedInterestCents)}")
+        }
+        Text(
+            text = breakdown,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        when {
+            v5.anchorTotalDebtCents == null -> Text(
+                "今日起建档 · 下月起计算净降债",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            v5.netDebtReductionCents > 0 -> Text(
+                "本月净降债 +${formatMoney(v5.netDebtReductionCents)}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = Green
+            )
+            v5.netDebtReductionCents < 0 -> Text(
+                "本月负债净增 ${formatMoney(-v5.netDebtReductionCents)}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+            )
+            else -> Text(
+                "本月负债持平",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "${v5TrendLabel(v5.trend)} · 阶段：${v5StageLabel(v5.stage)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        if (v5.needsAttention) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "注意：负债没有在下降",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        if (state.unprocessedNotifications > 0) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "待处理通知 ${state.unprocessedNotifications} 条 — 点击处理",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.clickable {
+                    model.processNotifications()
+                    onShowPending(true)
+                }
+            )
+        }
+        if (state.pendingItems.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "待确认 ${state.pendingItems.size} 条 — 点击查看",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onShowPending(true) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun V5SixGrid(v5: V5Metrics) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCell("本月必须还", formatMoney(v5.mustRepayCents), MaterialTheme.colorScheme.error, Modifier.weight(1f))
+            MetricCell(
+                "资金缺口",
+                if (v5.monthlySurvivalGapCents < 0) "缺 ${formatMoney(-v5.monthlySurvivalGapCents)}" else "+${formatMoney(v5.monthlySurvivalGapCents)}",
+                if (v5.monthlySurvivalGapCents < 0) MaterialTheme.colorScheme.error else Green,
+                Modifier.weight(1f)
+            )
+            MetricCell(
+                "新增借款",
+                formatMoney(v5.newBorrowingCents),
+                if (v5.newBorrowingCents > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                Modifier.weight(1f)
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCell("自由消费", formatMoney(v5.freeSpendingCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
+            MetricCell("今日上限", formatMoney(v5.dailySafeSpendCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
+            MetricCell(
+                "稳定覆盖",
+                if (v5.stableDebtCoverageCents >= 0) "+${formatMoney(v5.stableDebtCoverageCents)}" else "缺 ${formatMoney(-v5.stableDebtCoverageCents)}",
+                if (v5.stableDebtCoverageCents >= 0) Green else MaterialTheme.colorScheme.error,
+                Modifier.weight(1f)
+            )
+        }
+        if (v5.optionalSpentCents > 0) {
+            Text(
+                "本月非必要消费已花 ${formatMoney(v5.optionalSpentCents)}（已计入上方缺口）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (v5.freeSpendingCents == 0L && v5.monthlySurvivalGapCents < 0) {
+            Text(
+                "本月存在资金缺口，建议暂停非必要消费",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun MetricCell(title: String, value: String, valueColor: Color, modifier: Modifier = Modifier) {
+    GlassCard(modifier = modifier, contentPadding = Modifier.padding(12.dp)) {
+        Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = valueColor
+        )
+    }
+}
+
+@Composable
+private fun V5WindfallCard(v5: V5Metrics, onShowWindfall: () -> Unit) {
+    GlassCard {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("年终奖节点", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                when {
+                    v5.runwayToWindfallDays != null -> {
+                        Text("距离到账约 ${v5.runwayToWindfallDays} 天", style = MaterialTheme.typography.bodySmall)
+                        v5.projectedDebtAtWindfallCents?.let {
+                            Text("到账前预计总负债 ${formatMoney(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        v5.projectedDebtAfterWindfallCents?.let {
+                            Text("按计划还债后预计 ${formatMoney(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    v5.stage == com.assetsking.ledger.DebtStage.BONUS_PAYDOWN -> {
+                        Text("年终奖已到账，去分配降债", style = MaterialTheme.typography.bodySmall, color = Green)
+                    }
+                    else -> Text("尚未设置年终奖", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            TextButton(onClick = onShowWindfall) { Text("管理") }
+        }
+    }
+}
+
+@Composable
+private fun V5FutureCard(v5: V5Metrics) {
+    GlassCard {
+        Text("未来应还与预测", fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text("未来7天应还 ${formatMoney(v5.due7DaysCents)} · 未来30天应还 ${formatMoney(v5.due30DaysCents)}", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            v5.projectedPayoffMonths?.let { "按当前轨迹预计 ${it} 个月后清债" } ?: "按当前轨迹 24 个月内无法清债",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (v5.projectedPayoffMonths != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+        )
     }
 }

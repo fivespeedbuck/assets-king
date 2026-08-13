@@ -68,7 +68,13 @@ fun SettingsScreen(
     onSaveRecurring: (RecurringRuleEntity) -> Unit,
     onDeleteRecurring: (String) -> Unit,
     onAddCustomCategory: (String) -> Unit,
-    onDeleteCustomCategory: (String) -> Unit
+    onDeleteCustomCategory: (String) -> Unit,
+    monthlyIncomeCents: Long = 0,
+    necessaryLivingCents: Long = 0,
+    onSetMonthlyIncome: (Long) -> Unit = {},
+    onSetNecessaryLiving: (Long) -> Unit = {},
+    optionalCategories: Set<String> = emptySet(),
+    onSetOptionalCategories: (Set<String>) -> Unit = {}
 ) {
     val context = LocalContext.current
     var showBudgetSheet by remember { mutableStateOf(false) }
@@ -124,6 +130,71 @@ fun SettingsScreen(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ── V5 现金流设置 ──
+        item {
+            var incomeInput by remember {
+                mutableStateOf(if (monthlyIncomeCents > 0) "%.2f".format(monthlyIncomeCents / 100.0) else "")
+            }
+            var necessaryInput by remember {
+                mutableStateOf(if (necessaryLivingCents > 0) "%.2f".format(necessaryLivingCents / 100.0) else "")
+            }
+            Text("V5 现金流设置", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "资金缺口 = 月收入 − 必要生活 − 本月必须还款。这两项是首页驾驶舱的数据基础。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            FormField(
+                value = incomeInput,
+                onValueChange = { incomeInput = it.filter { c -> c.isDigit() || c == '.' } },
+                label = "稳定月收入（工资等）",
+                isAmount = true
+            )
+            Spacer(Modifier.height(8.dp))
+            FormField(
+                value = necessaryInput,
+                onValueChange = { necessaryInput = it.filter { c -> c.isDigit() || c == '.' } },
+                label = "必要生活预算（吃饭/房租/水电/通勤）",
+                isAmount = true
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    runCatching {
+                        java.math.BigDecimal(incomeInput.ifBlank { "0" }).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
+                    }.getOrNull()?.let { onSetMonthlyIncome(it) }
+                    runCatching {
+                        java.math.BigDecimal(necessaryInput.ifBlank { "0" }).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
+                    }.getOrNull()?.let { onSetNecessaryLiving(it) }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("保存现金流设置") }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "非必要消费分类（勾选后，这些分类的支出会计入实际缺口、占用自由消费）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TransactionCategory.entries.chunked(4).forEach { rowCats ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rowCats.forEach { cat ->
+                        androidx.compose.material3.FilterChip(
+                            selected = cat.name in optionalCategories,
+                            onClick = {
+                                onSetOptionalCategories(
+                                    if (cat.name in optionalCategories) optionalCategories - cat.name
+                                    else optionalCategories + cat.name
+                                )
+                            },
+                            label = { Text(categoryLabel(cat)) }
+                        )
+                    }
+                }
+            }
+        }
+
         // ── System Check ──
         val notifListenerOk = NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
         val notifPermOk = if (android.os.Build.VERSION.SDK_INT >= 33)

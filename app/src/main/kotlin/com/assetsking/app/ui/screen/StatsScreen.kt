@@ -30,6 +30,7 @@ import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
+import com.assetsking.ledger.V5Metrics
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
 import com.assetsking.ui.format.categoryLabel
@@ -44,7 +45,8 @@ fun StatsScreen(
     repository: LedgerRepository,
     budgets: List<BudgetEntity>,
     recurringRules: List<RecurringRuleEntity>,
-    accounts: List<AccountEntity>
+    accounts: List<AccountEntity>,
+    v5: V5Metrics? = null
 ) {
     var stats by remember { mutableStateOf<StatsData?>(null) }
 
@@ -74,6 +76,37 @@ fun StatsScreen(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ── V5 本月现金流 ──
+        if (v5 != null) {
+            item {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("本月现金流", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("本月收入", style = MaterialTheme.typography.bodyMedium)
+                        Text("+${formatMoney(v5.incomeActualCents)}", fontWeight = FontWeight.Medium, color = Color(0xFF66BB6A))
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("本月必须还款", style = MaterialTheme.typography.bodyMedium)
+                        Text("-${formatMoney(v5.mustRepayCents)}", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("新增借款（不是收入）", style = MaterialTheme.typography.bodyMedium)
+                        Text("+${formatMoney(v5.newBorrowingCents)}", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("本月净降债", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (v5.netDebtReductionCents >= 0) "+${formatMoney(v5.netDebtReductionCents)}" else formatMoney(v5.netDebtReductionCents),
+                            fontWeight = FontWeight.Medium,
+                            color = if (v5.netDebtReductionCents > 0) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Text("资金缺口 = 收入 − 必要生活 − 必须还款", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider()
+                }
+            }
+        }
+
         // Prediction card
         item {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {

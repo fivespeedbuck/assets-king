@@ -1,6 +1,14 @@
 package com.assetsking.model
 
-enum class TransactionType { EXPENSE, INCOME, REFUND, FEE }
+enum class TransactionType {
+    EXPENSE,
+    INCOME,
+    REFUND,
+    FEE,
+    LOAN_DISBURSEMENT, // 借款到账：现金+、负债+，不是收入
+    LOAN_PAYMENT,      // 贷款还款：现金-、负债-，不是消费
+    LOAN_PREPAYMENT    // 提前还款：只减本金、不标普通期次、不当消费；结清走 settleLoanPlan
+}
 
 enum class TransactionCategory {
     UNCATEGORIZED,

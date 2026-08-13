@@ -4,7 +4,7 @@ import android.app.Application
 import com.assetsking.database.AssetsKingDatabase
 import com.assetsking.database.LedgerRepository
 import com.assetsking.usecase.AddAccountUseCase
-import com.assetsking.usecase.GetOverviewUseCase
+import com.assetsking.usecase.GetV5MetricsUseCase
 import com.assetsking.usecase.ProcessPendingUseCase
 import com.assetsking.usecase.RecordTransactionUseCase
 import com.assetsking.usecase.RecordTransferUseCase
@@ -20,6 +20,6 @@ class AssetsKingApplication : Application() {
     val recordTransfer by lazy { RecordTransferUseCase(repository) }
     val addAccount by lazy { AddAccountUseCase(repository) }
     val updateCategory by lazy { UpdateCategoryUseCase(repository) }
-    val getOverview by lazy { GetOverviewUseCase() }
+    val getV5Metrics by lazy { GetV5MetricsUseCase(repository) }
     val processPending by lazy { ProcessPendingUseCase(repository) }
 }

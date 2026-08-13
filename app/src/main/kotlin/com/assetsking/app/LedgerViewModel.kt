@@ -7,19 +7,18 @@ import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.CustomCategoryEntity
-import com.assetsking.database.GoalEntity
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.SnapshotEntity
 import com.assetsking.database.TransferEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.ledger.V5Metrics
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.usecase.AddAccountUseCase
-import com.assetsking.usecase.GetOverviewUseCase
+import com.assetsking.usecase.GetV5MetricsUseCase
 import com.assetsking.usecase.NotificationParser
-import com.assetsking.usecase.Overview
 import com.assetsking.usecase.ParsedNotification
 import com.assetsking.usecase.ProcessPendingUseCase
 import com.assetsking.usecase.RecordTransactionUseCase
@@ -29,18 +28,30 @@ import com.assetsking.usecase.UpdateCategoryUseCase
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
 
 enum class RecordMode(val label: String) {
-    EXPENSE("支出"), INCOME("收入"), TRANSFER("转账/还款"), REFUND("退款")
+    EXPENSE("支出"), INCOME("收入"), TRANSFER("转账/还款"), REFUND("退款"),
+    LOAN_DISBURSEMENT("借款到账"), LOAN_PAYMENT("贷款还款")
 }
 
 data class PendingItem(
     val notification: RawNotificationEntity,
     val parsed: ParsedNotification
+)
+
+private data class BaseState(
+    val accounts: List<AccountEntity>,
+    val transactions: List<TransactionEntity>,
+    val transfers: List<TransferEntity>,
+    val count: Int,
+    val pending: List<RawNotificationEntity>
 )
 
 data class LedgerUiState(
@@ -49,7 +60,7 @@ data class LedgerUiState(
     val transfers: List<TransferEntity> = emptyList(),
     val unprocessedNotifications: Int = 0,
     val pendingItems: List<PendingItem> = emptyList(),
-    val overview: Overview = Overview(0, 0, 0)
+    val v5: V5Metrics? = null     // null = 数据加载中
 )
 
 class LedgerViewModel(
@@ -58,10 +69,11 @@ class LedgerViewModel(
     private val recordTransfer: RecordTransferUseCase,
     private val addAccount: AddAccountUseCase,
     private val updateCategory: UpdateCategoryUseCase,
-    getOverview: GetOverviewUseCase,
+    getV5Metrics: GetV5MetricsUseCase,
     private val processPending: ProcessPendingUseCase,
     private val repository: com.assetsking.database.LedgerRepository
 ) : ViewModel() {
+    // V5 指标在 ViewModel 里算（一个 Flow 发射 → 一套新数字），严禁在 Composable 内现算
     val state = combine(
         repository.accounts,
         repository.transactions,
@@ -69,16 +81,20 @@ class LedgerViewModel(
         repository.unprocessedNotifications,
         repository.pendingNotifications
     ) { accounts, transactions, transfers, count, pending ->
-        LedgerUiState(
-            accounts = accounts,
-            transactions = transactions,
-            transfers = transfers,
-            unprocessedNotifications = count,
-            pendingItems = pending.map { entity ->
-                PendingItem(entity, NotificationParser.parse(entity.content, entity.title))
-            },
-            overview = getOverview(accounts)
-        )
+        BaseState(accounts, transactions, transfers, count, pending)
+    }.flatMapLatest { base ->
+        getV5Metrics().map { v5 ->
+            LedgerUiState(
+                accounts = base.accounts,
+                transactions = base.transactions,
+                transfers = base.transfers,
+                unprocessedNotifications = base.count,
+                pendingItems = base.pending.map { entity ->
+                    PendingItem(entity, NotificationParser.parse(entity.content, entity.title))
+                },
+                v5 = v5
+            )
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LedgerUiState())
 
     val budgets: Flow<List<BudgetEntity>> = repository.budgets
@@ -86,14 +102,21 @@ class LedgerViewModel(
     val reimbursable: Flow<List<TransactionEntity>> = repository.reimbursableTransactions
     val recurringRules: Flow<List<RecurringRuleEntity>> = repository.recurringRules
     val snapshots: Flow<List<SnapshotEntity>> = repository.snapshots
-    val latestGoal: Flow<GoalEntity?> = repository.latestGoal
     val customCategories: Flow<List<CustomCategoryEntity>> = repository.customCategories
+    val cardInstallments: Flow<List<com.assetsking.database.CreditCardInstallmentEntity>> = repository.cardInstallments
+    val windfalls: Flow<List<com.assetsking.database.WindfallEntity>> = repository.windfalls
+    val monthlyIncomeCents: Flow<Long> = repository.monthlyIncomeCents
+    val necessaryLivingCents: Flow<Long> = repository.necessaryLivingCents
+    val optionalCategories: Flow<Set<String>> = repository.optionalCategories
 
     init {
         viewModelScope.launch {
             seedAccounts()
             repository.processRecurring()
             repository.saveTodaySnapshot()
+            // 当月无锚点 → 用当前 V5 总负债建档（从今天起记录，不回填历史）
+            val v5 = getV5Metrics().first()
+            repository.ensureMonthAnchor(v5.totalDebtCents)
         }
     }
 
@@ -170,14 +193,6 @@ class LedgerViewModel(
         viewModelScope.launch { repository.deleteRecurringRule(id) }
     }
 
-    fun saveGoal(goal: GoalEntity) {
-        viewModelScope.launch { repository.saveGoal(goal) }
-    }
-
-    fun deleteGoal(id: String) {
-        viewModelScope.launch { repository.deleteGoal(id) }
-    }
-
     fun reconcileAccount(account: AccountEntity) {
         viewModelScope.launch {
             repository.updateAccount(
@@ -200,9 +215,87 @@ class LedgerViewModel(
             RecordMode.EXPENSE -> TransactionType.EXPENSE
             RecordMode.INCOME -> TransactionType.INCOME
             RecordMode.REFUND -> TransactionType.REFUND
-            RecordMode.TRANSFER -> return
+            // 借款到账/贷款还款走专用方法（联动贷款计划），此路径不处理
+            RecordMode.TRANSFER, RecordMode.LOAN_DISBURSEMENT, RecordMode.LOAN_PAYMENT -> return
         }
         viewModelScope.launch { recordTransaction(accountId, cents, type, categoryStr = category, merchant = merchant, note = note, occurredAt = occurredAt, isReimbursable = isReimbursable) }
+    }
+
+    // ── V5 借款与还款 ──
+
+    /** 借款到账：现金+、关联计划剩余本金+；不是收入（铁律 1） */
+    fun addLoanDisbursement(accountId: String, amount: String, planId: String?, note: String?, occurredAt: Long = System.currentTimeMillis()) {
+        val cents = amount.toCentsOrNull() ?: return
+        viewModelScope.launch {
+            repository.addLoanDisbursement(accountId, cents, planId?.takeIf { it.isNotBlank() }, note, occurredAt)
+        }
+    }
+
+    /** 贷款还款：本金/利息/费拆分，联动计划剩余本金与分期状态；不是消费（铁律 3） */
+    fun addLoanPayment(
+        accountId: String, planId: String,
+        total: String, principal: String, interest: String, fee: String,
+        note: String?, occurredAt: Long = System.currentTimeMillis()
+    ) {
+        val t = total.toCentsOrNull() ?: return
+        val p = principal.toCentsOrNull(allowZero = true) ?: return
+        val i = interest.toCentsOrNull(allowZero = true) ?: return
+        val f = fee.toCentsOrNull(allowZero = true) ?: return
+        viewModelScope.launch {
+            repository.addLoanPayment(accountId, planId, t, p, i, f, note, occurredAt)
+        }
+    }
+
+    // ── V5 年终奖 / 信用卡分期 / 现金流设置 ──
+
+    fun saveWindfall(windfall: com.assetsking.database.WindfallEntity) {
+        viewModelScope.launch { repository.saveWindfall(windfall) }
+    }
+
+    fun deleteWindfall(id: String) {
+        viewModelScope.launch { repository.deleteWindfall(id) }
+    }
+
+    fun markWindfallReceived(id: String, actualCents: Long, cashAccountId: String) {
+        viewModelScope.launch { repository.markWindfallReceived(id, actualCents, cashAccountId) }
+    }
+
+    fun saveCardInstallment(installment: com.assetsking.database.CreditCardInstallmentEntity) {
+        viewModelScope.launch { repository.saveCardInstallment(installment) }
+    }
+
+    fun deleteCardInstallment(id: String) {
+        viewModelScope.launch { repository.deleteCardInstallment(id) }
+    }
+
+    fun setMonthlyIncomeCents(cents: Long) {
+        repository.setMonthlyIncomeCents(cents)
+    }
+
+    fun setNecessaryLivingCents(cents: Long) {
+        repository.setNecessaryLivingCents(cents)
+    }
+
+    fun setOptionalCategories(categories: Set<String>) {
+        repository.setOptionalCategories(categories)
+    }
+
+    /** 提前还款：只减本金、不当消费、不标普通期次（铁律 3） */
+    fun addLoanPrepayment(cashAccountId: String, planId: String, principalCents: Long, note: String?, occurredAt: Long = System.currentTimeMillis()) {
+        viewModelScope.launch {
+            repository.addLoanPrepayment(cashAccountId, planId, principalCents, note, occurredAt)
+        }
+    }
+
+    /** 提前结清：本金归零、全期 PAID、计划 PAID_OFF（V5 §36） */
+    fun settleLoanPlan(
+        cashAccountId: String, planId: String,
+        principalCents: Long, interestCents: Long, feeCents: Long,
+        note: String?, occurredAt: Long = System.currentTimeMillis()
+    ) {
+        viewModelScope.launch {
+            repository.settleLoanPlan(cashAccountId, planId, principalCents, interestCents, feeCents, note, occurredAt)
+        }
     }
 
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?) {
@@ -249,7 +342,7 @@ class LedgerViewModel(
                         recordTransfer = app.recordTransfer,
                         addAccount = app.addAccount,
                         updateCategory = app.updateCategory,
-                        getOverview = app.getOverview,
+                        getV5Metrics = app.getV5Metrics,
                         processPending = app.processPending,
                         repository = app.repository
                     ) as T

@@ -11,10 +11,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         AccountEntity::class, TransactionEntity::class, TransferEntity::class,
         RawNotificationEntity::class, BudgetEntity::class, LoanPlanEntity::class,
-        RecurringRuleEntity::class, SnapshotEntity::class, GoalEntity::class,
-        CustomCategoryEntity::class
+        RecurringRuleEntity::class, SnapshotEntity::class,
+        CustomCategoryEntity::class,
+        CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -26,83 +27,26 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun loanPlanDao(): LoanPlanDao
     abstract fun recurringRuleDao(): RecurringRuleDao
     abstract fun snapshotDao(): SnapshotDao
-    abstract fun goalDao(): GoalDao
     abstract fun customCategoryDao(): CustomCategoryDao
+    abstract fun creditCardInstallmentDao(): CreditCardInstallmentDao
+    abstract fun windfallDao(): WindfallDao
+    abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
 
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
+        /**
+         * v9→v10 是最后一次允许清库的版本：显式删除全部旧表（v9 数据为测试数据），
+         * Room 迁移完成后按新 schema 重建。
+         * 从 v11 起必须手写 Migration——没有 destructive fallback，
+         * 缺迁移会拒绝启动（抛异常），绝不可能静默清掉真实负债数据。
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""CREATE TABLE IF NOT EXISTS budgets (
-                    id TEXT NOT NULL PRIMARY KEY, category TEXT NOT NULL,
-                    monthlyLimitCents INTEGER NOT NULL, month TEXT NOT NULL)""")
-                db.execSQL("""CREATE TABLE IF NOT EXISTS loan_plans (
-                    id TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL,
-                    principalCents INTEGER NOT NULL, startDateEpochDay INTEGER NOT NULL,
-                    repaymentMethod TEXT NOT NULL, installmentsJson TEXT NOT NULL)""")
-                db.execSQL("CREATE INDEX IF NOT EXISTS index_loan_plans_accountId ON loan_plans(accountId)")
-            }
-        }
-
-        private val MIGRATION_2_3 = object : Migration(2, 3) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE transactions ADD COLUMN isReimbursable INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("""CREATE TABLE IF NOT EXISTS recurring_rules (
-                    id TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL,
-                    amountCents INTEGER NOT NULL, type TEXT NOT NULL, category TEXT NOT NULL,
-                    merchant TEXT, note TEXT, interval TEXT NOT NULL,
-                    nextRunAt INTEGER NOT NULL, isActive INTEGER NOT NULL DEFAULT 1)""")
-            }
-        }
-
-        private val MIGRATION_3_4 = object : Migration(3, 4) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE accounts ADD COLUMN groupName TEXT")
-                db.execSQL("ALTER TABLE raw_notifications ADD COLUMN processingNote TEXT")
-                db.execSQL("""CREATE TABLE IF NOT EXISTS snapshots (
-                    id TEXT NOT NULL PRIMARY KEY, dateEpochDay INTEGER NOT NULL,
-                    totalAssets INTEGER NOT NULL, totalDebts INTEGER NOT NULL, netWorth INTEGER NOT NULL)""")
-                db.execSQL("CREATE INDEX IF NOT EXISTS index_snapshots_dateEpochDay ON snapshots(dateEpochDay)")
-                db.execSQL("""CREATE TABLE IF NOT EXISTS goals (
-                    id TEXT NOT NULL PRIMARY KEY, targetCents INTEGER NOT NULL,
-                    deadlineEpochDay INTEGER NOT NULL, label TEXT NOT NULL, createdAt INTEGER NOT NULL)""")
-            }
-        }
-
-        private val MIGRATION_4_5 = object : Migration(4, 5) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE recurring_rules ADD COLUMN isSubscription INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE loan_plans ADD COLUMN annualRateBps INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE loan_plans ADD COLUMN remainingPrincipalCents INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-
-        private val MIGRATION_5_6 = object : Migration(5, 6) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE accounts ADD COLUMN statementDay INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE accounts ADD COLUMN dueDay INTEGER DEFAULT NULL")
-                db.execSQL("ALTER TABLE accounts ADD COLUMN creditLimitCents INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-
-        private val MIGRATION_6_7 = object : Migration(6, 7) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE transactions ADD COLUMN recurringRuleId TEXT DEFAULT NULL")
-            }
-        }
-
-        private val MIGRATION_7_8 = object : Migration(7, 8) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""CREATE TABLE IF NOT EXISTS custom_categories (
-                    name TEXT NOT NULL PRIMARY KEY)""")
-            }
-        }
-
-        private val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE loan_plans ADD COLUMN earlyRepaidCents INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE loan_plans ADD COLUMN repaymentDay INTEGER DEFAULT NULL")
+                listOf(
+                    "goals", "accounts", "transactions", "transfers", "raw_notifications",
+                    "budgets", "loan_plans", "recurring_rules", "snapshots", "custom_categories"
+                ).forEach { db.execSQL("DROP TABLE IF EXISTS $it") }
             }
         }
 
@@ -111,7 +55,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10).build().also { instance = it }
         }
     }
 }

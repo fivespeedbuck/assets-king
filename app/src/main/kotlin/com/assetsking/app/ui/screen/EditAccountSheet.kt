@@ -34,6 +34,8 @@ fun EditAccountSheet(
     var stmtDay by remember { mutableStateOf(account.statementDay?.toString() ?: "") }
     var dueDay by remember { mutableStateOf(account.dueDay?.toString() ?: "") }
     var creditLimit by remember { mutableStateOf(if (account.creditLimitCents > 0) "%.2f".format(account.creditLimitCents / 100.0) else "") }
+    var statementDue by remember { mutableStateOf(if (account.statementOriginalDueCents > 0) "%.2f".format(account.statementOriginalDueCents / 100.0) else "") }
+    var pending by remember { mutableStateOf(if (account.pendingCents > 0) "%.2f".format(account.pendingCents / 100.0) else "") }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Sheet(title = "编辑账户", onDismiss = onDismiss) {
@@ -50,11 +52,15 @@ fun EditAccountSheet(
         FormField(
             value = balance,
             onValueChange = { balance = it.filter { c -> c.isDigit() || c == '.' } },
-            label = "当前余额",
+            label = "当前总负债/余额",
             isAmount = true
         )
 
         if (account.type == com.assetsking.model.AccountType.CREDIT.name) {
+            Spacer(Modifier.height(8.dp))
+            FormField(value = statementDue, onValueChange = { statementDue = it.filter { c -> c.isDigit() || c == '.' } }, label = "本期待还（账单原始金额，还款后勿重录，已还部分系统自动扣）", isAmount = true)
+            Spacer(Modifier.height(8.dp))
+            FormField(value = pending, onValueChange = { pending = it.filter { c -> c.isDigit() || c == '.' } }, label = "Pending 未入账（单独展示，不计总负债）", isAmount = true)
             Spacer(Modifier.height(8.dp))
             FormField(value = stmtDay, onValueChange = { stmtDay = it.filter(Char::isDigit).take(2) }, label = "出账日（1-28）")
             Spacer(Modifier.height(8.dp))
@@ -75,11 +81,19 @@ fun EditAccountSheet(
                 val limit = runCatching {
                     java.math.BigDecimal(creditLimit.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
                 }.getOrNull() ?: 0L
+                val dueCents = runCatching {
+                    java.math.BigDecimal(statementDue.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
+                }.getOrNull() ?: 0L
+                val pendingCents = runCatching {
+                    java.math.BigDecimal(pending.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
+                }.getOrNull() ?: 0L
                 onSave(account.copy(
                     name = name.trim(), balanceCents = cents,
                     statementDay = stmtDay.toIntOrNull(),
                     dueDay = dueDay.toIntOrNull(),
-                    creditLimitCents = limit
+                    creditLimitCents = limit,
+                    statementOriginalDueCents = dueCents,
+                    pendingCents = pendingCents
                 ))
             },
             enabled = name.isNotBlank() && balance.toDoubleOrNull() != null,
