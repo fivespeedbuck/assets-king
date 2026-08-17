@@ -242,6 +242,23 @@ class V5MetricsTest {
         assertEquals(0, simulatePayoff(-1, 200_000, 0, 0.0))
     }
 
+    @Test
+    fun `payoff simulation injects expected windfalls at their due months`() {
+        val wf = V5WindfallInput(
+            expectedAmountCents = 5_000_000,
+            expectedDateEpochDay = today.plusMonths(3).toEpochDay(),
+            plannedDebtPaymentCents = 5_000_000,
+            status = WindfallStatus.EXPECTED
+        )
+        // 5 万债、月供 0，第 3 个月年终奖 5 万砸进去 → 清债
+        assertEquals(3, simulatePayoff(5_000_000, 0, 0, 0.0, today.toEpochDay(), listOf(wf)))
+        // 年终奖不够还 → 不收敛
+        assertNull(simulatePayoff(10_000_000, 0, 0, 0.0, today.toEpochDay(), listOf(wf)))
+        // 已到账（RECEIVED）的年终奖不注入（已在现金里）
+        val received = wf.copy(status = WindfallStatus.RECEIVED)
+        assertNull(simulatePayoff(5_000_000, 0, 0, 0.0, today.toEpochDay(), listOf(received)))
+    }
+
     // ── 回归：重复计债防线 ──
 
     @Test

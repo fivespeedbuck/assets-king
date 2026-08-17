@@ -83,7 +83,37 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
-            addTransaction(accountId, amountCents, type, category, merchant, note)
+            // 流水日期用通知到达时间，不用确认时刻：银行短信即时推，postedAt≈真实扣款时间；
+            // 用户可能隔天才点确认，用确认时刻会把日期记错（真机实报：88 元短信 08:39 到、09:41 确认）
+            val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
+                ?: System.currentTimeMillis()
+            // 周期账单反向认领：规则可能先于真实扣款自动记过一笔（同账户+同类型+金额±15%+前后5天）。
+            // 认到就不再造第二笔，只把通知标 LINKED —— 否则规则+短信把同一笔记两遍。
+            // ponytail: 同账户同金额同周的两笔真实消费会被误认领，宁可漏记不要虚增。
+            val ruleTx = database.transactionDao().findInRange(
+                postedAt - 5L * 24 * 60 * 60 * 1000, postedAt + 5L * 24 * 60 * 60 * 1000
+            ).firstOrNull {
+                it.recurringRuleId != null &&
+                    it.type == type.name &&
+                    it.accountId == accountId &&
+                    kotlin.math.abs(it.amountCents - amountCents) * 100 <= amountCents * 15
+            }
+            if (ruleTx == null) {
+                // 确认即认领：金额±15%、应扣日±5天、同类型的周期账单，把流水挂到规则下。
+                // 挂上后：账单页显示「本月已扣」；规则自动记账时会认领它而不重复造笔。
+                // 不要求账户一致——短信说的是真实扣款账户，规则里的账户只是默认值。
+                // ponytail: 同日同额的规则（如老爹/老妈意外险各85.26）会都匹配到第一条，显示层已知。
+                val ruleId = database.recurringRuleDao().observeAll().first()
+                    .firstOrNull {
+                        it.type == type.name &&
+                            kotlin.math.abs(it.amountCents - amountCents) * 100 <= amountCents * 15 &&
+                            kotlin.math.abs(it.nextRunAt - postedAt) <= 5L * 24 * 60 * 60 * 1000
+                    }?.id
+                addTransaction(
+                    accountId, amountCents, type, category, merchant, note,
+                    occurredAt = postedAt, recurringRuleId = ruleId
+                )
+            }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
             // 顺序不能反，否则增量会把对好的余额又推歪。

@@ -46,8 +46,11 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         ) { windfalls, anchors, income, necessary ->
             Config(windfalls, anchors, income, necessary)
         }.flatMapLatest { cfg ->
-            combine(repository.optionalCategories, dateTick()) { optionalCats, todayEpochDay ->
-                build(base, cfg, optionalCats, todayEpochDay)
+            combine(repository.optionalCategories, repository.budgets, dateTick()) { optionalCats, budgets, todayEpochDay ->
+                // 必要生活 = 当月分项预算之和（自动）；没设预算才回退手填值
+                val ym = YearMonth.from(LocalDate.ofEpochDay(todayEpochDay)).toString()
+                val budgetSum = budgets.filter { it.month == ym }.sumOf { it.monthlyLimitCents }
+                build(base, cfg.copy(necessary = if (budgetSum > 0) budgetSum else cfg.necessary), optionalCats, todayEpochDay)
             }
         }
     }
@@ -88,6 +91,11 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         // 已发生的非必要消费（按设置勾选的分类）→ 占用自由消费、恶化实际缺口
         val optionalSpent = monthTxs
             .filter { it.type == "EXPENSE" && it.category in optionalCategories }
+            .sumOf { it.amountCents }
+        // 今日已花（非必要）：对应首页「今日上限」，让用户一眼看到今天还差多少额度
+        val todayStart = today.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val todayOptionalSpent = monthTxs
+            .filter { it.type == "EXPENSE" && it.category in optionalCategories && it.occurredAt >= todayStart }
             .sumOf { it.amountCents }
 
         // 近 3 个月借款均值（清债模拟用；无借款则 0）
@@ -137,7 +145,8 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
                 incomeActualCents = incomeActual,
                 feeMonthCents = feeMonth,
                 newBorrowingCents = newBorrowing,
-                optionalSpentCents = optionalSpent
+                optionalSpentCents = optionalSpent,
+                todayOptionalSpentCents = todayOptionalSpent
             )
         )
     }

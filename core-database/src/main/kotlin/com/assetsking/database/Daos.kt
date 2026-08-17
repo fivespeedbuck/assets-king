@@ -96,6 +96,9 @@ interface RawNotificationDao {
     @Query("SELECT * FROM raw_notifications WHERE status = :status ORDER BY receivedAt DESC")
     fun observeByStatus(status: String): Flow<List<RawNotificationEntity>>
 
+    @Query("SELECT * FROM raw_notifications WHERE id = :id")
+    suspend fun findById(id: String): RawNotificationEntity?
+
     @Query("UPDATE raw_notifications SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 

@@ -3,6 +3,7 @@ package com.assetsking.ledger
 import com.assetsking.model.WindfallStatus
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.temporal.ChronoUnit
 
 // ── 输入 DTO（金额一律 Long 分；core-ledger 不依赖 core-database，实体映射在 usecase）──
 
@@ -78,7 +79,8 @@ data class V5MonthFlow(
     val incomeActualCents: Long,    // 本月 INCOME+REFUND 流水之和（LOAN_DISBURSEMENT 天然不在内）
     val feeMonthCents: Long,        // 本月 FEE 流水之和
     val newBorrowingCents: Long,    // 本月 LOAN_DISBURSEMENT 之和
-    val optionalSpentCents: Long = 0 // 本月已发生非必要消费（按设置的非必要分类聚合）
+    val optionalSpentCents: Long = 0, // 本月已发生非必要消费（按设置的非必要分类聚合）
+    val todayOptionalSpentCents: Long = 0 // 今日已发生非必要消费（对应「今日上限」）
 )
 
 // ── 输出 ──
@@ -103,6 +105,7 @@ data class V5Metrics(
     val incomeActualCents: Long,
     val newBorrowingCents: Long,
     val optionalSpentCents: Long,
+    val todayOptionalSpentCents: Long,
     val netDebtReductionCents: Long,    // anchor − totalDebt；无锚点=0
     val anchorTotalDebtCents: Long?,    // null = 本月未建档
     val freeSpendingCents: Long,
@@ -238,7 +241,11 @@ fun computeV5Metrics(
         if (sumRemaining <= 0) 0.0
         else ps.sumOf { it.remainingEffectiveCents.toDouble() * it.annualRateBps } / sumRemaining / 10000.0
     }
-    val payoffMonths = simulatePayoff(totalDebt, mustRepay, recentMonthlyBorrowAvgCents, weightedRate)
+    // 月度还债额 = 收入 − 必要生活（稳定覆盖 + 必须还）：V5 方针是结余全部往债上砸
+    val monthlyDebtService = stableCoverage + mustRepay
+    val payoffMonths = simulatePayoff(
+        totalDebt, monthlyDebtService, recentMonthlyBorrowAvgCents, weightedRate, todayEpochDay, windfalls
+    )
 
     // 年终奖前后负债预测：按当前月度净变化外推到到账日
     val projectedAtWindfall = expectedWindfall?.let { wf ->
@@ -270,6 +277,7 @@ fun computeV5Metrics(
         incomeActualCents = month.incomeActualCents,
         newBorrowingCents = newBorrowing,
         optionalSpentCents = month.optionalSpentCents,
+        todayOptionalSpentCents = month.todayOptionalSpentCents,
         netDebtReductionCents = netDebtReduction,
         anchorTotalDebtCents = anchorTotalDebtCents,
         freeSpendingCents = freeSpending,
@@ -299,20 +307,33 @@ internal fun nextCardDueDate(today: LocalDate, dueDay: Int): LocalDate {
     return nextMonth.atDay(dueDay.coerceAtMost(nextMonth.lengthOfMonth()))
 }
 
-/** 逐月模拟：期初负债 + 新增借款 + 利息 − 本金偿还；≤0 记清债月，不收敛或超 24 月返回 null */
+/** 逐月模拟：期初负债 + 新增借款 + 利息 − 本金偿还 − 到期的年终奖（EXPECTED 按计划还债额注入）；
+ *  ≤0 记清债月，不收敛（且后续无年终奖兜底）或超 24 月返回 null */
 internal fun simulatePayoff(
     totalDebtCents: Long,
     mustRepayCents: Long,
     monthlyBorrowAvgCents: Long,
-    weightedAnnualRate: Double
+    weightedAnnualRate: Double,
+    todayEpochDay: Long = 0,
+    windfalls: List<V5WindfallInput> = emptyList()
 ): Int? {
     if (totalDebtCents <= 0) return 0
-    if (mustRepayCents <= 0 && monthlyBorrowAvgCents == 0L && weightedAnnualRate == 0.0) return null
+    if (mustRepayCents <= 0 && monthlyBorrowAvgCents == 0L && weightedAnnualRate == 0.0 && windfalls.isEmpty()) return null
+    val todayYm = YearMonth.from(LocalDate.ofEpochDay(todayEpochDay))
+    val injections = mutableMapOf<Int, Long>()
+    for (wf in windfalls) {
+        if (wf.status != WindfallStatus.EXPECTED) continue
+        val wfYm = YearMonth.from(LocalDate.ofEpochDay(wf.expectedDateEpochDay))
+        // 月份差 = 模拟月序号（本月=0→夹成 1：当月到账下月首期还款就能用）
+        val m = ChronoUnit.MONTHS.between(todayYm, wfYm).toInt().coerceAtLeast(1)
+        if (m in 1..24) injections[m] = (injections[m] ?: 0) + wf.plannedDebtPaymentCents
+    }
     var debt = totalDebtCents
     for (m in 1..24) {
         val interest = (debt.toDouble() * weightedAnnualRate / 12.0).toLong()
-        val next = debt + monthlyBorrowAvgCents + interest - mustRepayCents
-        if (next >= debt) return null  // 不收敛，永远还不清
+        val next = debt + monthlyBorrowAvgCents + interest - mustRepayCents - (injections[m] ?: 0)
+        // 月供盖不住利息才不收敛；后面还有年终奖到期的，允许暂时走平
+        if (next >= debt && injections.none { it.key > m }) return null
         if (next <= 0) return m
         debt = next
     }
