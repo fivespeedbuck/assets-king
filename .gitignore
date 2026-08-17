@@ -14,3 +14,6 @@ local.properties
 .reference/
 .claude/settings.local.json
 screenshot*.png
+
+# 真机取证草稿（adb 截图/UI dump/日志）
+.debug/
