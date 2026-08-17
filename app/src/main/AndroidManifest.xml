@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:name=".AssetsKingApplication"
         android:allowBackup="false"
@@ -21,10 +23,14 @@
             android:name=".notification.AssetsNotificationListenerService"
             android:label="资产大王通知读取"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:foregroundServiceType="specialUse"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="notification listener keep-alive" />
         </service>
         <receiver
             android:name=".BootReceiver"
@@ -33,6 +39,9 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".notification.ListenerHeartbeatReceiver"
+            android:exported="false" />
         <receiver
             android:name=".AssetsKingWidget"
             android:exported="true">

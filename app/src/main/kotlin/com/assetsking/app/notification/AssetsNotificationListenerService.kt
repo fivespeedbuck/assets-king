@@ -1,11 +1,19 @@
 package com.assetsking.app.notification
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.assetsking.app.AssetsKingApplication
+import com.assetsking.app.R
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.usecase.NotificationParser
 import kotlinx.coroutines.CoroutineScope
@@ -19,14 +27,36 @@ import kotlinx.coroutines.launch
 /**
  * 通知读取服务。
  *
- * 这里**没有前台服务**，是刻意的：NotificationListenerService 由系统绑定并保活，
- * 本来就不需要 startForeground。原先那段 startForeground 在 Android 12+ 会抛
- * ForegroundServiceStartNotAllowedException（后台不允许起前台服务），异常连带把
- * onListenerConnected 打挂，正是「授权了却收不到通知」的元凶之一 —— 用户反馈
- * 「那条常驻通知我从没见到过」即为实锤。
+ * 保活策略：App 在前台打开时（MainActivity.onResume）提升为前台服务，
+ * 之后进程不再被 vivo 当后台缓存清掉（exit-info 实锤：reason=LOW_MEMORY
+ * single-cleaner 把监听服务进程杀掉，之后短信/支付通知全部漏探，只能手工重开授权）。
+ * 原先在 onListenerConnected 里直接 startForeground 会抛
+ * ForegroundServiceStartNotAllowedException（后台不允许起前台服务），
+ * 异常连带把 onListenerConnected 打挂 —— 现在改为从前台 Activity 起，异常只吞不崩。
  */
 class AssetsNotificationListenerService : NotificationListenerService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 后台起 FGS 会抛异常（Android 12+），吞掉即可：前台起的那次已经保住进程
+        runCatching { startKeepAliveNotification() }
+        return START_STICKY
+    }
+
+    private fun startKeepAliveNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_KEEP_ALIVE, "后台运行", NotificationManager.IMPORTANCE_LOW)
+        )
+        val notif = Notification.Builder(this, CHANNEL_KEEP_ALIVE)
+            .setContentTitle("资产大王")
+            .setContentText("正在监听银行短信和支付通知")
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setOngoing(true)
+            .build()
+        val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+        ServiceCompat.startForeground(this, KEEP_ALIVE_NOTIF_ID, notif, type)
+    }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -74,7 +104,10 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         // 聊天消息不进流水：真机取证——微信支付推 VPushChannel_1，聊天走
         // message_channel_new_id 且 category=msg。聊天内容带"75元一斤"会被当成
         // 金额冲进待确认箱（用户实报），按通道拦掉，不能靠文本判断。
-        if (sbn.notification.category == Notification.CATEGORY_MESSAGE) return
+        // category=msg 只能拦聊天 App：vivo 短信 App 发银行动账短信也是 MessagingStyle
+        // + category=msg（真机取证 08-14：招行麻辣烫 24.98 元被此过滤漏探），不能一刀切。
+        val isChatApp = sbn.packageName == "com.tencent.mm" || sbn.packageName == "com.eg.android.AlipayGphone"
+        if (sbn.notification.category == Notification.CATEGORY_MESSAGE && isChatApp) return
         if (sbn.packageName == "com.tencent.mm" && sbn.notification.channelId == "message_channel_new_id") return
 
         // 解析不出金额的直接不入库，否则一天几百条聊天记录白占数据库。
@@ -107,6 +140,9 @@ class AssetsNotificationListenerService : NotificationListenerService() {
     }
 
     companion object {
+        private const val CHANNEL_KEEP_ALIVE = "assets_king_foreground"
+        private const val KEEP_ALIVE_NOTIF_ID = 1
+
         // StateFlow 而非普通 Boolean：绑定是异步完成的，UI 得能在完成那一刻自己更新，
         // 否则刚点完「重新绑定」还会继续显示「已断开」直到下次进前台
         private val _connected = MutableStateFlow(false)
@@ -127,6 +163,15 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         fun rebindIfNeeded(context: Context) {
             if (isConnected) return
             runCatching { requestRebind(componentName(context)) }
+        }
+
+        /** App 在前台时把监听服务提升为前台服务，防 vivo 清进程 */
+        fun startKeepAlive(context: Context) {
+            runCatching {
+                ContextCompat.startForegroundService(
+                    context, Intent(context, AssetsNotificationListenerService::class.java)
+                )
+            }
         }
     }
 }

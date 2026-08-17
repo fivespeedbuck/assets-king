@@ -33,6 +33,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         if (isListenerEnabled(this)) {
             AssetsNotificationListenerService.rebindIfNeeded(this)
+            // 前台起 FGS 保活：进程不再被 vivo 当缓存清掉，监听不掉线
+            AssetsNotificationListenerService.startKeepAlive(this)
         }
     }
 }
