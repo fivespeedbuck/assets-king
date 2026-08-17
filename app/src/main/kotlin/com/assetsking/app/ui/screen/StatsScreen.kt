@@ -241,11 +241,12 @@ fun StatsScreen(
                     Spacer(Modifier.height(8.dp))
                     budgets.forEach { budget ->
                         val cat = runCatching { TransactionCategory.valueOf(budget.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED)
+                        val label = runCatching { TransactionCategory.valueOf(budget.category) }.getOrNull()?.let { categoryLabel(it) } ?: budget.category
                         val spent = data.categorySlices.firstOrNull { it.category == cat }?.totalCents ?: 0L
                         val pct = if (budget.monthlyLimitCents > 0) (spent.toFloat() / budget.monthlyLimitCents).coerceIn(0f, 1.5f) else 0f
                         Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(categoryLabel(cat), style = MaterialTheme.typography.bodyMedium)
+                                Text(label, style = MaterialTheme.typography.bodyMedium)
                                 Text("${formatMoney(spent)} / ${formatMoney(budget.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
                             }
                             LinearProgressIndicator(

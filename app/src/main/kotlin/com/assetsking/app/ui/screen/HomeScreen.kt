@@ -38,7 +38,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
     val necessaryLivingCents by model.necessaryLivingCents.collectAsStateWithLifecycle(initialValue = 0L)
-    val optionalCategories by model.optionalCategories.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val necessaryLivingSuggestion by model.necessaryLivingSuggestion.collectAsStateWithLifecycle()
@@ -49,7 +48,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
     var recordInitialPlanId by remember { mutableStateOf<String?>(null) }
     var showPending by remember { mutableStateOf(false) }
-    var showWindfall by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
@@ -60,11 +58,11 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                listOf("首页", "统计", "贷款", "设置").forEachIndexed { idx, label ->
+                listOf("首页", "统计", "账单", "贷款", "设置").forEachIndexed { idx, label ->
                     NavigationBarItem(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
-                        icon = { Text(when (idx) { 0 -> "🏠"; 1 -> "📊"; 2 -> "💳"; else -> "⚙️" }) },
+                        icon = { Text(when (idx) { 0 -> "🏠"; 1 -> "📊"; 2 -> "📅"; 3 -> "💳"; else -> "⚙️" }) },
                         label = { Text(label) }
                     )
                 }
@@ -94,13 +92,21 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onShowPending = { showPending = it },
                 onEditAccount = { editingAccount = it },
                 onEditTransaction = { editingTransaction = it },
-                onShowReconciliation = { showReconciliation = true },
-                onShowWindfall = { showWindfall = true }
+                onShowReconciliation = { showReconciliation = true }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts, v5 = state.v5)
             }
             2 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
+                BillsScreen(
+                    rules = recurringRules,
+                    transactions = state.transactions,
+                    pendingItems = state.pendingItems,
+                    accounts = state.accounts,
+                    viewModel = model
+                )
+            }
+            3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 LoanScreen(
                     plans = loanPlans, accounts = state.accounts,
                     onSave = { model.saveLoanPlan(it) },
@@ -122,7 +128,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     }
                 )
             }
-            3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
+            4 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 SettingsScreen(
                     budgets = budgets, repository = repository,
                     recurringRules = recurringRules, accounts = state.accounts,
@@ -137,8 +143,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     necessaryLivingCents = necessaryLivingCents,
                     onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
                     onSetNecessaryLiving = { model.setNecessaryLivingCents(it) },
-                    optionalCategories = optionalCategories,
-                    onSetOptionalCategories = { model.setOptionalCategories(it) },
                     listenerStatus = listenerStatus,
                     notificationSources = notificationSources,
                     notificationWhitelist = notificationWhitelist,
@@ -147,7 +151,14 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     detectedRecurring = detectedRecurring,
                     uncategorized = uncategorized,
                     onConfirmDetectedRecurring = { model.confirmDetectedRecurring(it) },
-                    onRefreshSpendPatterns = { model.refreshSpendPatterns() }
+                    onRefreshSpendPatterns = { model.refreshSpendPatterns() },
+                    windfalls = windfalls,
+                    currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
+                    onSaveWindfall = { model.saveWindfall(it) },
+                    onDeleteWindfall = { model.deleteWindfall(it) },
+                    onMarkWindfallReceived = { id, actualCents, cashAccountId ->
+                        model.markWindfallReceived(id, actualCents, cashAccountId)
+                    }
                 )
             }
         }
@@ -185,25 +196,12 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         )
     }
 
-    if (showWindfall) {
-        WindfallSheet(
-            windfalls = windfalls,
-            accounts = state.accounts,
-            currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
-            onSave = { model.saveWindfall(it) },
-            onDelete = { model.deleteWindfall(it) },
-            onMarkReceived = { id, actualCents, cashAccountId ->
-                model.markWindfallReceived(id, actualCents, cashAccountId)
-            },
-            onDismiss = { showWindfall = false }
-        )
-    }
-
     if (showPending) {
         PendingSheet(
             items = state.pendingItems,
             accounts = state.accounts,
             viewModel = model,
+            customCategoryNames = customCategories.map { it.name },
             onDismiss = { showPending = false }
         )
     }

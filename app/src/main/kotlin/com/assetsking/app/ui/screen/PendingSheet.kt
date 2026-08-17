@@ -30,7 +30,7 @@ import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.Sheet
-import com.assetsking.ui.format.categoryLabel
+import com.assetsking.ui.format.categoryLabelOrName
 import com.assetsking.ui.format.formatMoney
 
 private data class TypeOption(val type: TransactionType, val label: String)
@@ -46,6 +46,7 @@ fun PendingSheet(
     items: List<PendingItem>,
     accounts: List<AccountEntity>,
     viewModel: LedgerViewModel,
+    customCategoryNames: List<String> = emptyList(),
     onDismiss: () -> Unit
 ) {
     Sheet(title = "待确认通知", onDismiss = onDismiss) {
@@ -58,7 +59,7 @@ fun PendingSheet(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items.forEach { item ->
                     key(item.notification.id) {
-                        PendingNotificationCard(item, accounts, viewModel)
+                        PendingNotificationCard(item, accounts, viewModel, customCategoryNames)
                     }
                 }
             }
@@ -70,7 +71,8 @@ fun PendingSheet(
 private fun PendingNotificationCard(
     item: PendingItem,
     accounts: List<AccountEntity>,
-    viewModel: LedgerViewModel
+    viewModel: LedgerViewModel,
+    customCategoryNames: List<String> = emptyList()
 ) {
     val parsed = item.parsed
     val amountCents = parsed.amountCents ?: 0L
@@ -98,7 +100,7 @@ private fun PendingNotificationCard(
     }
 
     var selectedAccountId by remember { mutableStateOf(defaultAccount.id) }
-    var selectedCategory by remember { mutableStateOf(suggestedCategory) }
+    var selectedCategory by remember { mutableStateOf(suggestedCategory.name) }
     var selectedType by remember { mutableStateOf(defaultType) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -183,13 +185,13 @@ private fun PendingNotificationCard(
 
         Spacer(Modifier.height(8.dp))
 
-        // 分类
+        // 分类（枚举 + 自定义分类，如「固定支出」）
         Text("分类", fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelLarge)
         ChipRow(
-            items = TransactionCategory.entries,
+            items = TransactionCategory.entries.map { it.name } + customCategoryNames,
             selected = selectedCategory,
             onSelected = { selectedCategory = it },
-            label = { categoryLabel(it) }
+            label = { categoryLabelOrName(it, customCategoryNames) }
         )
 
         Spacer(Modifier.height(12.dp))
@@ -206,7 +208,7 @@ private fun PendingNotificationCard(
                         accountId = selectedAccountId,
                         amountCents = amountCents,
                         type = selectedType,
-                        category = selectedCategory.name,
+                        category = selectedCategory,
                         merchant = merchant,
                         note = null,
                         // 尾号对得上选中的账户才会生效，对不上就只记流水不动余额

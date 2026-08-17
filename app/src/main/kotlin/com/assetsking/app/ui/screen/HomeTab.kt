@@ -63,8 +63,7 @@ fun HomeTab(
     onShowPending: (Boolean) -> Unit,
     onEditAccount: (AccountEntity?) -> Unit,
     onEditTransaction: (TransactionEntity?) -> Unit,
-    onShowReconciliation: () -> Unit = {},
-    onShowWindfall: () -> Unit = {}
+    onShowReconciliation: () -> Unit = {}
 ) {
     var txFilter by remember { mutableStateOf("ALL") }
     var transferToDelete by remember { mutableStateOf<TransferEntity?>(null) }
@@ -113,7 +112,6 @@ fun HomeTab(
         if (v5 != null) {
             item { V5DashboardCard(v5, state, model, onShowPending) }
             item { V5SixGrid(v5) }
-            item { V5WindfallCard(v5, onShowWindfall) }
             item { V5FutureCard(v5) }
         }
 
@@ -385,27 +383,27 @@ private fun V5DashboardCard(
 private fun V5SixGrid(v5: V5Metrics) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCell("本月必须还", formatMoney(v5.mustRepayCents), MaterialTheme.colorScheme.error, Modifier.weight(1f))
+            MetricCell("本月必还", formatMoney(v5.mustRepayCents), MaterialTheme.colorScheme.error, Modifier.weight(1f))
             MetricCell(
-                "资金缺口",
+                "本月还剩",
                 if (v5.monthlySurvivalGapCents < 0) "缺 ${formatMoney(-v5.monthlySurvivalGapCents)}" else "+${formatMoney(v5.monthlySurvivalGapCents)}",
                 if (v5.monthlySurvivalGapCents < 0) MaterialTheme.colorScheme.error else Green,
                 Modifier.weight(1f)
             )
             MetricCell(
-                "新增借款",
-                formatMoney(v5.newBorrowingCents),
-                if (v5.newBorrowingCents > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                "每月能剩",
+                if (v5.stableDebtCoverageCents >= 0) "+${formatMoney(v5.stableDebtCoverageCents)}" else "缺 ${formatMoney(-v5.stableDebtCoverageCents)}",
+                if (v5.stableDebtCoverageCents >= 0) Green else MaterialTheme.colorScheme.error,
                 Modifier.weight(1f)
             )
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCell("自由消费", formatMoney(v5.freeSpendingCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
-            MetricCell("今日上限", formatMoney(v5.dailySafeSpendCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
+            MetricCell("本月能花", formatMoney(v5.freeSpendingCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
+            MetricCell("今天能花", formatMoney(v5.dailySafeSpendCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
             MetricCell(
-                "稳定覆盖",
-                if (v5.stableDebtCoverageCents >= 0) "+${formatMoney(v5.stableDebtCoverageCents)}" else "缺 ${formatMoney(-v5.stableDebtCoverageCents)}",
-                if (v5.stableDebtCoverageCents >= 0) Green else MaterialTheme.colorScheme.error,
+                "今天已花",
+                formatMoney(v5.todayOptionalSpentCents),
+                if (v5.todayOptionalSpentCents > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                 Modifier.weight(1f)
             )
         }
@@ -437,38 +435,6 @@ private fun MetricCell(title: String, value: String, valueColor: Color, modifier
             fontWeight = FontWeight.Bold,
             color = valueColor
         )
-    }
-}
-
-@Composable
-private fun V5WindfallCard(v5: V5Metrics, onShowWindfall: () -> Unit) {
-    GlassCard {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("年终奖节点", fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                when {
-                    v5.runwayToWindfallDays != null -> {
-                        Text("距离到账约 ${v5.runwayToWindfallDays} 天", style = MaterialTheme.typography.bodySmall)
-                        v5.projectedDebtAtWindfallCents?.let {
-                            Text("到账前预计总负债 ${formatMoney(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        v5.projectedDebtAfterWindfallCents?.let {
-                            Text("按计划还债后预计 ${formatMoney(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                    v5.stage == com.assetsking.ledger.DebtStage.BONUS_PAYDOWN -> {
-                        Text("年终奖已到账，去分配降债", style = MaterialTheme.typography.bodySmall, color = Green)
-                    }
-                    else -> Text("尚未设置年终奖", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            TextButton(onClick = onShowWindfall) { Text("管理") }
-        }
     }
 }
 

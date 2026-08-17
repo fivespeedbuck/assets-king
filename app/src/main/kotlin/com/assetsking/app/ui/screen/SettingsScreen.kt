@@ -38,6 +38,7 @@ import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
+import com.assetsking.database.WindfallEntity
 import com.assetsking.ledger.DetectedRecurring
 import com.assetsking.ledger.NecessaryLivingSuggestion
 import com.assetsking.model.TransactionCategory
@@ -74,8 +75,6 @@ fun SettingsScreen(
     necessaryLivingCents: Long = 0,
     onSetMonthlyIncome: (Long) -> Unit = {},
     onSetNecessaryLiving: (Long) -> Unit = {},
-    optionalCategories: Set<String> = emptySet(),
-    onSetOptionalCategories: (Set<String>) -> Unit = {},
     listenerStatus: ListenerStatus = ListenerStatus.OK,
     notificationSources: Map<String, String> = emptyMap(),
     notificationWhitelist: Set<String> = emptySet(),
@@ -84,7 +83,12 @@ fun SettingsScreen(
     detectedRecurring: List<DetectedRecurring> = emptyList(),
     uncategorized: Pair<Int, Long> = 0 to 0L,
     onConfirmDetectedRecurring: (DetectedRecurring) -> Unit = {},
-    onRefreshSpendPatterns: () -> Unit = {}
+    onRefreshSpendPatterns: () -> Unit = {},
+    windfalls: List<WindfallEntity> = emptyList(),
+    currentTotalDebtCents: Long = 0,
+    onSaveWindfall: (WindfallEntity) -> Unit = {},
+    onDeleteWindfall: (String) -> Unit = {},
+    onMarkWindfallReceived: (String, Long, String) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     var showBudgetSheet by remember { mutableStateOf(false) }
@@ -94,6 +98,7 @@ fun SettingsScreen(
     val currentInterval = reconcilePref.getLong("reconciliation_interval_ms", 7 * 24 * 60 * 60 * 1000L)
     var reconcileDays by remember { mutableStateOf((currentInterval / (24 * 60 * 60 * 1000L)).toInt()) }
     var newCatName by remember { mutableStateOf("") }
+    var showWindfall by remember { mutableStateOf(false) }
 
     val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -140,20 +145,25 @@ fun SettingsScreen(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // ── 月度规划：每月的钱怎么安排 ──
+        item {
+            Text("月度规划", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+        }
+
         // ── V5 现金流设置 ──
         item {
             var incomeInput by remember {
                 mutableStateOf(if (monthlyIncomeCents > 0) "%.2f".format(monthlyIncomeCents / 100.0) else "")
             }
-            var necessaryInput by remember {
-                mutableStateOf(if (necessaryLivingCents > 0) "%.2f".format(necessaryLivingCents / 100.0) else "")
-            }
+            val currentMonth = java.time.YearMonth.now().toString()
+            val monthBudgets = budgets.filter { it.month == currentMonth }
+            val budgetSum = monthBudgets.sumOf { it.monthlyLimitCents }
             GlassCard {
-                Text("每月现金流", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text("月收入与必要生活", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "首页的「资金缺口 / 自由消费 / 今日上限」都从这两个数字算出来：\n" +
-                        "缺口 = 月收入 − 必要生活 − 本月必须还款",
+                    "首页的「本月还剩 / 本月能花 / 今天能花」都从这里算：\n" +
+                        "每月能剩 = 月收入 − 必要生活 − 本月必须还款",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -165,135 +175,45 @@ fun SettingsScreen(
                     isAmount = true
                 )
                 Spacer(Modifier.height(12.dp))
-                FormField(
-                    value = necessaryInput,
-                    onValueChange = { necessaryInput = it.filter { c -> c.isDigit() || c == '.' } },
-                    label = "必要生活（吃饭/房租/水电/通勤）",
-                    isAmount = true
-                )
-
-                // 这个数字用户自己填不准——用实际流水算一个出来，点一下就填进去
-                Spacer(Modifier.height(8.dp))
-                val suggestion = necessaryLivingSuggestion
-                if (suggestion != null && suggestion.hasData) {
-                    var showBreakdown by remember { mutableStateOf(false) }
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "按你近${suggestion.monthsUsed}个月实际：${formatMoney(suggestion.totalCents)}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                "每个分类取月度中位数，一次性大额（换手机、看牙）不会算进来",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        TextButton(onClick = {
-                            necessaryInput = "%.2f".format(suggestion.totalCents / 100.0)
-                        }) { Text("用这个") }
-                    }
-                    TextButton(onClick = { showBreakdown = !showBreakdown }) {
-                        Text(if (showBreakdown) "收起明细 ▲" else "看看这钱花在哪 ▼", style = MaterialTheme.typography.labelSmall)
-                    }
-                    if (showBreakdown) {
-                        suggestion.byCategoryCents.forEach { (cat, cents) ->
-                            Row(
-                                Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp, bottom = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(categoryLabelOrName(cat, customCategories.map { it.name }), style = MaterialTheme.typography.bodySmall)
-                                Text(formatMoney(cents), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                } else {
+                Text("必要生活（自动 = 分项预算之和）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                if (monthBudgets.isEmpty()) {
                     Text(
-                        "还没有满月的流水，先估一个填进去。等自动记账攒够一个月，这里会按实际算给你看。",
-                        style = MaterialTheme.typography.labelSmall,
+                        "还没设分项预算。去下面「月度预算」把吃饭/交通/住房等每项填上，这里自动合计。",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                } else {
+                    monthBudgets.forEach { b ->
+                        val label = runCatching { TransactionCategory.valueOf(b.category) }.getOrNull()
+                            ?.let { categoryLabel(it) } ?: b.category
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(label, style = MaterialTheme.typography.bodySmall)
+                            Text(formatMoney(b.monthlyLimitCents), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
-
-                val (uncatCount, uncatCents) = uncategorized
-                if (uncatCount > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "本月还有 $uncatCount 笔未分类（${formatMoney(uncatCents)}）没算进上面的建议——分类之后会更准",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("必要生活合计", fontWeight = FontWeight.Bold)
+                    Text(formatMoney(budgetSum), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                 }
-
                 Spacer(Modifier.height(12.dp))
                 Button(
                     onClick = {
                         runCatching {
                             java.math.BigDecimal(incomeInput.ifBlank { "0" }).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
                         }.getOrNull()?.let { onSetMonthlyIncome(it) }
-                        runCatching {
-                            java.math.BigDecimal(necessaryInput.ifBlank { "0" }).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
-                        }.getOrNull()?.let { onSetNecessaryLiving(it) }
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("保存") }
+                ) { Text("保存收入") }
             }
         }
 
-        // ── 每笔支出算哪一边（原来那排看不懂的按钮）──
-        item {
-            GlassCard {
-                Text("哪些消费算「零花钱」", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "你每笔支出只会算到一边：\n" +
-                        "· 关掉的分类＝必要生活，不逐笔扣，已经包在上面那个预算里\n" +
-                        "· 打开的分类＝享受型消费，花一笔首页的「自由消费」和「今日上限」就少一笔",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "例：自由消费还剩 ¥1,500，喝杯 ¥20 奶茶（娱乐已打开）→ 立刻变 ¥1,480。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                TransactionCategory.entries.forEach { cat ->
-                    val isOptional = cat.name in optionalCategories
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(categoryLabel(cat), style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                if (isOptional) "享受型 · 逐笔扣自由消费" else "必要生活 · 包在预算里",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isOptional) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = isOptional,
-                            onCheckedChange = {
-                                onSetOptionalCategories(
-                                    if (isOptional) optionalCategories - cat.name else optionalCategories + cat.name
-                                )
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        // ── 从流水里认出来的固定扣款 ──
+        // ── 年终奖（从首页挪过来：不是天天看的东西）──
         item {
             GlassCard {
                 Row(
@@ -301,43 +221,91 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("疑似固定扣款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = onRefreshSpendPatterns) { Text("重新扫描") }
+                    Text("年终奖", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { showWindfall = true }) { Text("管理") }
                 }
                 Text(
-                    "从流水里找「同商户 + 金额稳定 + 约一个月一次 + 至少 3 次」的扣款。" +
-                        "确认后进周期性账单参与预测；真实扣款到账时会认领已有那笔，不会重复记账。",
+                    "未到账的年终奖不算现金；到账后记收入并用于降债（铁律 8）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(8.dp))
-                if (detectedRecurring.isEmpty()) {
-                    Text(
-                        "暂时没认出来。需要同一个商户至少扣过 3 次才能确定是固定扣款，先让自动记账攒几个月。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            }
+        }
+
+        // ── Budgets ──
+        item {
+            GlassCard {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("月度预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Button(onClick = { showBudgetSheet = true }) { Text("＋ 新增") }
+                }
+                if (budgets.isEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("暂无预算设置", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 } else {
-                    detectedRecurring.forEach { d ->
-                        val account = accounts.firstOrNull { it.id == d.accountId }
+                    budgets.forEach { b ->
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text("${d.merchant} · ${formatMoney(d.amountCents)}/月", fontWeight = FontWeight.Medium)
                                 Text(
-                                    "${account?.name ?: "?"} · 每月${d.dayOfMonth}日前后 · 已扣${d.occurrences}次",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    if (b.category == "ALL") "总预算" else
+                                        runCatching { TransactionCategory.valueOf(b.category) }.getOrNull()?.let { categoryLabel(it) } ?: b.category,
+                                    fontWeight = FontWeight.Medium
                                 )
+                                Text("${b.month} · 限额 ${formatMoney(b.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
                             }
-                            Button(onClick = { onConfirmDetectedRecurring(d) }) { Text("确认") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { editingBudget = b; showBudgetSheet = true }) { Text("编辑") }
+                                OutlinedButton(onClick = { onDeleteBudget(b.id) }) { Text("删除") }
+                            }
                         }
                     }
                 }
             }
+        }
+
+        // ── Recurring ──
+        item {
+            GlassCard {
+            RecurringRulesSection(
+                rules = recurringRules,
+                accounts = accounts,
+                onSave = onSaveRecurring,
+                onDelete = onDeleteRecurring
+            )
+            // 固定收支汇总
+            val fixedExpenses = recurringRules.filter { it.isActive && it.type == "EXPENSE" }
+            val fixedIncomes = recurringRules.filter { it.isActive && it.type == "INCOME" || it.type == "REFUND" }
+            if (fixedExpenses.isNotEmpty() || fixedIncomes.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                if (fixedIncomes.isNotEmpty()) {
+                    val incomeTotal = fixedIncomes.sumOf { it.amountCents }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("固定收入合计", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("+${formatMoney(incomeTotal)}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (fixedExpenses.isNotEmpty()) {
+                    val subTotal = fixedExpenses.filter { it.isSubscription }.sumOf { it.amountCents }
+                    val fixedTotal = fixedExpenses.sumOf { it.amountCents }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("固定支出合计", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("-${formatMoney(fixedTotal)}", color = Color(0xFFEF5350), fontWeight = FontWeight.Bold)
+                    }
+                    if (subTotal > 0) {
+                        Text("含订阅 ${formatMoney(subTotal)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            }
+        }
+
+        // ── 自动记账：管道与权限 ──
+        item {
+            Text("自动记账", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
         }
 
         // ── System Check ──
@@ -422,12 +390,14 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
-                    // 已开启的排前面，方便一眼看到哪些在生效
+                    // 已开启的排前面，方便一眼看到哪些在生效；默认只展示已开启的，点开才看全部
                     val sorted = notificationSources.entries.sortedWith(
                         compareByDescending<Map.Entry<String, String>> { it.key in notificationWhitelist }
                             .thenBy { it.value }
                     )
-                    sorted.forEach { (pkg, label) ->
+                    var showAll by remember { mutableStateOf(false) }
+                    val visible = if (showAll) sorted else sorted.filter { it.key in notificationWhitelist }
+                    visible.forEach { (pkg, label) ->
                         Row(
                             Modifier.fillMaxWidth().padding(vertical = 2.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -447,43 +417,66 @@ fun SettingsScreen(
                             )
                         }
                     }
+                    TextButton(onClick = { showAll = !showAll }) {
+                        Text(
+                            if (showAll) "收起" else "查看全部 ${sorted.size} 个来源",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                 }
             }
         }
 
-        // ── Budgets ──
+        // ── 从流水里认出来的固定扣款 ──
         item {
             GlassCard {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("月度预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Button(onClick = { showBudgetSheet = true }) { Text("＋ 新增") }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("疑似固定扣款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = onRefreshSpendPatterns) { Text("重新扫描") }
                 }
-                if (budgets.isEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("暂无预算设置", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "从流水里找「同商户 + 金额稳定 + 约一个月一次 + 至少 3 次」的扣款。" +
+                        "确认后进周期性账单参与预测；真实扣款到账时会认领已有那笔，不会重复记账。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                if (detectedRecurring.isEmpty()) {
+                    Text(
+                        "暂时没认出来。需要同一个商户至少扣过 3 次才能确定是固定扣款，先让自动记账攒几个月。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
-                    budgets.forEach { b ->
-                        val cat = runCatching { TransactionCategory.valueOf(b.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED)
+                    detectedRecurring.forEach { d ->
+                        val account = accounts.firstOrNull { it.id == d.accountId }
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(Modifier.weight(1f)) {
+                                Text("${d.merchant} · ${formatMoney(d.amountCents)}/月", fontWeight = FontWeight.Medium)
                                 Text(
-                                    if (b.category == "ALL") "总预算" else categoryLabel(cat),
-                                    fontWeight = FontWeight.Medium
+                                    "${account?.name ?: "?"} · 每月${d.dayOfMonth}日前后 · 已扣${d.occurrences}次",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Text("${b.month} · 限额 ${formatMoney(b.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { editingBudget = b; showBudgetSheet = true }) { Text("编辑") }
-                                OutlinedButton(onClick = { onDeleteBudget(b.id) }) { Text("删除") }
-                            }
+                            Button(onClick = { onConfirmDetectedRecurring(d) }) { Text("确认") }
                         }
                     }
                 }
             }
+        }
+
+        // ── 其他 ──
+        item {
+            Text("其他", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
         }
 
         // ── Custom Categories ──
@@ -510,42 +503,6 @@ fun SettingsScreen(
                         }
                     }
                 }
-            }
-        }
-
-        // ── Recurring ──
-        item {
-            GlassCard {
-            RecurringRulesSection(
-                rules = recurringRules,
-                accounts = accounts,
-                onSave = onSaveRecurring,
-                onDelete = onDeleteRecurring
-            )
-            // 固定收支汇总
-            val fixedExpenses = recurringRules.filter { it.isActive && it.type == "EXPENSE" }
-            val fixedIncomes = recurringRules.filter { it.isActive && it.type == "INCOME" || it.type == "REFUND" }
-            if (fixedExpenses.isNotEmpty() || fixedIncomes.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                if (fixedIncomes.isNotEmpty()) {
-                    val incomeTotal = fixedIncomes.sumOf { it.amountCents }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("固定收入合计", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text("+${formatMoney(incomeTotal)}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Bold)
-                    }
-                }
-                if (fixedExpenses.isNotEmpty()) {
-                    val subTotal = fixedExpenses.filter { it.isSubscription }.sumOf { it.amountCents }
-                    val fixedTotal = fixedExpenses.sumOf { it.amountCents }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("固定支出合计", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text("-${formatMoney(fixedTotal)}", color = Color(0xFFEF5350), fontWeight = FontWeight.Bold)
-                    }
-                    if (subTotal > 0) {
-                        Text("含订阅 ${formatMoney(subTotal)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
             }
         }
 
@@ -645,6 +602,18 @@ fun SettingsScreen(
             existing = editingBudget,
             onSave = { onSaveBudget(it); showBudgetSheet = false; editingBudget = null },
             onDismiss = { showBudgetSheet = false; editingBudget = null }
+        )
+    }
+
+    if (showWindfall) {
+        WindfallSheet(
+            windfalls = windfalls,
+            accounts = accounts,
+            currentTotalDebtCents = currentTotalDebtCents,
+            onSave = onSaveWindfall,
+            onDelete = onDeleteWindfall,
+            onMarkReceived = onMarkWindfallReceived,
+            onDismiss = { showWindfall = false }
         )
     }
 }
