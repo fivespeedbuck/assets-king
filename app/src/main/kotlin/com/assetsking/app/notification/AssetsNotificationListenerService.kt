@@ -65,6 +65,16 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         // 绑定成功后补扫一遍通知栏：RawNotification 主键是 "key:postTime"，
         // DAO 是 onConflict=IGNORE，同一条扫几次都只入库一次。
         runCatching { activeNotifications?.forEach { onNotificationPosted(it) } }
+        // 短信补扫：掉线期间已从通知栏消失的银行短信，从收件箱补回（需 READ_SMS）
+        val app = application as? AssetsKingApplication
+        if (app != null) {
+            serviceScope.launch {
+                runCatching {
+                    SmsRescan.rescan(this@AssetsNotificationListenerService, app.repository)
+                    app.processPending.invoke()
+                }
+            }
+        }
     }
 
     override fun onListenerDisconnected() {

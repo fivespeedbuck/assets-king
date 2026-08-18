@@ -58,11 +58,13 @@ class LedgerRepository(
     fun categorize(merchant: String?, note: String? = null): TransactionCategory =
         categorizer.categorize(merchant, note)
 
-    suspend fun saveRawNotification(notification: RawNotificationEntity) {
+    suspend fun saveRawNotification(notification: RawNotificationEntity, updateLastReceived: Boolean = true) {
         database.rawNotificationDao().insert(notification)
-        // 金库「最近入库时间」：每条原始证据落库都刷新，首页据此显示「最近入库 14:32」
-        _lastReceivedAt.value = notification.receivedAt
-        prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
+        // 金库「最近入库时间」：实时证据落库才刷新；补扫旧短信不刷新（避免被历史补回污染）
+        if (updateLastReceived) {
+            _lastReceivedAt.value = notification.receivedAt
+            prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
+        }
     }
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
