@@ -40,7 +40,32 @@ data class TransactionEntity(
     val feeCents: Long = 0,              // LOAN_PAYMENT: 手续费部分
     val loanPlanId: String? = null,      // LOAN_* 关联的贷款计划，删除回滚用
     val refundOfId: String? = null,      // REFUND: 关联的原消费流水（REQ 待确认交易类型 §6-8），冲减原分类/必要性
-    val reimbursedCents: Long = 0        // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
+    val reimbursedCents: Long = 0,       // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
+    val necessity: Boolean? = null       // 本笔最终必要性（REQ 分类§2）：true=必要 false=非必要 null=按场景默认
+)
+
+// 一级/二级分类（REQ 初始分类库）：稳定 ID + 显示名可改 + 归档不物理删除
+@Entity(tableName = "categories", indices = [Index("parentId")])
+data class CategoryEntity(
+    @PrimaryKey val id: String,
+    val name: String,                    // 全名
+    val shortName: String,               // 两字简称（宫格）
+    val parentId: String?,               // null = 一级
+    val iconKey: String,                 // 线性图标库 key
+    val defaultNecessary: Boolean? = null, // 二级默认必要性：true/false/null=按场景
+    val sortOrder: Int = 0,
+    val isArchived: Boolean = false,
+    val isCustom: Boolean = false        // 用户新增（预置分类改名也不改 ID）
+)
+
+// 交易对象库（REQ 商户库§4-8）：标准商户 + 原名别名 + 学习规则；消费商户与收入来源共用
+@Entity(tableName = "merchants")
+data class MerchantEntity(
+    @PrimaryKey val id: String,          // 标准名
+    val aliasesJson: String = "[]",      // 原始名称别名（合并对象时保留）
+    val learnedType: String? = null,     // 学习规则：交易类型
+    val learnedAccountId: String? = null,// 学习规则：账户
+    val learnedCategory: String? = null  // 学习规则：二级分类名
 )
 
 // 报销到账 ↔ 垫付消费的关联（REQ 报销 §3）：一笔报销款可覆盖多笔垫付，可部分覆盖

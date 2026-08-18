@@ -71,6 +71,15 @@ interface TransactionDao {
 
     @Query("UPDATE transactions SET reimbursedCents = :cents WHERE id = :id")
     suspend fun updateReimbursed(id: String, cents: Long)
+
+    @Query("UPDATE transactions SET category = :newName WHERE category = :oldName")
+    suspend fun updateCategoryName(oldName: String, newName: String)
+
+    @Query("UPDATE transactions SET merchant = :newName WHERE merchant = :oldName")
+    suspend fun updateMerchantName(oldName: String, newName: String)
+
+    @Query("SELECT COUNT(*) FROM transactions WHERE category = :category")
+    suspend fun countByCategory(category: String): Int
 }
 
 @Dao
@@ -113,6 +122,45 @@ interface ReimbursementLinkDao {
 
     @Query("DELETE FROM reimbursement_links WHERE reimbursementTxId = :txId")
     suspend fun deleteByReimbursement(txId: String)
+}
+
+@Dao
+interface CategoryDao {
+    @Query("SELECT * FROM categories ORDER BY sortOrder, id")
+    fun observeAll(): Flow<List<CategoryEntity>>
+
+    @Query("SELECT * FROM categories ORDER BY sortOrder, id")
+    suspend fun all(): List<CategoryEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAll(categories: List<CategoryEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(category: CategoryEntity)
+
+    @Query("SELECT * FROM categories WHERE id = :id")
+    suspend fun findById(id: String): CategoryEntity?
+
+    @Query("DELETE FROM categories WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface MerchantDao {
+    @Query("SELECT * FROM merchants ORDER BY id")
+    fun observeAll(): Flow<List<MerchantEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(merchant: MerchantEntity)
+
+    @Query("SELECT * FROM merchants WHERE id = :name")
+    suspend fun findByName(name: String): MerchantEntity?
+
+    @Query("SELECT * FROM merchants")
+    suspend fun all(): List<MerchantEntity>
+
+    @Query("DELETE FROM merchants WHERE id = :name")
+    suspend fun deleteByName(name: String)
 }
 
 @Dao

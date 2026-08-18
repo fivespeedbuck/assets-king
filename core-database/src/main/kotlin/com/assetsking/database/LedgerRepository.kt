@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.assetsking.ledger.BalanceCheckpoint
 import com.assetsking.ledger.BalanceMath
 import com.assetsking.ledger.ContentFingerprint
+import com.assetsking.ledger.DefaultCategories
 import com.assetsking.ledger.InstallmentMatcher
 import com.assetsking.ledger.LedgerDelta
 import com.assetsking.ledger.ReimbursementSplit
@@ -664,55 +665,127 @@ class LedgerRepository(
         database.customCategoryDao().deleteByName(name)
     }
 
-    // ── Smart Rules ──
-    // 格式: { "美团": {"accountId":"xxx", "type":"EXPENSE", "category":"DINING"} }
-    private val learnedRules = mutableMapOf<String, LearnedRule>()
-    private var rulesLoaded = false
+    // ── 分类库（REQ 初始分类库 §1-21）──
 
-    private fun loadLearnedRules() {
-        if (rulesLoaded) return
-        val json = prefs.getString("learned_rules", null) ?: return
-        runCatching {
-            JSONObject(json).let { obj ->
-                obj.keys().forEach { key ->
-                    val rule = obj.getJSONObject(key)
-                    learnedRules[key] = LearnedRule(
-                        accountId = rule.getString("accountId"),
-                        type = rule.getString("type"),
-                        category = rule.getString("category")
-                    )
-                }
+    val categories: Flow<List<CategoryEntity>> = database.categoryDao().observeAll()
+
+    /** 首次启动播种 11 个一级 + 二级分类；用户已动过分类库就不再动。 */
+    suspend fun seedDefaultCategoriesIfEmpty() {
+        if (database.categoryDao().all().isNotEmpty()) return
+        database.categoryDao().insertAll(
+            DefaultCategories.seeds.mapIndexed { index, s ->
+                CategoryEntity(
+                    id = s.id, name = s.name, shortName = s.shortName,
+                    parentId = s.parentId, iconKey = s.iconKey,
+                    defaultNecessary = s.defaultNecessary,
+                    sortOrder = index, isCustom = false
+                )
             }
-        }
-        rulesLoaded = true
+        )
     }
 
-    /** 用户确认通知后学习：记住 商户→(账户,收支类型,分类) */
-    fun learnRule(merchant: String?, accountId: String, type: String, category: String) {
+    suspend fun addCategory(
+        name: String,
+        shortName: String,
+        parentId: String?,
+        iconKey: String,
+        defaultNecessary: Boolean?
+    ): CategoryEntity {
+        val maxOrder = database.categoryDao().all().maxOfOrNull { it.sortOrder } ?: 0
+        val entity = CategoryEntity(
+            id = UUID.randomUUID().toString(),
+            name = name.trim(), shortName = shortName.trim().take(2),
+            parentId = parentId, iconKey = iconKey, defaultNecessary = defaultNecessary,
+            sortOrder = maxOrder + 1, isCustom = true
+        )
+        database.categoryDao().upsert(entity)
+        return entity
+    }
+
+    /** 改名/调整归属：同步更新所有关联历史流水（REQ 分类§22），历史统计不变口径。 */
+    suspend fun updateCategory(id: String, name: String?, shortName: String?, parentId: String?) {
+        val cat = database.categoryDao().findById(id) ?: return
+        val newName = name?.trim()?.takeIf { it.isNotEmpty() } ?: cat.name
+        if (newName != cat.name) {
+            database.transactionDao().updateCategoryName(cat.name, newName)
+        }
+        database.categoryDao().upsert(
+            cat.copy(name = newName, shortName = shortName?.take(2) ?: cat.shortName, parentId = parentId ?: cat.parentId)
+        )
+    }
+
+    /** 已使用的分类只归档不物理删除（REQ 分类§21）；从未使用才允许真删。 */
+    suspend fun deleteCategory(id: String) {
+        val cat = database.categoryDao().findById(id) ?: return
+        val used = database.transactionDao().countByCategory(cat.name) > 0
+        if (used) {
+            database.categoryDao().upsert(cat.copy(isArchived = true))
+        } else {
+            database.categoryDao().deleteById(id)
+        }
+    }
+
+    suspend fun restoreCategory(id: String) {
+        database.categoryDao().findById(id)?.let { database.categoryDao().upsert(it.copy(isArchived = false)) }
+    }
+
+    /** 合并分类（REQ 分类§23）：历史流水、学习规则迁移到目标，来源分类移除。 */
+    suspend fun mergeCategory(sourceId: String, targetId: String) {
+        val source = database.categoryDao().findById(sourceId) ?: return
+        val target = database.categoryDao().findById(targetId) ?: return
+        database.transactionDao().updateCategoryName(source.name, target.name)
+        database.categoryDao().deleteById(sourceId)
+    }
+
+    // ── 交易对象库与学习规则（REQ 商户库 §3-8）：标准商户 + 原名别名 + 学习规则 ──
+
+    val merchants: Flow<List<MerchantEntity>> = database.merchantDao().observeAll()
+
+    /** 用户确认后学习：记住 商户→(账户,收支类型,分类) */
+    suspend fun learnRule(merchant: String?, accountId: String, type: String, category: String) {
         if (merchant.isNullOrBlank()) return
-        val keyword = merchant.trim().take(8)
-        learnedRules[keyword] = LearnedRule(accountId, type, category)
-        val json = JSONObject()
-        learnedRules.forEach { (k, v) ->
-            json.put(k, JSONObject().apply {
-                put("accountId", v.accountId)
-                put("type", v.type)
-                put("category", v.category)
-            })
-        }
-        prefs.edit().putString("learned_rules", json.toString()).apply()
+        val name = merchant.trim()
+        val existing = database.merchantDao().findByName(name)
+        database.merchantDao().upsert(
+            (existing ?: MerchantEntity(id = name)).copy(
+                learnedAccountId = accountId,
+                learnedType = type,
+                learnedCategory = category
+            )
+        )
     }
 
-    /** 匹配已学规则，返回完整的记账规则或 null */
-    fun matchLearnedRule(merchant: String?): LearnedRule? {
-        loadLearnedRules()
+    /** 匹配已学规则：标准名或别名命中即返回完整记账规则 */
+    suspend fun matchLearnedRule(merchant: String?): LearnedRule? {
         if (merchant.isNullOrBlank()) return null
-        val keyword = merchant.trim().take(8)
-        learnedRules.forEach { (k, v) ->
-            if (keyword.contains(k) || k.contains(keyword)) return v
+        val name = merchant.trim()
+        val row = database.merchantDao().findByName(name)
+            ?: database.merchantDao().all().firstOrNull { m ->
+                parseAliases(m.aliasesJson).any { it == name }
+            }
+        return row?.let {
+            if (it.learnedAccountId == null || it.learnedType == null) null
+            else LearnedRule(it.learnedAccountId, it.learnedType, it.learnedCategory ?: "")
         }
-        return null
     }
+
+    /** 合并标准对象（REQ 商户库§8）：流水与学习规则迁移到目标，原名作为别名保留。 */
+    suspend fun mergeMerchants(targetName: String, sourceNames: List<String>) {
+        val target = database.merchantDao().findByName(targetName) ?: return
+        val aliases = parseAliases(target.aliasesJson).toMutableSet()
+        sourceNames.forEach { src ->
+            if (src == targetName) return@forEach
+            aliases.add(src)
+            database.transactionDao().updateMerchantName(src, targetName)
+            database.merchantDao().deleteByName(src)
+        }
+        database.merchantDao().upsert(target.copy(aliasesJson = JSONArray(aliases.toList()).toString()))
+    }
+
+    private fun parseAliases(json: String): List<String> =
+        runCatching {
+            JSONArray(json).let { arr -> (0 until arr.length()).map { arr.getString(it) } }
+        }.getOrDefault(emptyList())
 
     // ── Recurring Rules ──
 

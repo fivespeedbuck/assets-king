@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CustomCategoryEntity::class,
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class,
-        ReimbursementLinkEntity::class
+        ReimbursementLinkEntity::class,
+        CategoryEntity::class, MerchantEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -39,6 +40,8 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun balanceCheckpointDao(): BalanceCheckpointDao
     abstract fun balanceAdjustmentDao(): BalanceAdjustmentDao
     abstract fun reimbursementLinkDao(): ReimbursementLinkDao
+    abstract fun categoryDao(): CategoryDao
+    abstract fun merchantDao(): MerchantDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
@@ -102,6 +105,16 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `balance_checkpoints` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `checkedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`id`))")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_checkpoints_accountId` ON `balance_checkpoints` (`accountId`)")
                 backfillOpeningCheckpoints(db)
+            }
+        }
+
+        /** v16→v17：分类库与交易对象库（REQ 商户库/初始分类库）：categories、merchants 表 + transactions.necessity 列。非破坏性。 */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN necessity INTEGER")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `categories` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `shortName` TEXT NOT NULL, `parentId` TEXT, `iconKey` TEXT NOT NULL, `defaultNecessary` INTEGER, `sortOrder` INTEGER NOT NULL, `isArchived` INTEGER NOT NULL, `isCustom` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_categories_parentId` ON `categories` (`parentId`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `merchants` (`id` TEXT NOT NULL, `aliasesJson` TEXT NOT NULL, `learnedType` TEXT, `learnedAccountId` TEXT, `learnedCategory` TEXT, PRIMARY KEY(`id`))")
             }
         }
 
@@ -187,7 +200,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17).build().also { instance = it }
         }
     }
 }

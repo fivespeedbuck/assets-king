@@ -117,6 +117,15 @@ class LedgerViewModel(
     val customCategories: Flow<List<CustomCategoryEntity>> = repository.customCategories
     val cardInstallments: Flow<List<com.assetsking.database.CreditCardInstallmentEntity>> = repository.cardInstallments
     val windfalls: Flow<List<com.assetsking.database.WindfallEntity>> = repository.windfalls
+    /** 一级/二级分类库（REQ 初始分类库） */
+    val categories: Flow<List<com.assetsking.database.CategoryEntity>> = repository.categories
+    /** 交易对象库（标准商户 + 别名 + 学习规则，REQ 商户库） */
+    val merchants: Flow<List<com.assetsking.database.MerchantEntity>> = repository.merchants
+
+    init {
+        // 首次启动播种分类库；账户种子由既有流程负责，不动
+        viewModelScope.launch { repository.seedDefaultCategoriesIfEmpty() }
+    }
     val monthlyIncomeCents: Flow<Long> = repository.monthlyIncomeCents
     val necessaryLivingCents: Flow<Long> = repository.necessaryLivingCents
     val optionalCategories: Flow<Set<String>> = repository.optionalCategories
