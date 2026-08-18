@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecurringRuleEntity::class, SnapshotEntity::class,
         CustomCategoryEntity::class,
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
-        BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class
+        BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class,
+        ReimbursementLinkEntity::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -37,6 +38,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
     abstract fun balanceCheckpointDao(): BalanceCheckpointDao
     abstract fun balanceAdjustmentDao(): BalanceAdjustmentDao
+    abstract fun reimbursementLinkDao(): ReimbursementLinkDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
@@ -100,6 +102,14 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `balance_checkpoints` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `checkedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`id`))")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_checkpoints_accountId` ON `balance_checkpoints` (`accountId`)")
                 backfillOpeningCheckpoints(db)
+            }
+        }
+
+        /** v15→v16：报销（REQ 报销§1-6）：transactions 加 reimbursedCents 列 + 新建 reimbursement_links。非破坏性。 */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN reimbursedCents INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `reimbursement_links` (`reimbursementTxId` TEXT NOT NULL, `expenseTxId` TEXT NOT NULL, `coveredCents` INTEGER NOT NULL, PRIMARY KEY(`reimbursementTxId`, `expenseTxId`))")
             }
         }
 
@@ -177,7 +187,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16).build().also { instance = it }
         }
     }
 }

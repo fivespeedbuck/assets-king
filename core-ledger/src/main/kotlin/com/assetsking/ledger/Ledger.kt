@@ -25,7 +25,7 @@ class Ledger(accounts: Iterable<Account> = emptyList()) {
         val current = account(transaction.accountId)
         val delta = when (transaction.type) {
             TransactionType.EXPENSE, TransactionType.FEE, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT -> liabilityAwareDelta(current.type, -transaction.amount.cents)
-            TransactionType.INCOME, TransactionType.REFUND, TransactionType.LOAN_DISBURSEMENT -> liabilityAwareDelta(current.type, transaction.amount.cents)
+            TransactionType.INCOME, TransactionType.REFUND, TransactionType.LOAN_DISBURSEMENT, TransactionType.REIMBURSEMENT -> liabilityAwareDelta(current.type, transaction.amount.cents)
         }
         val updated = current.copy(balance = Money(current.balance.cents + delta))
         accountsById[updated.id] = updated

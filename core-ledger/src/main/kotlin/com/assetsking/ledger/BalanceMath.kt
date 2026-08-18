@@ -40,7 +40,7 @@ object BalanceMath {
             TransactionType.EXPENSE, TransactionType.FEE,
             TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT -> -amountCents
             TransactionType.INCOME, TransactionType.REFUND,
-            TransactionType.LOAN_DISBURSEMENT -> amountCents
+            TransactionType.LOAN_DISBURSEMENT, TransactionType.REIMBURSEMENT -> amountCents
         }
         return if (accountType == AccountType.ASSET) assetDelta else -assetDelta
     }

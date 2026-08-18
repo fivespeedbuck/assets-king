@@ -86,6 +86,7 @@ private fun txTypeLabel(type: String): String = when (type) {
     "LOAN_DISBURSEMENT" -> "借款到账"
     "LOAN_PAYMENT" -> "贷款还款"
     "LOAN_PREPAYMENT" -> "提前还款"
+    "REIMBURSEMENT" -> "报销到账"
     else -> type
 }
 

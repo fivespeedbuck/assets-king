@@ -64,7 +64,10 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
             .map { (cat, txs) ->
                 CategorySlice(
                     cat,
-                    txs.sumOf { (it.amountCents - (refundOffsetByTx[it.id] ?: 0L)).coerceAtLeast(0L) },
+                    // 冲减：已关联退款 + 已报销覆盖（REQ 报销 §5：报销到账后从分类/预算冲减）
+                    txs.sumOf {
+                        (it.amountCents - (refundOffsetByTx[it.id] ?: 0L) - it.reimbursedCents).coerceAtLeast(0L)
+                    },
                     txs.size
                 )
             }
@@ -87,15 +90,19 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
             val end = cal.timeInMillis
             val monthLabel = fmt.format(Date(start))
             val txs = repository.transactionsInRange(start, end)
-            // 支出 = 支出流水 − 已关联退款（退款不计入收入，REQ 收入§5 / 待确认§8）
+            // 支出 = 支出流水 − 已关联退款 − 已报销覆盖（退款不计收入 REQ 收入§5；报销到账冲减 REQ 报销§5）
             val refundOffset = txs
                 .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null }
                 .sumOf { it.amountCents }
+            val reimbursementOffset = txs
+                .filter { it.type == TransactionType.EXPENSE.name }
+                .sumOf { it.reimbursedCents }
             monthlyBars.add(
                 MonthlyBar(
                     month = monthLabel,
                     incomeCents = txs.filter { it.type in incomeTypes }.sumOf { it.amountCents },
-                    expenseCents = (txs.filter { it.type in expenseTypes }.sumOf { it.amountCents } - refundOffset).coerceAtLeast(0L)
+                    expenseCents = (txs.filter { it.type in expenseTypes }.sumOf { it.amountCents }
+                        - refundOffset - reimbursementOffset).coerceAtLeast(0L)
                 )
             )
         }

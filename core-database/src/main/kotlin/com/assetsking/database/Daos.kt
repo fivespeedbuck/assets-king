@@ -68,6 +68,9 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transactions WHERE isReimbursable = 1 ORDER BY occurredAt DESC")
     fun observeReimbursable(): Flow<List<TransactionEntity>>
+
+    @Query("UPDATE transactions SET reimbursedCents = :cents WHERE id = :id")
+    suspend fun updateReimbursed(id: String, cents: Long)
 }
 
 @Dao
@@ -98,6 +101,18 @@ interface BalanceCheckpointDao {
 
     @Query("SELECT * FROM balance_checkpoints WHERE accountId = :accountId ORDER BY checkedAt DESC")
     suspend fun allFor(accountId: String): List<BalanceCheckpointEntity>
+}
+
+@Dao
+interface ReimbursementLinkDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(link: ReimbursementLinkEntity)
+
+    @Query("SELECT * FROM reimbursement_links WHERE reimbursementTxId = :txId")
+    suspend fun findByReimbursement(txId: String): List<ReimbursementLinkEntity>
+
+    @Query("DELETE FROM reimbursement_links WHERE reimbursementTxId = :txId")
+    suspend fun deleteByReimbursement(txId: String)
 }
 
 @Dao

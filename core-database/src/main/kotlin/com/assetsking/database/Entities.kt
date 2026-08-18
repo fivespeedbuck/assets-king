@@ -39,7 +39,16 @@ data class TransactionEntity(
     val interestCents: Long = 0,         // LOAN_PAYMENT: 利息部分
     val feeCents: Long = 0,              // LOAN_PAYMENT: 手续费部分
     val loanPlanId: String? = null,      // LOAN_* 关联的贷款计划，删除回滚用
-    val refundOfId: String? = null       // REFUND: 关联的原消费流水（REQ 待确认交易类型 §6-8），冲减原分类/必要性
+    val refundOfId: String? = null,      // REFUND: 关联的原消费流水（REQ 待确认交易类型 §6-8），冲减原分类/必要性
+    val reimbursedCents: Long = 0        // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
+)
+
+// 报销到账 ↔ 垫付消费的关联（REQ 报销 §3）：一笔报销款可覆盖多笔垫付，可部分覆盖
+@Entity(tableName = "reimbursement_links", primaryKeys = ["reimbursementTxId", "expenseTxId"])
+data class ReimbursementLinkEntity(
+    val reimbursementTxId: String,
+    val expenseTxId: String,
+    val coveredCents: Long
 )
 
 @Entity(tableName = "transfers", indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt")])

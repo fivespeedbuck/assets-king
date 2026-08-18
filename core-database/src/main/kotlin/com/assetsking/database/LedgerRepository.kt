@@ -5,7 +5,9 @@ import androidx.room.withTransaction
 import com.assetsking.ledger.BalanceCheckpoint
 import com.assetsking.ledger.BalanceMath
 import com.assetsking.ledger.ContentFingerprint
+import com.assetsking.ledger.InstallmentMatcher
 import com.assetsking.ledger.LedgerDelta
+import com.assetsking.ledger.ReimbursementSplit
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.AccountType
 import com.assetsking.model.InstallmentStatus
@@ -147,10 +149,35 @@ class LedgerRepository(
                             it.amountCents <= amountCents
                     }.maxWithOrNull(compareBy({ it.amountCents }, { it.occurredAt }))?.id
                 } else null
-                addTransaction(
-                    accountId, amountCents, type, category, merchant, note,
-                    occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId
-                )
+                if (type == TransactionType.LOAN_PAYMENT) {
+                    // 贷款扣款自动匹配期次（REQ 贷款页 §6-8）：确认时按金额+日期匹配最接近的
+                    // 未还期次，匹配上即标记已还并记实际本金/利息/手续费；对不上挂最近计划、
+                    // 本金暂按全额（待确认页允许确认前修改，§8）。
+                    val match = findLoanInstallmentMatch(amountCents, postedAt)
+                    val plan = match?.first
+                    val inst = match?.second
+                    if (plan != null && inst != null && inst.total.cents == amountCents) {
+                        addTransaction(
+                            accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
+                            occurredAt = postedAt,
+                            principalCents = inst.principal.cents,
+                            interestCents = inst.interest.cents,
+                            feeCents = inst.fee.cents,
+                            loanPlanId = plan.id
+                        )
+                        markInstallmentPaid(plan, inst.number, inst.principal.cents)
+                    } else {
+                        addTransaction(
+                            accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
+                            occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id
+                        )
+                    }
+                } else {
+                    addTransaction(
+                        accountId, amountCents, type, category, merchant, note,
+                        occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId
+                    )
+                }
             }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
@@ -444,6 +471,18 @@ class LedgerRepository(
                         )
                     }
                 }
+                TransactionType.REIMBURSEMENT -> {
+                    // 报销流水删除：解除关联并归还垫付的已报销金额
+                    database.reimbursementLinkDao().findByReimbursement(tx.id).forEach { link ->
+                        database.transactionDao().findById(link.expenseTxId)?.let { expense ->
+                            database.transactionDao().updateReimbursed(
+                                expense.id,
+                                (expense.reimbursedCents - link.coveredCents).coerceAtLeast(0L)
+                            )
+                        }
+                    }
+                    database.reimbursementLinkDao().deleteByReimbursement(tx.id)
+                }
                 else -> Unit
             }
             database.transactionDao().deleteById(id)
@@ -489,6 +528,46 @@ class LedgerRepository(
                     loanPlanId = loanPlanId
                 )
             )
+            recomputeBalance(accountId)
+        }
+    }
+
+    /**
+     * 报销到账（REQ 报销 §3-4）：加实际资金账户余额、关联勾选的垫付消费。
+     * 一笔报销款按勾选顺序覆盖多笔垫付，最后一笔可部分覆盖；
+     * 到账金额与勾选合计不一致时保留未报销差额（部分报销）。
+     */
+    suspend fun addReimbursement(
+        accountId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        expenseIds: List<String>
+    ) {
+        require(amountCents > 0)
+        database.withTransaction {
+            val expenses = expenseIds
+                .map { requireNotNull(database.transactionDao().findById(it)) }
+                .filter { it.type == TransactionType.EXPENSE.name }
+            val covers = ReimbursementSplit.cover(expenses.map { it.amountCents }, amountCents)
+            val txId = UUID.randomUUID().toString()
+            database.transactionDao().insert(
+                TransactionEntity(
+                    id = txId,
+                    accountId = accountId,
+                    amountCents = amountCents,
+                    type = TransactionType.REIMBURSEMENT.name,
+                    category = TransactionCategory.UNCATEGORIZED.name,
+                    occurredAt = occurredAt,
+                    note = note?.trim()?.takeIf { it.isNotEmpty() }
+                )
+            )
+            expenses.zip(covers).forEach { (expense, cover) ->
+                if (cover > 0) {
+                    database.reimbursementLinkDao().insert(ReimbursementLinkEntity(txId, expense.id, cover))
+                    database.transactionDao().updateReimbursed(expense.id, expense.reimbursedCents + cover)
+                }
+            }
             recomputeBalance(accountId)
         }
     }
@@ -693,6 +772,47 @@ class LedgerRepository(
      * 该周期内是否已经有一笔真实扣款（通知抓的或手工记的）。
      * 匹配条件：同商户 + 同类型 + 金额相差 15% 以内 + 应扣日前后 5 天，且还没被别的规则认领。
      */
+    /**
+     * 在所有进行中的贷款计划里匹配扣款通知对应的期次（REQ 贷款页 §6）。
+     * 评分 = 金额差 × 100000 + 日期差：金额完全一致优先，其次日期接近。
+     */
+    private suspend fun findLoanInstallmentMatch(
+        amountCents: Long,
+        postedAt: Long
+    ): Pair<LoanPlanEntity, com.assetsking.model.LoanInstallment>? {
+        val atDay = java.time.Instant.ofEpochMilli(postedAt)
+            .atZone(java.time.ZoneId.systemDefault()).toLocalDate().toEpochDay()
+        return database.loanPlanDao().observeAll().first()
+            .filter { it.status == "ACTIVE" }
+            .mapNotNull { plan ->
+                InstallmentMatcher.match(jsonToInstallments(plan.installmentsJson), amountCents, atDay)
+                    ?.let { plan to it }
+            }
+            .minByOrNull { (_, inst) ->
+                kotlin.math.abs(inst.total.cents - amountCents) * 100_000L +
+                    kotlin.math.abs(inst.dueDateEpochDay - atDay)
+            }
+    }
+
+    /** 把匹配到的具体期次标为已还并扣减剩余本金（不按「最早优先」——通知对应哪期就标哪期）。 */
+    private suspend fun markInstallmentPaid(
+        plan: LoanPlanEntity,
+        number: Int,
+        principalCents: Long
+    ) {
+        val insts = jsonToInstallments(plan.installmentsJson).map { inst ->
+            if (inst.number == number && inst.status != InstallmentStatus.PAID) {
+                inst.copy(status = InstallmentStatus.PAID)
+            } else inst
+        }
+        database.loanPlanDao().upsert(
+            plan.copy(
+                remainingPrincipalCents = maxOf(0, remainingEffective(plan) - principalCents),
+                installmentsJson = installmentsToJson(insts)
+            )
+        )
+    }
+
     private suspend fun findRealChargeFor(rule: RecurringRuleEntity, dueAt: Long): TransactionEntity? {
         val merchant = rule.merchant?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val window = 5L * 24 * 60 * 60 * 1000
@@ -1117,6 +1237,7 @@ class LedgerRepository(
         "LOAN_DISBURSEMENT" -> "借款到账"
         "LOAN_PAYMENT" -> "贷款还款"
         "LOAN_PREPAYMENT" -> "提前还款"
+        "REIMBURSEMENT" -> "报销到账"
         else -> type
     }
 

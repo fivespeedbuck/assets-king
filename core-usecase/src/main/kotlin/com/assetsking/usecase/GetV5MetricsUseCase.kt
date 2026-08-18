@@ -102,7 +102,11 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
                     it.id == refund.refundOfId && it.type == "EXPENSE" && it.category in optionalCategories
                 }?.let { refund.amountCents } ?: 0L
             }
-        val optionalSpent = (rawOptionalSpent - optionalRefundOffset).coerceAtLeast(0L)
+        // 报销到账也冲减自由开销（REQ 报销 §5）
+        val optionalReimbursementOffset = monthTxs
+            .filter { it.type == "EXPENSE" && it.category in optionalCategories }
+            .sumOf { it.reimbursedCents }
+        val optionalSpent = (rawOptionalSpent - optionalRefundOffset - optionalReimbursementOffset).coerceAtLeast(0L)
         // 今日已花（非必要）：对应首页「今日上限」，让用户一眼看到今天还差多少额度
         val todayStart = today.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
         val todayOptionalSpent = monthTxs

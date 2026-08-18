@@ -39,7 +39,9 @@ private data class TypeOption(val type: TransactionType, val label: String)
 private val typeOptions = listOf(
     TypeOption(TransactionType.EXPENSE, "支出"),
     TypeOption(TransactionType.INCOME, "收入"),
-    TypeOption(TransactionType.REFUND, "退款")
+    TypeOption(TransactionType.REFUND, "退款"),
+    TypeOption(TransactionType.LOAN_PAYMENT, "贷款还款"),
+    TypeOption(TransactionType.REIMBURSEMENT, "报销到账")
 )
 
 @Composable
@@ -107,6 +109,8 @@ private fun PendingNotificationCard(
         TransactionType.EXPENSE -> "支出"
         TransactionType.INCOME -> "收入"
         TransactionType.REFUND -> "退款"
+        TransactionType.LOAN_PAYMENT -> "贷款还款"
+        TransactionType.REIMBURSEMENT -> "报销到账"
         else -> ""
     }
 
