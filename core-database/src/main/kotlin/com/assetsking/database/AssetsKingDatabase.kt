@@ -2,6 +2,9 @@ package com.assetsking.database
 
 import android.content.Context
 import androidx.room.Database
+import com.assetsking.ledger.BalanceMath
+import com.assetsking.model.AccountType
+import com.assetsking.model.TransactionType
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
@@ -13,9 +16,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RawNotificationEntity::class, BudgetEntity::class, LoanPlanEntity::class,
         RecurringRuleEntity::class, SnapshotEntity::class,
         CustomCategoryEntity::class,
-        CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class
+        CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
+        BalanceCheckpointEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -31,6 +35,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun creditCardInstallmentDao(): CreditCardInstallmentDao
     abstract fun windfallDao(): WindfallDao
     abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
+    abstract fun balanceCheckpointDao(): BalanceCheckpointDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
@@ -84,12 +89,65 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v10→v11：新增 balance_checkpoints 表，并为每个账户回填「开户」检查点。
+         * 开户检查点 = 当前余额 − 全部已确认事件增量，checkedAt = Long.MIN_VALUE 表示时间起点，
+         * 这样任何银行短信检查点（真实时间戳）都排在它之后。只加表、不改旧数据，非破坏性。
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `balance_checkpoints` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `checkedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_checkpoints_accountId` ON `balance_checkpoints` (`accountId`)")
+                backfillOpeningCheckpoints(db)
+            }
+        }
+
+        private fun backfillOpeningCheckpoints(db: SupportSQLiteDatabase) {
+            val accounts = db.query("SELECT id, type, balanceCents FROM accounts")
+            val rows = mutableListOf<Triple<String, String, Long>>()
+            while (accounts.moveToNext()) {
+                rows.add(Triple(accounts.getString(0), accounts.getString(1), accounts.getLong(2)))
+            }
+            accounts.close()
+
+            for ((id, type, balance) in rows) {
+                val accountType = runCatching { AccountType.valueOf(type) }.getOrNull() ?: continue
+                var deltaSum = 0L
+
+                val tx = db.query("SELECT type, amountCents FROM transactions WHERE accountId = ?", arrayOf(id))
+                while (tx.moveToNext()) {
+                    val txType = tx.getString(0)
+                    val amount = tx.getLong(1)
+                    runCatching { TransactionType.valueOf(txType) }.getOrNull()?.let {
+                        deltaSum += BalanceMath.transactionDelta(accountType, it, amount)
+                    }
+                }
+                tx.close()
+
+                val tf = db.query("SELECT fromAccountId, toAccountId, amountCents FROM transfers")
+                while (tf.moveToNext()) {
+                    val fromId = tf.getString(0)
+                    val toId = tf.getString(1)
+                    val amount = tf.getLong(2)
+                    if (fromId == id) deltaSum += BalanceMath.transferOutDelta(accountType, amount)
+                    if (toId == id) deltaSum += BalanceMath.transferInDelta(accountType, amount)
+                }
+                tf.close()
+
+                val opening = balance - deltaSum
+                db.execSQL(
+                    "INSERT INTO balance_checkpoints (id, accountId, balanceCents, checkedAt, source) VALUES (?, ?, ?, ?, ?)",
+                    arrayOf("opening_$id", id, opening, Long.MIN_VALUE, "OPENING")
+                )
+            }
+        }
+
         fun get(context: Context): AssetsKingDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
         }
     }
 }

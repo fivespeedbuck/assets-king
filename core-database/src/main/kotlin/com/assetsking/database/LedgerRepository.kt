@@ -2,6 +2,9 @@ package com.assetsking.database
 
 import android.content.SharedPreferences
 import androidx.room.withTransaction
+import com.assetsking.ledger.BalanceCheckpoint
+import com.assetsking.ledger.BalanceMath
+import com.assetsking.ledger.LedgerDelta
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.AccountType
 import com.assetsking.model.InstallmentStatus
@@ -118,7 +121,7 @@ class LedgerRepository(
             // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
             // 顺序不能反，否则增量会把对好的余额又推歪。
             if (bankBalanceCents != null && bankCardTail != null) {
-                applyBankBalance(accountId, bankCardTail, bankBalanceCents, System.currentTimeMillis())
+                applyBankBalance(accountId, bankCardTail, bankBalanceCents, postedAt)
             }
         }
     }
@@ -138,13 +141,52 @@ class LedgerRepository(
         val account = database.accountDao().find(accountId) ?: return
         if (account.cardTail != cardTail) return
         if (AccountType.valueOf(account.type) != AccountType.ASSET) return
-        database.accountDao().upsert(
-            account.copy(
+        // 记录带时间戳的权威检查点，再重算余额；不再直接覆盖（覆盖会跟随后确认流水的增量二次扣减）
+        database.balanceCheckpointDao().upsert(
+            BalanceCheckpointEntity(
+                id = "bank_${accountId}_$checkedAt",
+                accountId = accountId,
                 balanceCents = balanceCents,
-                balanceStatus = "CONFIRMED",
-                lastCheckedAt = checkedAt
+                checkedAt = checkedAt,
+                source = "BANK_SMS"
             )
         )
+        database.accountDao().upsert(account.copy(balanceStatus = "CONFIRMED", lastCheckedAt = checkedAt))
+        recomputeBalance(accountId)
+    }
+
+    /**
+     * 重算账户余额 = 最新检查点 + 其后已确认事件增量（决策 2 可信账务内核）。
+     * 所有入账/删除/编辑/转账/对账路径统一「记事件 → 重算」，不再手工加减余额。
+     */
+    suspend fun recomputeBalance(accountId: String) {
+        val account = database.accountDao().find(accountId) ?: return
+        val checkpoint = database.balanceCheckpointDao().latestFor(accountId) ?: return
+        val accountType = AccountType.valueOf(account.type)
+
+        val txDeltas = database.transactionDao().all()
+            .filter { it.accountId == accountId }
+            .map {
+                LedgerDelta(
+                    occurredAt = it.occurredAt,
+                    deltaCents = BalanceMath.transactionDelta(accountType, TransactionType.valueOf(it.type), it.amountCents)
+                )
+            }
+        val transferDeltas = database.transferDao().all().flatMap { tf ->
+            buildList {
+                if (tf.fromAccountId == accountId) add(LedgerDelta(tf.occurredAt, BalanceMath.transferOutDelta(accountType, tf.amountCents)))
+                if (tf.toAccountId == accountId) add(LedgerDelta(tf.occurredAt, BalanceMath.transferInDelta(accountType, tf.amountCents)))
+            }
+        }
+
+        val newBalance = BalanceMath.balance(
+            openingBalanceCents = 0L,
+            checkpoint = BalanceCheckpoint(checkpoint.balanceCents, checkpoint.checkedAt),
+            deltas = txDeltas + transferDeltas
+        )
+        if (newBalance != account.balanceCents) {
+            database.accountDao().upsert(account.copy(balanceCents = newBalance))
+        }
     }
 
     /**
@@ -163,13 +205,7 @@ class LedgerRepository(
         // 两张卡尾号相同就无法判断是哪张，宁可不对
         val account = candidates.singleOrNull() ?: return false
         if ((account.lastCheckedAt ?: 0L) >= postedAt) return false
-        database.accountDao().upsert(
-            account.copy(
-                balanceCents = balanceCents,
-                balanceStatus = "CONFIRMED",
-                lastCheckedAt = postedAt
-            )
-        )
+        applyBankBalance(account.id, cardTail, balanceCents, postedAt)
         return true
     }
 
@@ -184,9 +220,10 @@ class LedgerRepository(
     ) {
         require(name.isNotBlank())
         require(openingBalanceCents >= 0)
+        val id = UUID.randomUUID().toString()
         database.accountDao().upsert(
             AccountEntity(
-                id = UUID.randomUUID().toString(),
+                id = id,
                 name = name.trim(),
                 type = type.name,
                 balanceCents = openingBalanceCents,
@@ -198,10 +235,34 @@ class LedgerRepository(
                 creditLimitCents = creditLimitCents
             )
         )
+        database.balanceCheckpointDao().upsert(
+            BalanceCheckpointEntity(
+                id = "opening_$id",
+                accountId = id,
+                balanceCents = openingBalanceCents,
+                checkedAt = Long.MIN_VALUE,
+                source = "OPENING"
+            )
+        )
     }
 
     suspend fun updateAccount(account: AccountEntity) {
-        database.accountDao().upsert(account)
+        database.withTransaction {
+            val old = database.accountDao().find(account.id)
+            database.accountDao().upsert(account)
+            // 用户手动改了余额：记录 MANUAL 检查点，让手动值成为新的权威基准（余额调整可追溯）
+            if (old != null && old.balanceCents != account.balanceCents) {
+                database.balanceCheckpointDao().upsert(
+                    BalanceCheckpointEntity(
+                        id = "manual_${account.id}_${System.currentTimeMillis()}",
+                        accountId = account.id,
+                        balanceCents = account.balanceCents,
+                        checkedAt = System.currentTimeMillis(),
+                        source = "MANUAL"
+                    )
+                )
+            }
+        }
     }
 
     suspend fun deleteAccount(accountId: String) {
@@ -228,13 +289,8 @@ class LedgerRepository(
             val loanTypes = setOf(TransactionType.LOAN_DISBURSEMENT, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT)
             val isLoanTx = type in loanTypes || oldType in loanTypes
             if (!isLoanTx) {
-                val account = requireNotNull(database.accountDao().find(old.accountId))
-                // 冲销旧余额影响
-                val oldDelta = balanceDelta(account.type, old.type, old.amountCents)
-                // 应用新余额影响
-                val newDelta = balanceDelta(account.type, type.name, amountCents)
-                database.accountDao().upsert(account.copy(balanceCents = account.balanceCents - oldDelta + newDelta))
                 database.transactionDao().update(id, amountCents, type.name, category, merchant, note)
+                recomputeBalance(old.accountId)
             }
         }
     }
@@ -242,9 +298,7 @@ class LedgerRepository(
     suspend fun deleteTransaction(id: String) {
         database.withTransaction {
             val tx = requireNotNull(database.transactionDao().findById(id))
-            val account = requireNotNull(database.accountDao().find(tx.accountId))
-            val delta = balanceDelta(account.type, tx.type, tx.amountCents)
-            database.accountDao().upsert(account.copy(balanceCents = account.balanceCents - delta))
+            val accountId = tx.accountId
             // V5 回滚：借款/还款/提前还款与贷款计划的联动还原，保持真相源对称
             when (TransactionType.valueOf(tx.type)) {
                 TransactionType.LOAN_PAYMENT -> tx.loanPlanId?.let { planId ->
@@ -286,16 +340,8 @@ class LedgerRepository(
                 else -> Unit
             }
             database.transactionDao().deleteById(id)
+            recomputeBalance(accountId)
         }
-    }
-
-    private fun balanceDelta(accountType: String, txType: String, amountCents: Long): Long {
-        val at = AccountType.valueOf(accountType)
-        val assetDelta = when (TransactionType.valueOf(txType)) {
-            TransactionType.EXPENSE, TransactionType.FEE, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT -> -amountCents
-            TransactionType.INCOME, TransactionType.REFUND, TransactionType.LOAN_DISBURSEMENT -> amountCents
-        }
-        return if (at == AccountType.ASSET) assetDelta else -assetDelta
     }
 
     suspend fun addTransaction(
@@ -315,14 +361,7 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
-            val account = requireNotNull(database.accountDao().find(accountId))
-            val accountType = AccountType.valueOf(account.type)
-            val assetDelta = when (type) {
-                TransactionType.EXPENSE, TransactionType.FEE, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT -> -amountCents
-                TransactionType.INCOME, TransactionType.REFUND, TransactionType.LOAN_DISBURSEMENT -> amountCents
-            }
-            val actualDelta = if (accountType == AccountType.ASSET) assetDelta else -assetDelta
-            database.accountDao().upsert(account.copy(balanceCents = account.balanceCents + actualDelta))
+            requireNotNull(database.accountDao().find(accountId))
             database.transactionDao().insert(
                 TransactionEntity(
                     id = UUID.randomUUID().toString(),
@@ -341,6 +380,7 @@ class LedgerRepository(
                     loanPlanId = loanPlanId
                 )
             )
+            recomputeBalance(accountId)
         }
     }
 
@@ -348,14 +388,8 @@ class LedgerRepository(
         require(amountCents > 0)
         require(fromAccountId != toAccountId)
         database.withTransaction {
-            val from = requireNotNull(database.accountDao().find(fromAccountId))
-            val to = requireNotNull(database.accountDao().find(toAccountId))
-            val fromType = AccountType.valueOf(from.type)
-            val toType = AccountType.valueOf(to.type)
-            val fromDelta = if (fromType == AccountType.ASSET) -amountCents else amountCents
-            val toDelta = if (toType == AccountType.ASSET) amountCents else -amountCents
-            database.accountDao().upsert(from.copy(balanceCents = from.balanceCents + fromDelta))
-            database.accountDao().upsert(to.copy(balanceCents = to.balanceCents + toDelta))
+            requireNotNull(database.accountDao().find(fromAccountId))
+            requireNotNull(database.accountDao().find(toAccountId))
             database.transferDao().insert(
                 TransferEntity(
                     id = UUID.randomUUID().toString(),
@@ -366,22 +400,18 @@ class LedgerRepository(
                     note = note?.trim()?.takeIf { it.isNotEmpty() }
                 )
             )
+            recomputeBalance(fromAccountId)
+            recomputeBalance(toAccountId)
         }
     }
 
-    /** 删除转账：反向回滚两边余额。账户已删的跳过余额回滚（删账户本身已吞掉余额） */
+    /** 删除转账：删除后重算两边余额。账户已删的自动跳过（recomputeBalance 里 find 不到即返回）。 */
     suspend fun deleteTransfer(id: String) {
         database.withTransaction {
             val tf = database.transferDao().findById(id) ?: return@withTransaction
-            database.accountDao().find(tf.fromAccountId)?.let { from ->
-                val delta = if (AccountType.valueOf(from.type) == AccountType.ASSET) tf.amountCents else -tf.amountCents
-                database.accountDao().upsert(from.copy(balanceCents = from.balanceCents + delta))
-            }
-            database.accountDao().find(tf.toAccountId)?.let { to ->
-                val delta = if (AccountType.valueOf(to.type) == AccountType.ASSET) -tf.amountCents else tf.amountCents
-                database.accountDao().upsert(to.copy(balanceCents = to.balanceCents + delta))
-            }
             database.transferDao().delete(id)
+            recomputeBalance(tf.fromAccountId)
+            recomputeBalance(tf.toAccountId)
         }
     }
 

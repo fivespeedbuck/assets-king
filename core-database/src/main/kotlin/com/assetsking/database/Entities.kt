@@ -148,3 +148,13 @@ data class RecurringRuleEntity(
     val isActive: Boolean = true,
     val isSubscription: Boolean = false  // 订阅制服务标记
 )
+
+// 余额检查点：银行短信/手动报告的带时间戳权威余额。账户当前余额 = 最新检查点 + 其后已确认事件增量。
+@Entity(tableName = "balance_checkpoints", indices = [Index("accountId")])
+data class BalanceCheckpointEntity(
+    @PrimaryKey val id: String,
+    val accountId: String,
+    val balanceCents: Long,
+    val checkedAt: Long,     // 检查点时刻；occurredAt <= checkedAt 的事件已含在 balanceCents 内
+    val source: String       // OPENING / BANK_SMS / MANUAL
+)

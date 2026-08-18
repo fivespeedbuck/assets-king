@@ -75,6 +75,9 @@ interface TransferDao {
     @Query("SELECT * FROM transfers ORDER BY occurredAt DESC")
     fun observeAll(): Flow<List<TransferEntity>>
 
+    @Query("SELECT * FROM transfers ORDER BY occurredAt DESC")
+    suspend fun all(): List<TransferEntity>
+
     @Insert
     suspend fun insert(transfer: TransferEntity)
 
@@ -83,6 +86,18 @@ interface TransferDao {
 
     @Query("DELETE FROM transfers WHERE id = :id")
     suspend fun delete(id: String)
+}
+
+@Dao
+interface BalanceCheckpointDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(checkpoint: BalanceCheckpointEntity)
+
+    @Query("SELECT * FROM balance_checkpoints WHERE accountId = :accountId ORDER BY checkedAt DESC LIMIT 1")
+    suspend fun latestFor(accountId: String): BalanceCheckpointEntity?
+
+    @Query("SELECT * FROM balance_checkpoints WHERE accountId = :accountId ORDER BY checkedAt DESC")
+    suspend fun allFor(accountId: String): List<BalanceCheckpointEntity>
 }
 
 @Dao
