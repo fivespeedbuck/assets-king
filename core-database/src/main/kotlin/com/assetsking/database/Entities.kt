@@ -61,7 +61,8 @@ data class RawNotificationEntity(
     val postedAt: Long,
     val receivedAt: Long,
     val status: String = "NEW",
-    val processingNote: String? = null  // 失败原因："no amount", "duplicate", "user rejected"
+    val processingNote: String? = null,  // 失败原因："no amount", "duplicate", "user rejected"
+    val contentFingerprint: String = ""  // 规范化内容指纹（REQ 通知监听 §12）：补扫/重推以不同 id 重生时判重用
 )
 
 @Entity(tableName = "budgets")

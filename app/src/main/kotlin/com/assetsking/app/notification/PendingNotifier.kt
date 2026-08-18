@@ -41,8 +41,23 @@ object PendingNotifier {
         }
     }
 
+    /**
+     * 防丢补发（P0）：防抖 Job 活在进程内，10 秒窗口内进程被杀通知就永远发不出去。
+     * 心跳/开机/监听重连时调用本函数重评估——待确认笔数与最后通知过的不同就补发。
+     * 需要 Android Context 的协程调用方保证在协程内调用。
+     */
+    suspend fun ensureNotified(context: Context) {
+        val app = context.applicationContext as? AssetsKingApplication ?: return
+        val count = runCatching { app.repository.pendingNotifications.first().size }.getOrDefault(0)
+        if (count > 0 && app.repository.lastNotifiedPendingCount() != count) {
+            notify(context, count)
+        }
+    }
+
     private fun notify(context: Context, count: Int) {
         runCatching {
+            val app = context.applicationContext as? AssetsKingApplication
+            app?.repository?.markPendingNotified(count)
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_PENDING, "待确认账目", NotificationManager.IMPORTANCE_DEFAULT)

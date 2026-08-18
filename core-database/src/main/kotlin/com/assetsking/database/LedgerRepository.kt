@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import androidx.room.withTransaction
 import com.assetsking.ledger.BalanceCheckpoint
 import com.assetsking.ledger.BalanceMath
+import com.assetsking.ledger.ContentFingerprint
 import com.assetsking.ledger.LedgerDelta
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.AccountType
@@ -40,6 +41,8 @@ class LedgerRepository(
         database.rawNotificationDao().observeByStatus("PENDING_CONFIRMATION")
     val linkedNotifications: Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("LINKED")
+    val ignoredNotifications: Flow<List<RawNotificationEntity>> =
+        database.rawNotificationDao().observeByStatus("IGNORED")
     private val _lastReceivedAt = MutableStateFlow(prefs.getLong("last_notification_received_at", 0L))
     val lastReceivedAt: Flow<Long> = _lastReceivedAt
     private val categorizer = RuleBasedCategorizer()
@@ -59,12 +62,23 @@ class LedgerRepository(
         categorizer.categorize(merchant, note)
 
     suspend fun saveRawNotification(notification: RawNotificationEntity, updateLastReceived: Boolean = true) {
-        database.rawNotificationDao().insert(notification)
+        database.rawNotificationDao().insert(
+            if (notification.contentFingerprint.isBlank())
+                notification.copy(contentFingerprint = ContentFingerprint.of(notification.title, notification.content))
+            else notification
+        )
         // 金库「最近入库时间」：实时证据落库才刷新；补扫旧短信不刷新（避免被历史补回污染）
         if (updateLastReceived) {
             _lastReceivedAt.value = notification.receivedAt
             prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
         }
+    }
+
+    // ── 待确认通知防丢：最后通知过几笔（prefs），心跳/开机/重连时据此补发 ──
+    fun lastNotifiedPendingCount(): Int = prefs.getInt("pending_notified_count", 0)
+
+    fun markPendingNotified(count: Int) {
+        prefs.edit().putInt("pending_notified_count", count).apply()
     }
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
@@ -136,21 +150,56 @@ class LedgerRepository(
     }
 
     /**
-     * 用银行通知自报的余额对账：直接覆盖本地余额并标记已对账。
+     * 用银行通知自报的余额对账：记录权威检查点并重算余额，不再直接覆盖
+     * （覆盖会跟随后确认流水的增量二次扣减）。
      *
      * 只认储蓄卡（ASSET）：信用卡短信报的是可用额度、花呗报的是账单，都不是欠款余额，
      * 拿来盖会把负债算错。必须尾号对得上才动 —— 不知道是哪张卡的余额一律不用。
+     *
+     * 差额核对（REQ 账户对账 §4-5）：上次权威余额 + 期间已确认及待确认变化 = 本次银行余额。
+     * 不一致仍照记银行检查点（银行是权威），但标 DISCREPANCY 并记一条可追溯调整记录，
+     * 不静默吞差额。
      */
     private suspend fun applyBankBalance(
         accountId: String,
         cardTail: String,
         balanceCents: Long,
-        checkedAt: Long
+        checkedAt: Long,
+        pendingDeltas: List<LedgerDelta> = emptyList(),
+        thisEvidenceDeltaCents: Long? = null
     ) {
         val account = database.accountDao().find(accountId) ?: return
         if (account.cardTail != cardTail) return
-        if (AccountType.valueOf(account.type) != AccountType.ASSET) return
-        // 记录带时间戳的权威检查点，再重算余额；不再直接覆盖（覆盖会跟随后确认流水的增量二次扣减）
+        val accountType = AccountType.valueOf(account.type)
+        if (accountType != AccountType.ASSET) return
+
+        var status = "CONFIRMED"
+        val prev = database.balanceCheckpointDao().latestFor(accountId)
+        if (prev != null) {
+            val allDeltas = accountDeltas(accountId, accountType) + pendingDeltas +
+                (thisEvidenceDeltaCents?.let { listOf(LedgerDelta(checkedAt, it)) } ?: emptyList())
+            val expected = BalanceMath.expectedBalance(
+                BalanceCheckpoint(prev.balanceCents, prev.checkedAt),
+                allDeltas,
+                checkedAt
+            )
+            val diff = balanceCents - expected
+            if (diff != 0L) {
+                status = "DISCREPANCY"
+                // 幂等：同一检查点重放（判重/补扫再触发）不会重复记调整
+                database.balanceAdjustmentDao().upsert(
+                    BalanceAdjustmentEntity(
+                        id = "discrepancy_${accountId}_$checkedAt",
+                        accountId = accountId,
+                        beforeCents = expected,
+                        afterCents = balanceCents,
+                        diffCents = diff,
+                        reason = "自动差额核对：账面应有与银行余额不符",
+                        occurredAt = checkedAt
+                    )
+                )
+            }
+        }
         database.balanceCheckpointDao().upsert(
             BalanceCheckpointEntity(
                 id = "bank_${accountId}_$checkedAt",
@@ -160,19 +209,12 @@ class LedgerRepository(
                 source = "BANK_SMS"
             )
         )
-        database.accountDao().upsert(account.copy(balanceStatus = "CONFIRMED", lastCheckedAt = checkedAt))
+        database.accountDao().upsert(account.copy(balanceStatus = status, lastCheckedAt = checkedAt))
         recomputeBalance(accountId)
     }
 
-    /**
-     * 重算账户余额 = 最新检查点 + 其后已确认事件增量（决策 2 可信账务内核）。
-     * 所有入账/删除/编辑/转账/对账路径统一「记事件 → 重算」，不再手工加减余额。
-     */
-    suspend fun recomputeBalance(accountId: String) {
-        val account = database.accountDao().find(accountId) ?: return
-        val checkpoint = database.balanceCheckpointDao().latestFor(accountId) ?: return
-        val accountType = AccountType.valueOf(account.type)
-
+    /** 账户的全部已确认事件增量（流水 + 转账），余额重算与差额核对共用。 */
+    private suspend fun accountDeltas(accountId: String, accountType: AccountType): List<LedgerDelta> {
         val txDeltas = database.transactionDao().all()
             .filter { it.accountId == accountId }
             .map {
@@ -187,11 +229,22 @@ class LedgerRepository(
                 if (tf.toAccountId == accountId) add(LedgerDelta(tf.occurredAt, BalanceMath.transferInDelta(accountType, tf.amountCents)))
             }
         }
+        return txDeltas + transferDeltas
+    }
+
+    /**
+     * 重算账户余额 = 最新检查点 + 其后已确认事件增量（决策 2 可信账务内核）。
+     * 所有入账/删除/编辑/转账/对账路径统一「记事件 → 重算」，不再手工加减余额。
+     */
+    suspend fun recomputeBalance(accountId: String) {
+        val account = database.accountDao().find(accountId) ?: return
+        val checkpoint = database.balanceCheckpointDao().latestFor(accountId) ?: return
+        val accountType = AccountType.valueOf(account.type)
 
         val newBalance = BalanceMath.balance(
             openingBalanceCents = 0L,
             checkpoint = BalanceCheckpoint(checkpoint.balanceCents, checkpoint.checkedAt),
-            deltas = txDeltas + transferDeltas
+            deltas = accountDeltas(accountId, accountType)
         )
         if (newBalance != account.balanceCents) {
             database.accountDao().upsert(account.copy(balanceCents = newBalance))
@@ -203,18 +256,22 @@ class LedgerRepository(
      *
      * @param postedAt 通知的推送时间。补扫会把旧短信重新读一遍，旧余额不能覆盖新余额，
      *   所以比 lastCheckedAt 旧的直接丢弃。
+     * @param pendingDeltas 可归属本账户的待确认证据增量（REQ 对账 §4 要求待确认变化也参与校验）
+     * @param thisEvidenceDeltaCents 本条证据自身的增量（银行余额是扣款后的值，校验须包含它）
      * @return 是否真的对上了账
      */
     suspend fun reconcileFromNotification(
         cardTail: String,
         balanceCents: Long,
-        postedAt: Long
+        postedAt: Long,
+        pendingDeltas: List<LedgerDelta> = emptyList(),
+        thisEvidenceDeltaCents: Long? = null
     ): Boolean {
         val candidates = database.accountDao().findByCardTail(cardTail, AccountType.ASSET.name)
         // 两张卡尾号相同就无法判断是哪张，宁可不对
         val account = candidates.singleOrNull() ?: return false
         if ((account.lastCheckedAt ?: 0L) >= postedAt) return false
-        applyBankBalance(account.id, cardTail, balanceCents, postedAt)
+        applyBankBalance(account.id, cardTail, balanceCents, postedAt, pendingDeltas, thisEvidenceDeltaCents)
         return true
     }
 
@@ -259,8 +316,10 @@ class LedgerRepository(
         database.withTransaction {
             val old = database.accountDao().find(account.id)
             database.accountDao().upsert(account)
-            // 用户手动改了余额：先记可追溯的余额调整（REQ 账户对账 §7/§9），再记 MANUAL 检查点
+            // 用户手动改了余额：先记可追溯的余额调整（REQ 账户对账 §7/§9），再记 MANUAL 检查点。
+            // 手动对账视为用户已核对：清掉差额标志，DISCREPANCY → CONFIRMED。
             if (old != null && old.balanceCents != account.balanceCents) {
+                val now = System.currentTimeMillis()
                 database.balanceAdjustmentDao().upsert(
                     BalanceAdjustmentEntity(
                         id = UUID.randomUUID().toString(),
@@ -269,17 +328,20 @@ class LedgerRepository(
                         afterCents = account.balanceCents,
                         diffCents = account.balanceCents - old.balanceCents,
                         reason = "手动对账",
-                        occurredAt = System.currentTimeMillis()
+                        occurredAt = now
                     )
                 )
                 database.balanceCheckpointDao().upsert(
                     BalanceCheckpointEntity(
-                        id = "manual_${account.id}_${System.currentTimeMillis()}",
+                        id = "manual_${account.id}_$now",
                         accountId = account.id,
                         balanceCents = account.balanceCents,
-                        checkedAt = System.currentTimeMillis(),
+                        checkedAt = now,
                         source = "MANUAL"
                     )
+                )
+                database.accountDao().upsert(
+                    account.copy(balanceStatus = "CONFIRMED", lastCheckedAt = now)
                 )
             }
         }

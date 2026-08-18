@@ -72,6 +72,8 @@ class AssetsNotificationListenerService : NotificationListenerService() {
                 runCatching {
                     SmsRescan.rescan(this@AssetsNotificationListenerService, app.repository)
                     app.processPending.invoke()
+                    // 重连补扫产生的待确认：防抖 Job 已随旧进程死亡，直接补评估发通知
+                    PendingNotifier.ensureNotified(this@AssetsNotificationListenerService)
                 }
             }
         }

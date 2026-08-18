@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.service.notification.NotificationListenerService
 import com.assetsking.app.ui.screen.isListenerEnabled
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 60 秒心跳（AlarmManager 周期闹钟的下限就是 60s，30s 会被系统限流）。
@@ -18,6 +22,17 @@ import com.assetsking.app.ui.screen.isListenerEnabled
  */
 class ListenerHeartbeatReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // 待确认防丢补发：不依赖监听状态（短信通道单独也能收证据）
+        val pendingResult = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                PendingNotifier.ensureNotified(context)
+            } catch (_: Exception) {
+                // ponytail: 补发失败不阻断心跳
+            } finally {
+                pendingResult.finish()
+            }
+        }
         if (!isListenerEnabled(context)) return
         if (!AssetsNotificationListenerService.isConnected) {
             runCatching {

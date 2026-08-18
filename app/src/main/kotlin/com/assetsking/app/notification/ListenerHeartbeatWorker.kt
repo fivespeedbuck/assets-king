@@ -5,6 +5,7 @@ import android.service.notification.NotificationListenerService
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.assetsking.app.ui.screen.isListenerEnabled
+import kotlinx.coroutines.runBlocking
 
 /**
  * 15 分钟心跳，监听保活的第二道闸（FGS 是第一道）。
@@ -16,6 +17,8 @@ import com.assetsking.app.ui.screen.isListenerEnabled
  */
 class ListenerHeartbeatWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
+        // 待确认防丢补发（与监听状态无关）
+        runBlocking { runCatching { PendingNotifier.ensureNotified(applicationContext) } }
         if (isListenerEnabled(applicationContext) && !AssetsNotificationListenerService.isConnected) {
             runCatching {
                 NotificationListenerService.requestRebind(

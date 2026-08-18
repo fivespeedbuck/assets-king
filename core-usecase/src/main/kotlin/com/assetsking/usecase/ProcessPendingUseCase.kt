@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.first
 /**
  * 处理待确认通知：解析、去重、分类、标记状态。
  * ponytail: 单次批量处理，不做后台常驻 job。
+ *
+ * 判重时间基准一律用 postedAt（证据原始时间戳），不用 receivedAt：
+ * 补扫读回的旧短信 receivedAt=补扫时刻，与直收的那条相差可达 7 天，
+ * 用 receivedAt 判重会让同一条短信在待确认箱里出现两条。
  */
 class ProcessPendingUseCase(private val repository: LedgerRepository) {
     private val categorizer = RuleBasedCategorizer()
@@ -20,12 +24,14 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         val newNotifications = repository.observeNewNotifications().first()
         if (newNotifications.isEmpty()) return 0
 
-        // 判重要跟「已经在待确认箱里的」和「本批刚收下的」都比。
-        // 原先只比 existingPending —— 补扫一次入库十几条，这十几条互相之间从没比过，
-        // 美团一笔退款推的两条（「您有一笔X元的退款」+「订单已取消，X元退款原路返还」）
-        // 就都留在箱子里了。
+        // 判重要跟「已在待确认箱里的」「已确认的」和「已忽略的」都比。
+        // IGNORED 必须在内：补扫以新 id 重读收件箱，用户忽略过的短信不拦就会每次复活进箱
+        // （REQ 监听 §12：已入箱/已确认/已永久删除的通知不得再次生成候选）。
+        // 已忽略只比最近 7 天的，防历史噪音无限增长。
         val seen = repository.pendingNotifications.first().toMutableList()
         val linked = repository.linkedNotifications.first()
+        val recentCutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+        val ignored = repository.ignoredNotifications.first().filter { it.postedAt >= recentCutoff }
 
         var processed = 0
         for (notification in newNotifications) {
@@ -40,17 +46,45 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             // ── 自动对账 ──
             // 银行短信自带「尾号3721…余额657.09」，这是银行给的权威数字。一到就按尾号
             // 把余额对上，不必等用户确认这笔流水。判重之前做：重复的那条余额同样有效。
+            // 差额校验要带上「待确认变化」（REQ 对账 §4）：同尾号的待确认证据和本条自身
+            // 都算进账面应有余额，否则刚收到短信就会误报差额（余额是扣款后的值）。
             val tail = parsed.cardTail
             val bankBalance = parsed.balanceCents
             if (tail != null && bankBalance != null) {
-                repository.reconcileFromNotification(tail, bankBalance, notification.postedAt)
+                val pendingDeltas = seen.mapNotNull { other ->
+                    val p = NotificationParser.parse(other.content, other.title)
+                    if (p.cardTail != tail || p.amountCents == null || p.isExpense == null) return@mapNotNull null
+                    com.assetsking.ledger.LedgerDelta(
+                        occurredAt = other.postedAt,
+                        deltaCents = if (p.isExpense) -p.amountCents else p.amountCents
+                    )
+                }
+                val thisDelta = if (parsed.isExpense != null) {
+                    if (parsed.isExpense) -parsed.amountCents else parsed.amountCents
+                } else null
+                repository.reconcileFromNotification(tail, bankBalance, notification.postedAt, pendingDeltas, thisDelta)
+            }
+
+            // ── 内容指纹（REQ 监听 §12）：同一条证据以不同 id 重生 ──
+            // 补扫重读收件箱、通知重推产生新 postTime，都会绕过主键 IGNORE。
+            // 指纹相同 + 5 分钟窗内 = 同一条证据，直接忽略（保留先入库的那条）。
+            // 时间窗防误杀：同一订阅内容相同的两次真实扣款间隔数小时，不判重。
+            val fp = notification.contentFingerprint
+            val sameEvidence = (seen + linked + ignored).firstOrNull { other ->
+                other.id != notification.id &&
+                    NotificationMerge.isSameEvidence(fp, notification.postedAt, other.contentFingerprint, other.postedAt)
+            }
+            if (sameEvidence != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(notification.id, "与已入库证据内容指纹相同（补扫/重推）")
+                continue
             }
 
             // ── 迟到重复：已确认（LINKED）的同笔通知，不能再生成第二笔账（REQ §81）──
             val confirmedDup = linked.firstOrNull { other ->
                 NotificationMerge.isDuplicate(
-                    parsed, notification.receivedAt,
-                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                    parsed, notification.postedAt,
+                    NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (confirmedDup != null) {
@@ -71,8 +105,8 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             val duplicate = seen.firstOrNull { other ->
                 if (other.id == notification.id) return@firstOrNull false
                 NotificationMerge.isDuplicate(
-                    parsed, notification.receivedAt,
-                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                    parsed, notification.postedAt,
+                    NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (duplicate != null) {
@@ -88,6 +122,19 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 }
             }
 
+            // ── 已忽略判重：用户忽略过的同笔交易，换一个来源再推也不复活 ──
+            val ignoredDup = ignored.firstOrNull { other ->
+                NotificationMerge.isDuplicate(
+                    parsed, notification.postedAt,
+                    NotificationParser.parse(other.content, other.title), other.postedAt
+                )
+            }
+            if (ignoredDup != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(notification.id, "与已忽略通知重复（同笔交易换来源）")
+                continue
+            }
+
             // ── 付款 / 退款对冲 ──
             // 下单又整单取消：一笔支出 + 一笔**完全同额**的退款，净额为零。两条都还没确认时
             // 直接抵消，不必让人去确认两笔互相抵消的账。
@@ -98,8 +145,8 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             val offset = seen.firstOrNull { other ->
                 if (other.id == notification.id) return@firstOrNull false
                 NotificationMerge.isRefundOffset(
-                    parsed, notification.receivedAt,
-                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                    parsed, notification.postedAt,
+                    NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (offset != null) {
@@ -141,6 +188,6 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
     private fun parseMerchant(entity: RawNotificationEntity): String? =
         NotificationParser.parse(entity.content, entity.title).merchant
 
-    // ponytail: 只跟「待确认 + 本批」比，不查已入账的历史流水。跨批次的迟到通知
+    // ponytail: 只跟「待确认 + 已确认 + 已忽略」比，不查已入账的历史流水。跨批次的迟到通知
     // （信用卡退款 1-3 个工作日才到）碰不上对冲，会如实记成一笔退款 —— 那也没错。
 }

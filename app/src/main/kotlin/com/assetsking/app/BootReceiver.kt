@@ -5,6 +5,11 @@ import android.content.Context
 import android.content.Intent
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.notification.ListenerHeartbeatReceiver
+import com.assetsking.app.notification.PendingNotifier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 开机自启动 — 触发 NotificationListenerService 重新绑定。
@@ -18,6 +23,17 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             ListenerHeartbeatReceiver.schedule(context)
             AssetsNotificationListenerService.startKeepAlive(context)
+            // 待确认防丢补发：开机时若有未通知的待确认，补一条
+            val pendingResult = goAsync()
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                try {
+                    PendingNotifier.ensureNotified(context)
+                } catch (_: Exception) {
+                    // ponytail: 补发失败不阻断开机流程
+                } finally {
+                    pendingResult.finish()
+                }
+            }
         }
     }
 }
