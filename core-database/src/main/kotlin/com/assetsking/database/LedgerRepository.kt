@@ -38,6 +38,8 @@ class LedgerRepository(
     val unprocessedNotifications: Flow<Int> = database.rawNotificationDao().observeUnprocessedCount()
     val pendingNotifications: Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("PENDING_CONFIRMATION")
+    val linkedNotifications: Flow<List<RawNotificationEntity>> =
+        database.rawNotificationDao().observeByStatus("LINKED")
     private val categorizer = RuleBasedCategorizer()
 
     suspend fun seedKnownAccounts() {

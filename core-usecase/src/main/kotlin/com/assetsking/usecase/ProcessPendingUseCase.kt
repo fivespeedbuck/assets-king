@@ -6,7 +6,6 @@ import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import kotlinx.coroutines.flow.first
-import kotlin.math.abs
 
 /**
  * 处理待确认通知：解析、去重、分类、标记状态。
@@ -26,6 +25,7 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         // 美团一笔退款推的两条（「您有一笔X元的退款」+「订单已取消，X元退款原路返还」）
         // 就都留在箱子里了。
         val seen = repository.pendingNotifications.first().toMutableList()
+        val linked = repository.linkedNotifications.first()
 
         var processed = 0
         for (notification in newNotifications) {
@@ -46,6 +46,19 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 repository.reconcileFromNotification(tail, bankBalance, notification.postedAt)
             }
 
+            // ── 迟到重复：已确认（LINKED）的同笔通知，不能再生成第二笔账（REQ §81）──
+            val confirmedDup = linked.firstOrNull { other ->
+                NotificationMerge.isDuplicate(
+                    parsed, notification.receivedAt,
+                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                )
+            }
+            if (confirmedDup != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(notification.id, "与已确认流水重复（同笔证据迟到）")
+                continue
+            }
+
             // ── 判重：同一笔被多个 app 各推一条 ──
             // 判据：金额完全相同 + 收支方向一致 + 5 分钟内 + 商户名不冲突。
             //  · 不能靠「同商户」：银行短信和微信的合并通知都没有商户名；
@@ -56,13 +69,11 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             // ponytail: 金额恰好相同、5 分钟内、两条都没有商户名的两笔真实消费会被误合成一笔。
             // 通知原文里没有任何能区分它们的信息，只能这么取舍：宁可漏记，不要虚增。
             val duplicate = seen.firstOrNull { other ->
-                other.id != notification.id &&
-                    parseCents(other) == parsed.amountCents &&
-                    parsed.isExpense != null &&
-                    parsed.isExpense == parseIsExpense(other) &&
-                    abs(notification.receivedAt - other.receivedAt) < 5 * 60_000 &&
-                    (parsed.merchant == null || parseMerchant(other) == null ||
-                        parsed.merchant == parseMerchant(other))
+                if (other.id == notification.id) return@firstOrNull false
+                NotificationMerge.isDuplicate(
+                    parsed, notification.receivedAt,
+                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                )
             }
             if (duplicate != null) {
                 // 留下带商户名的那条 —— 商户名决定能不能自动分类、学规则
@@ -85,12 +96,11 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             // 照常进待确认箱记成退款。
             // 只在两条都还没确认时抵消：付款若已入账，退款就必须如实记成一笔收入。
             val offset = seen.firstOrNull { other ->
-                val otherDirection = parseIsExpense(other)
-                other.id != notification.id &&
-                    parseCents(other) == parsed.amountCents &&
-                    parsed.isExpense != null && otherDirection != null &&
-                    parsed.isExpense != otherDirection &&
-                    abs(notification.receivedAt - other.receivedAt) < 24 * 3600_000L
+                if (other.id == notification.id) return@firstOrNull false
+                NotificationMerge.isRefundOffset(
+                    parsed, notification.receivedAt,
+                    NotificationParser.parse(other.content, other.title), other.receivedAt
+                )
             }
             if (offset != null) {
                 repository.updateNotificationStatus(offset.id, "IGNORED")
@@ -128,14 +138,8 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
     fun suggestCategory(merchant: String?, note: String?): TransactionCategory =
         categorizer.categorize(merchant, note)
 
-    private fun parseCents(entity: RawNotificationEntity): Long? =
-        NotificationParser.parse(entity.content, entity.title).amountCents
-
     private fun parseMerchant(entity: RawNotificationEntity): String? =
         NotificationParser.parse(entity.content, entity.title).merchant
-
-    private fun parseIsExpense(entity: RawNotificationEntity): Boolean? =
-        NotificationParser.parse(entity.content, entity.title).isExpense
 
     // ponytail: 只跟「待确认 + 本批」比，不查已入账的历史流水。跨批次的迟到通知
     // （信用卡退款 1-3 个工作日才到）碰不上对冲，会如实记成一笔退款 —— 那也没错。

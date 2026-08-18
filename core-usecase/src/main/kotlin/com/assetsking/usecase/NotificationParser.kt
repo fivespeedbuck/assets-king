@@ -18,7 +18,9 @@ data class ParsedNotification(
      */
     val balanceCents: Long? = null,
     /** 卡号后 4 位。余额必须配尾号才敢用：否则不知道这个余额是哪张卡的。 */
-    val cardTail: String? = null
+    val cardTail: String? = null,
+    /** 是否退款/退回类。用于区分「退款对冲」和「转账」（转账不是退款，不能对冲掉）。 */
+    val isRefund: Boolean = false
 )
 
 /**
@@ -210,7 +212,8 @@ object NotificationParser {
             balanceCents = balanceCents,
             cardTail = cardTailPatterns.firstNotNullOfOrNull {
                 it.find(text)?.groupValues?.getOrNull(1)
-            }
+            },
+            isRefund = isRefund
         )
     }
 
