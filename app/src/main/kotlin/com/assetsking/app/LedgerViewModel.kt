@@ -28,6 +28,8 @@ import com.assetsking.usecase.RecordTransferUseCase
 import com.assetsking.usecase.SeedAccountsUseCase
 import com.assetsking.usecase.SpendPatternsUseCase
 import com.assetsking.usecase.UpdateCategoryUseCase
+import com.assetsking.usecase.UpcomingRepayment
+import com.assetsking.usecase.UpcomingRepaymentsUseCase
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,6 +129,14 @@ class LedgerViewModel(
     val categories: Flow<List<com.assetsking.database.CategoryEntity>> = repository.categories
     /** 交易对象库（标准商户 + 别名 + 学习规则，REQ 商户库） */
     val merchants: Flow<List<com.assetsking.database.MerchantEntity>> = repository.merchants
+    /** 最近还款提醒（REQ 首页§8）：到期前 3 天窗口 + 逾期 */
+    val upcomingRepayments: Flow<List<UpcomingRepayment>> = UpcomingRepaymentsUseCase(repository).invoke()
+    /** 首页已启用的可配置模块（REQ 首页可配置模块） */
+    val enabledModules: Flow<Set<String>> = repository.enabledModules
+
+    fun setHomeModules(enabled: Set<String>) {
+        repository.setHomeModules(enabled)
+    }
 
     init {
         // 首次启动播种分类库；账户种子由既有流程负责，不动

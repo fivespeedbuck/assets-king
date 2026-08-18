@@ -38,6 +38,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val categories by model.categories.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.CategoryEntity>())
     val merchants by model.merchants.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.MerchantEntity>())
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
+    val upcomingRepayments by model.upcomingRepayments.collectAsStateWithLifecycle(initialValue = emptyList())
+    val enabledModules by model.enabledModules.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
@@ -94,13 +96,15 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             0 -> HomeTab(
                 padding = padding, state = state, listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
-                context = context, model = model, searchQuery = searchQuery,
-                editingAccount = editingAccount, editingTransaction = editingTransaction,
-                onSearchChange = { searchQuery = it },
+                context = context, model = model, repository = repository,
+                budgets = budgets, recurringRules = recurringRules,
+                upcomingRepayments = upcomingRepayments,
+                enabledModules = enabledModules,
                 onShowPending = { showPendingBox = true },
-                onEditAccount = { editingAccount = it },
-                onEditTransaction = { editingTransaction = it },
-                onShowReconciliation = { showReconciliation = true }
+                onShowReconciliation = { showReconciliation = true },
+                onGotoStats = { selectedTab = 1 },
+                onGotoLoans = { selectedTab = 3 },
+                onEditAccount = { editingAccount = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts, v5 = state.v5)

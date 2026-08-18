@@ -84,6 +84,22 @@ class LedgerRepository(
         prefs.edit().putInt("pending_notified_count", count).apply()
     }
 
+    // ── 首页可配置模块（REQ 首页可配置模块 §1-10）：启用集合存 prefs，默认 本月预算+待报销+周期扣款 ──
+
+    private val _enabledModules = MutableStateFlow(
+        prefs.getStringSet("home_modules", defaultEnabledModules) ?: defaultEnabledModules
+    )
+    val enabledModules: Flow<Set<String>> = _enabledModules
+
+    fun setHomeModules(enabled: Set<String>) {
+        _enabledModules.value = enabled
+        prefs.edit().putStringSet("home_modules", enabled).apply()
+    }
+
+    companion object {
+        val defaultEnabledModules: Set<String> = setOf("budget", "reimbursement", "recurring")
+    }
+
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("NEW")
 

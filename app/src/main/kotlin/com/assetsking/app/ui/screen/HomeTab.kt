@@ -1,6 +1,7 @@
 package com.assetsking.app.ui.screen
 
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,13 +13,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,28 +33,34 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.database.AccountEntity
+import com.assetsking.database.BudgetEntity
+import com.assetsking.database.LedgerRepository
+import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
-import com.assetsking.database.TransferEntity
-import com.assetsking.ledger.V5Metrics
-import com.assetsking.ui.component.ChipRow
-import com.assetsking.ui.component.EmptyState
-import com.assetsking.ui.component.FormField
+import com.assetsking.model.AccountType
+import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
-import com.assetsking.ui.component.SectionHeader
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.usecase.GetStatsUseCase
+import com.assetsking.usecase.StatsData
+import com.assetsking.usecase.UpcomingRepayment
+import java.time.Instant
+import java.time.ZoneId
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
-private val Green = Color(0xFF66BB6A)
+private val HomeGreen = Color(0xFF66BB6A)
+private val HomeRed = Color(0xFFE57373)
+private val HomeOrange = Color(0xFFFFB74D)
 
-/** 最近流水统一行：流水或转账（transfers 表）二选一 */
-private data class RecentRow(val tx: TransactionEntity?, val transfer: TransferEntity?) {
-    val time: Long get() = tx?.occurredAt ?: transfer?.occurredAt ?: 0L
-}
-
+/** 首页固定核心区 + 可配置模块（REQ 首页信息优先级/UI结构/可配置模块）。 */
 @Composable
 fun HomeTab(
     padding: PaddingValues,
@@ -57,225 +69,329 @@ fun HomeTab(
     lastReceivedAt: Long,
     context: Context,
     model: LedgerViewModel,
-    searchQuery: String,
-    editingAccount: AccountEntity?,
-    editingTransaction: TransactionEntity?,
-    onSearchChange: (String) -> Unit,
-    onShowPending: (Boolean) -> Unit,
-    onEditAccount: (AccountEntity?) -> Unit,
-    onEditTransaction: (TransactionEntity?) -> Unit,
-    onShowReconciliation: () -> Unit = {}
+    repository: LedgerRepository,
+    budgets: List<BudgetEntity>,
+    recurringRules: List<RecurringRuleEntity>,
+    upcomingRepayments: List<UpcomingRepayment>,
+    enabledModules: Set<String>,
+    onShowPending: () -> Unit,
+    onShowReconciliation: () -> Unit,
+    onGotoStats: () -> Unit,
+    onGotoLoans: () -> Unit,
+    onEditAccount: (AccountEntity?) -> Unit
 ) {
-    var txFilter by remember { mutableStateOf("ALL") }
-    var transferToDelete by remember { mutableStateOf<TransferEntity?>(null) }
-    val reconciliationIntervalMs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)
-        .getLong("reconciliation_interval_ms", 7 * 24 * 60 * 60 * 1000L) // default 7 days
-    val overdueAccounts = state.accounts.filter { account ->
-        val lastChecked = account.lastCheckedAt ?: 0L
-        System.currentTimeMillis() - lastChecked > reconciliationIntervalMs
-    }
-    // 差额核对标出的账户同样进「需核对」（REQ 账户对账 §4-5）
-    val discrepancyAccounts = state.accounts.filter { it.balanceStatus == "DISCREPANCY" }
-    // 待确认净变化（REQ 首页信息优先级§9）：收入方向相抵后的净额
-    val pendingNetCents = state.pendingItems.sumOf { p ->
-        val amt = p.parsed.amountCents ?: 0L
-        when (p.parsed.isExpense) {
-            true -> -amt
-            false -> amt
-            null -> 0L
-        }
-    }
-    val v5 = state.v5
-    // Box 只是给删除确认 AlertDialog 一个挂点，列表本身不动
-    Box(Modifier.fillMaxSize()) {
+    var showModuleLibrary by remember { mutableStateOf(false) }
+    var showAssetAccounts by remember { mutableStateOf(false) }
+    var showDebtAccounts by remember { mutableStateOf(false) }
+    var privacy by remember { mutableStateOf(context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getBoolean("privacy_mode", false)) }
+
+    val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+    fun money(cents: Long) = if (privacy) "••••" else formatMoney(cents)
+
+    // 本月收支（REQ 首页信息优先级§6/收入§2-3）：实际收入只算 INCOME；支出扣已关联退款与已报销
+    val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
+    val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
+    val monthIncome = monthTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
+    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+    val reimbOffset = monthTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
+    val monthExpense = (monthTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)
+    val monthBalance = monthIncome - monthExpense
+
+    // 最近还款提醒（REQ 首页UI§5-7）
+    val dueSoon = upcomingRepayments
+    val dueTotal = dueSoon.sumOf { it.totalCents }
+    val dueEarliest = dueSoon.minOfOrNull { it.dueDateEpochDay }
+    val anyOverdue = dueSoon.any { it.overdue }
+
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding),
+        Modifier.fillMaxSize().padding(padding),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 金库状态（REQ §19-22）：入库状态 + 最近入库时间 + 待确认/需核对三个点击区
+        // ── 第一层：财务总览卡（REQ 首页UI§1-2/§17-18）──
+        item {
+            GlassCard {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 总资产 / 总欠款 左右并列
+                        Column(Modifier.weight(1f).clickable { showAssetAccounts = true }) {
+                            Text("总资产", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(money(state.v5?.availableCashCents ?: 0L), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Column(Modifier.weight(1f).clickable { showDebtAccounts = true }, horizontalAlignment = Alignment.End) {
+                            Text("总欠款", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(money(state.v5?.totalDebtCents ?: 0L), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = HomeRed)
+                        }
+                        // 隐私开关（REQ 首页UI§9）
+                        TextButton(onClick = {
+                            privacy = !privacy
+                            prefs.edit().putBoolean("privacy_mode", privacy).apply()
+                        }) { Text(if (privacy) "显示金额" else "隐藏金额", style = MaterialTheme.typography.labelSmall) }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(6.dp))
+                    // 本月收支一行（整行可点进统计，REQ 首页UI§18）
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onGotoStats() }.padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("收入 ${money(monthIncome)}", color = HomeGreen, style = MaterialTheme.typography.bodyMedium)
+                        Text("支出 ${money(monthExpense)}", color = HomeRed, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "结余 ${if (monthBalance >= 0) money(monthBalance) else money(-monthBalance)}",
+                            color = if (monthBalance >= 0) HomeGreen else HomeRed,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    // 最近还款提醒（REQ 首页UI§5-7）：到期前 3 天窗口或逾期
+                    if (dueSoon.isNotEmpty()) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onGotoLoans() }.background(
+                                if (anyOverdue) HomeRed.copy(alpha = 0.12f) else HomeOrange.copy(alpha = 0.16f),
+                                RoundedCornerShape(8.dp)
+                            ).padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (anyOverdue) "已逾期" else "即将还款",
+                                fontWeight = FontWeight.Bold,
+                                color = if (anyOverdue) HomeRed else HomeOrange
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text(
+                                "${dueSoon.size} 笔 合计 ${money(dueTotal)}" + (dueEarliest?.let { " · 最近 ${DateTimeFormatter.ofPattern("M月d日", Locale.CHINA).format(java.time.LocalDate.ofEpochDay(it))}" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 第二层：金库状态卡（REQ 首页UI§3/§19-22）──
         item {
             VaultStatusCard(
                 listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
                 pendingCount = state.pendingItems.size,
-                pendingNetCents = pendingNetCents,
-                needsReconciliationCount = overdueAccounts.size + discrepancyAccounts.size,
-                onShowPending = { onShowPending(true) },
+                pendingNetCents = state.pendingItems.sumOf { p ->
+                    val amt = p.parsed.amountCents ?: 0L
+                    when (p.parsed.isExpense) { true -> -amt; false -> amt; null -> 0L }
+                },
+                needsReconciliationCount = state.accounts.filter {
+                    it.balanceStatus == "DISCREPANCY" || System.currentTimeMillis() - (it.lastCheckedAt ?: 0L) > 7 * 24 * 60 * 60 * 1000L
+                }.size,
+                onShowPending = onShowPending,
                 onShowReconciliation = onShowReconciliation,
                 context = context
             )
         }
 
-        // ── V5 还债驾驶舱 ──
-        if (v5 != null) {
-            item { V5DashboardCard(v5, state, model, onShowPending) }
-            item { V5SixGrid(v5) }
-            item { V5FutureCard(v5) }
-        }
-
-        // Reconciliation reminder
-        if (overdueAccounts.isNotEmpty()) {
-            item {
-                GlassCard {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("该对账了", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            Text(
-                                "${overdueAccounts.size}个账户超过${reconciliationIntervalMs / (24 * 60 * 60 * 1000)}天未对账",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        TextButton(onClick = onShowReconciliation) { Text("去对账") }
-                    }
-                }
-            }
-        }
-
-        // Accounts section
-        item { SectionHeader("账户", modifier = Modifier.padding(horizontal = 4.dp)) }
+        // ── 可配置模块区（REQ 首页可配置模块 §1-10）──
         item {
-            GlassCard {
-                state.accounts.forEach { account ->
-                    Column(Modifier.padding(vertical = 2.dp)) {
-                        AccountRow(account = account, onClick = { onEditAccount(account) })
-                        // V5：信用卡剩余应还（统一口径：原始账单−已还）/ Pending
-                        val remainingDue = v5?.cardRemainingDueByCard?.get(account.id) ?: 0L
-                        if (account.type == com.assetsking.model.AccountType.CREDIT.name &&
-                            (remainingDue > 0 || account.pendingCents > 0)
-                        ) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(start = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                if (remainingDue > 0) {
-                                    Text("本期待还 ${formatMoney(remainingDue)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                                    if (account.statementOriginalDueCents > remainingDue) {
-                                        Text("账单 ${formatMoney(account.statementOriginalDueCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                }
-                                if (account.pendingCents > 0) Text("Pending ${formatMoney(account.pendingCents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showModuleLibrary = true }) { Text("＋ 添加模块", style = MaterialTheme.typography.labelMedium) }
             }
         }
-
-        // Reimbursable section
-        val reimbursableTxs = state.transactions.filter { it.isReimbursable }
-        if (reimbursableTxs.isNotEmpty()) {
-            item { SectionHeader("待报销（${reimbursableTxs.size}笔 · ${formatMoney(reimbursableTxs.sumOf { it.amountCents })}）", modifier = Modifier.padding(horizontal = 4.dp)) }
-            item {
-                GlassCard {
-                    reimbursableTxs.forEach { tx ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(tx.merchant ?: "未知", fontWeight = FontWeight.Medium)
-                                Text(formatTime(tx.occurredAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Text(formatMoney(tx.amountCents), fontWeight = FontWeight.SemiBold)
-                            TextButton(onClick = { model.toggleReimbursable(tx.id, false) }) { Text("✓ 已报销") }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Transactions section
-        item { SectionHeader("最近流水", modifier = Modifier.padding(horizontal = 4.dp)) }
-        item {
-            GlassCard {
-                FormField(
-                    value = searchQuery,
-                    onValueChange = onSearchChange,
-                    label = "搜索流水（商户/备注）"
-                )
-                Spacer(Modifier.height(8.dp))
-                ChipRow(
-                    items = listOf("ALL", "EXPENSE", "INCOME"),
-                    selected = txFilter,
-                    onSelected = { txFilter = it },
-                    label = { when (it) { "ALL" -> "全部"; "EXPENSE" -> "支出"; "INCOME" -> "收入"; else -> it } },
-                    id = { it }
+        enabledModules.toList().sortedBy { moduleOrder(it) }.forEach { module ->
+            item(key = "module-$module") {
+                HomeModuleCard(
+                    key = module,
+                    state = state,
+                    budgets = budgets,
+                    recurringRules = recurringRules,
+                    upcomingRepayments = upcomingRepayments,
+                    repository = repository,
+                    money = ::money,
+                    onGotoStats = onGotoStats,
+                    onGotoLoans = onGotoLoans
                 )
             }
         }
-        val accountNames = state.accounts.associate { it.id to it.name }
-        // 转账存 transfers 表，与流水按时间合并展示；筛选只在「全部」时包含转账
-        val filteredRows = buildList {
-            state.transactions.forEach { tx ->
-                if (txFilter == "ALL" || tx.type == txFilter || (txFilter == "INCOME" && tx.type == "REFUND"))
-                    add(RecentRow(tx, null))
-            }
-            if (txFilter == "ALL") state.transfers.forEach { add(RecentRow(null, it)) }
-        }.filter { row ->
-            if (searchQuery.isBlank()) true
-            else row.tx?.let { (it.merchant ?: "").contains(searchQuery, ignoreCase = true) || (it.note ?: "").contains(searchQuery, ignoreCase = true) }
-                ?: (row.transfer?.note ?: "").contains(searchQuery, ignoreCase = true)
-        }.sortedByDescending { it.time }.take(20)
-        if (filteredRows.isEmpty()) {
-            item { GlassCard { EmptyState(if (searchQuery.isBlank()) "还没有流水，点右下角 ＋ 开始。" else "未找到匹配的流水") } }
-        } else {
-            // 流水保持 items()：20 条也让 LazyColumn 自己回收，且每条独立卡片点击区域更清楚
-            items(filteredRows, key = { it.tx?.id ?: "transfer-${it.transfer?.id}" }) { row ->
-                val tx = row.tx
-                GlassCard(contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    if (tx != null) {
-                        TransactionRow(
-                            transaction = tx,
-                            accountName = accountNames[tx.accountId].orEmpty(),
-                            onCategoryChange = { id, cat -> model.updateTransactionCategory(id, cat) },
-                            onClick = { onEditTransaction(tx) }
-                        )
-                    } else {
-                        val tf = requireNotNull(row.transfer)
-                        TransferRow(
-                            fromName = accountNames[tf.fromAccountId].orEmpty(),
-                            toName = accountNames[tf.toAccountId].orEmpty(),
-                            amountCents = tf.amountCents,
-                            occurredAt = tf.occurredAt,
-                            note = tf.note,
-                            onClick = { transferToDelete = tf }
-                        )
-                    }
-                }
-            }
-        }
     }
+
+    if (showModuleLibrary) {
+        ModuleLibraryDialog(
+            enabled = enabledModules,
+            onToggle = { module -> model.setHomeModules(enabledModules + module) },
+            onRemove = { module -> model.setHomeModules(enabledModules - module) },
+            onDismiss = { showModuleLibrary = false }
+        )
     }
-    // 转账删除确认：回滚两边余额
-    transferToDelete?.let { tf ->
-        val fromName = state.accounts.firstOrNull { it.id == tf.fromAccountId }?.name.orEmpty()
-        val toName = state.accounts.firstOrNull { it.id == tf.toAccountId }?.name.orEmpty()
-        AlertDialog(
-            onDismissRequest = { transferToDelete = null },
-            title = { Text("删除这笔转账？") },
-            text = { Text("$fromName → $toName ${formatMoney(tf.amountCents)}\n两边账户余额会按原样回滚。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    model.deleteTransfer(tf.id)
-                    transferToDelete = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { transferToDelete = null }) { Text("取消") }
-            }
+    if (showAssetAccounts) {
+        AccountListDialog(
+            title = "资产账户",
+            accounts = state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived },
+            onEdit = { showAssetAccounts = false; onEditAccount(it) },
+            onDismiss = { showAssetAccounts = false }
+        )
+    }
+    if (showDebtAccounts) {
+        AccountListDialog(
+            title = "欠款账户",
+            accounts = state.accounts.filter { it.type != AccountType.ASSET.name && !it.archived },
+            onEdit = { showDebtAccounts = false; onEditAccount(it) },
+            onDismiss = { showDebtAccounts = false }
         )
     }
 }
 
-/** 金库状态卡：入库状态 + 最近入库时间 + 待确认/需核对三个点击区（REQ §19-22）。 */
+private fun moduleOrder(key: String): Int = listOf("budget", "reimbursement", "recurring", "week", "ranking", "trend", "accounts", "repayments").indexOf(key).let { if (it < 0) 99 else it }
+
+/** 8 个可配置模块（REQ 首页可配置模块§5），全部可下钻。 */
+@Composable
+private fun HomeModuleCard(
+    key: String,
+    state: LedgerUiState,
+    budgets: List<BudgetEntity>,
+    recurringRules: List<RecurringRuleEntity>,
+    upcomingRepayments: List<UpcomingRepayment>,
+    repository: LedgerRepository,
+    money: (Long) -> String,
+    onGotoStats: () -> Unit,
+    onGotoLoans: () -> Unit
+) {
+    val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
+    val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
+    val sevenDaysAgo = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+    val weekTxs = state.transactions.filter { it.occurredAt >= sevenDaysAgo }
+
+    var stats by remember { mutableStateOf<StatsData?>(null) }
+    LaunchedEffect(Unit) {
+        if (key == "trend") stats = GetStatsUseCase(repository).invoke()
+    }
+
+    GlassCard(Modifier.fillMaxWidth().clickable { onGotoStats() }) {
+        Column(Modifier.padding(14.dp)) {
+            when (key) {
+                "budget" -> {
+                    val budgetSum = budgets.filter { it.month == YearMonth.now().toString() }.sumOf { it.monthlyLimitCents }
+                    val necessarySpent = monthTxs.filter { it.type == "EXPENSE" && it.necessity == true }.sumOf { it.amountCents }
+                    Text("本月预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("必要消费 ${money(necessarySpent)} / ${money(budgetSum)}", style = MaterialTheme.typography.bodyMedium)
+                    Text("自由开销额度见设置", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                "reimbursement" -> {
+                    val pending = state.transactions.filter { it.isReimbursable && it.reimbursedCents < it.amountCents }
+                    Text("待报销", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("${pending.size} 笔 · 待报销 ${money(pending.sumOf { it.amountCents - it.reimbursedCents })}", style = MaterialTheme.typography.bodyMedium)
+                }
+                "recurring" -> {
+                    val now = System.currentTimeMillis()
+                    val due = recurringRules.filter { it.isActive && it.nextRunAt in now..monthEnd }
+                    Text("本月待扣", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("${due.size} 笔 · 待扣 ${money(due.sumOf { it.amountCents })}", style = MaterialTheme.typography.bodyMedium)
+                }
+                "week" -> {
+                    val spend = (weekTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents }
+                        - weekTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+                        - weekTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }).coerceAtLeast(0L)
+                    Text("近 7 日支出", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(money(spend), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = HomeRed)
+                }
+                "ranking" -> {
+                    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null }.groupBy { it.refundOfId!! }.mapValues { (_, rs) -> rs.sumOf { it.amountCents } }
+                    val top = monthTxs.filter { it.type == "EXPENSE" }
+                        .groupBy { it.category }
+                        .map { (cat, txs) -> cat to txs.sumOf { (it.amountCents - (refundOffset[it.id] ?: 0L) - it.reimbursedCents).coerceAtLeast(0L) } }
+                        .sortedByDescending { it.second }.take(3)
+                    Text("分类排行", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    top.forEach { (cat, cents) ->
+                        Text("${cat.ifEmpty { "待分类" }}  ${money(cents)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (top.isEmpty()) Text("暂无记录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                "trend" -> {
+                    Text("月度趋势", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    stats?.monthlyBars?.takeLast(3)?.forEach { bar ->
+                        Text("${bar.month}  收 ${money(bar.incomeCents)}  支 ${money(bar.expenseCents)}", style = MaterialTheme.typography.bodySmall)
+                    } ?: Text("加载中…", style = MaterialTheme.typography.bodySmall)
+                }
+                "accounts" -> {
+                    Text("分账户余额", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived }.take(4).forEach { a ->
+                        Text("${a.name}  ${money(a.balanceCents)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                "repayments" -> {
+                    val paid = monthTxs.filter { it.type == "LOAN_PAYMENT" }.sumOf { it.amountCents }
+                    Text("本月还款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    if (upcomingRepayments.isNotEmpty()) {
+                        Text("待还 ${upcomingRepayments.size} 笔 ${money(upcomingRepayments.sumOf { it.totalCents })}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("已还 ${money(paid)}", style = MaterialTheme.typography.bodySmall, color = HomeGreen)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModuleLibraryDialog(
+    enabled: Set<String>,
+    onToggle: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val all = listOf(
+        "budget" to "本月预算", "reimbursement" to "待报销", "recurring" to "周期扣款",
+        "week" to "近 7 日支出", "ranking" to "分类排行", "trend" to "月度趋势",
+        "accounts" to "分账户余额", "repayments" to "本月还款"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("首页模块") },
+        text = {
+            Column {
+                all.forEach { (key, label) ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = key in enabled,
+                            onCheckedChange = { if (it) onToggle(key) else onRemove(key) }
+                        )
+                        Text(label)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+        dismissButton = {}
+    )
+}
+
+@Composable
+private fun AccountListDialog(
+    title: String,
+    accounts: List<AccountEntity>,
+    onEdit: (AccountEntity) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                accounts.forEach { a ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onEdit(a) }.padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(a.name)
+                        Text(formatMoney(if (a.type == AccountType.ASSET.name) a.balanceCents else a.balanceCents), fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {}
+    )
+}
+
+/** 金库状态卡（REQ 首页UI §19-22）：三个完整点击区 + 净变化。 */
 @Composable
 private fun VaultStatusCard(
     listenerStatus: ListenerStatus,
@@ -288,229 +404,49 @@ private fun VaultStatusCard(
     context: Context
 ) {
     val (statusLabel, statusColor) = when (listenerStatus) {
-        ListenerStatus.OK -> "金库正常" to Green
-        ListenerStatus.DISCONNECTED -> "入库中断" to MaterialTheme.colorScheme.error
+        ListenerStatus.OK -> "金库正常" to MaterialTheme.colorScheme.primary
+        ListenerStatus.DISCONNECTED -> "入库暂时中断" to HomeRed
         ListenerStatus.DISABLED -> "尚未开启" to MaterialTheme.colorScheme.onSurfaceVariant
     }
     GlassCard {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("金库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-            Text(statusLabel, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = statusColor)
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (pendingCount > 0 || needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (pendingCount > 0) {
-                    Text(
-                        "待确认 $pendingCount · 净变化 ${if (pendingNetCents > 0) "+" else ""}${formatMoney(pendingNetCents)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { onShowPending() }
-                    )
-                }
-                if (needsReconciliationCount > 0) {
-                    Text(
-                        "需核对 $needsReconciliationCount",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { onShowReconciliation() }
-                    )
-                }
-                if (listenerStatus != ListenerStatus.OK) {
-                    TextButton(onClick = { openListenerSettings(context) }) {
-                        Text(if (listenerStatus == ListenerStatus.DISABLED) "去开启" else "去重绑")
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("金库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(statusLabel, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = statusColor)
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().clickable { }
+            )
+            if (pendingCount > 0 || needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (pendingCount > 0) {
+                        Text(
+                            "待确认 $pendingCount · 净变化 ${if (pendingNetCents > 0) "+" else ""}${formatMoney(pendingNetCents)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { onShowPending() }
+                        )
+                    }
+                    if (needsReconciliationCount > 0) {
+                        Text(
+                            "需核对 $needsReconciliationCount",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { onShowReconciliation() }
+                        )
+                    }
+                    if (listenerStatus != ListenerStatus.OK) {
+                        TextButton(onClick = { openListenerSettings(context) }) {
+                            Text(if (listenerStatus == ListenerStatus.DISABLED) "去开启" else "去重绑")
+                        }
                     }
                 }
             }
         }
-    }
-}
-
-// ── V5 驾驶舱组件 ──
-
-@Composable
-private fun V5DashboardCard(
-    v5: V5Metrics,
-    state: LedgerUiState,
-    model: LedgerViewModel,
-    onShowPending: (Boolean) -> Unit
-) {
-    GlassCard {
-        Text(
-            text = "当前总负债",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = formatMoney(v5.totalDebtCents),
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.error
-        )
-        Spacer(Modifier.height(6.dp))
-        // 可用现金：与总负债成对出现——「欠多少 / 手上有多少」一眼可比
-        Text(
-            text = "可用现金 ${formatMoney(v5.availableCashCents)}",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = if (v5.availableCashCents > 0) Green else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-        val breakdown = buildString {
-            append("信用卡 ${formatMoney(v5.cardDebtCents)}")
-            if (v5.loanAccountDebtCents > 0) append(" · 贷款账户 ${formatMoney(v5.loanAccountDebtCents)}")
-            if (v5.loanPlanDebtCents > 0) append(" · 贷款计划 ${formatMoney(v5.loanPlanDebtCents)}")
-            if (v5.accruedInterestCents > 0) append(" · 已发生利息 ${formatMoney(v5.accruedInterestCents)}")
-        }
-        Text(
-            text = breakdown,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-        when {
-            v5.anchorTotalDebtCents == null -> Text(
-                "今日起建档 · 下月起计算净降债",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            v5.netDebtReductionCents > 0 -> Text(
-                "本月净降债 +${formatMoney(v5.netDebtReductionCents)}",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = Green
-            )
-            v5.netDebtReductionCents < 0 -> Text(
-                "本月负债净增 ${formatMoney(-v5.netDebtReductionCents)}",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error
-            )
-            else -> Text(
-                "本月负债持平",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "${v5TrendLabel(v5.trend)} · 阶段：${v5StageLabel(v5.stage)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary
-        )
-        if (v5.needsAttention) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "注意：负债没有在下降",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-        if (state.unprocessedNotifications > 0) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "待处理通知 ${state.unprocessedNotifications} 条 — 点击处理",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.clickable {
-                    model.processNotifications()
-                    onShowPending(true)
-                }
-            )
-        }
-        if (state.pendingItems.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "待确认 ${state.pendingItems.size} 条 — 点击查看",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { onShowPending(true) }
-            )
-        }
-    }
-}
-
-@Composable
-private fun V5SixGrid(v5: V5Metrics) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCell("本月必还", formatMoney(v5.mustRepayCents), MaterialTheme.colorScheme.error, Modifier.weight(1f))
-            MetricCell(
-                "本月还剩",
-                if (v5.monthlySurvivalGapCents < 0) "缺 ${formatMoney(-v5.monthlySurvivalGapCents)}" else "+${formatMoney(v5.monthlySurvivalGapCents)}",
-                if (v5.monthlySurvivalGapCents < 0) MaterialTheme.colorScheme.error else Green,
-                Modifier.weight(1f)
-            )
-            MetricCell(
-                "每月能剩",
-                if (v5.stableDebtCoverageCents >= 0) "+${formatMoney(v5.stableDebtCoverageCents)}" else "缺 ${formatMoney(-v5.stableDebtCoverageCents)}",
-                if (v5.stableDebtCoverageCents >= 0) Green else MaterialTheme.colorScheme.error,
-                Modifier.weight(1f)
-            )
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MetricCell("本月能花", formatMoney(v5.freeSpendingCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
-            MetricCell("今天能花", formatMoney(v5.dailySafeSpendCents), MaterialTheme.colorScheme.onSurface, Modifier.weight(1f))
-            MetricCell(
-                "今天已花",
-                formatMoney(v5.todayOptionalSpentCents),
-                if (v5.todayOptionalSpentCents > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                Modifier.weight(1f)
-            )
-        }
-        if (v5.optionalSpentCents > 0) {
-            Text(
-                "本月非必要消费已花 ${formatMoney(v5.optionalSpentCents)}（已计入上方缺口）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        if (v5.freeSpendingCents == 0L && v5.monthlySurvivalGapCents < 0) {
-            Text(
-                "本月存在资金缺口，建议暂停非必要消费",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
-private fun MetricCell(title: String, value: String, valueColor: Color, modifier: Modifier = Modifier) {
-    GlassCard(modifier = modifier, contentPadding = Modifier.padding(12.dp)) {
-        Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            value,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = valueColor
-        )
-    }
-}
-
-@Composable
-private fun V5FutureCard(v5: V5Metrics) {
-    GlassCard {
-        Text("未来应还与预测", fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text("未来7天应还 ${formatMoney(v5.due7DaysCents)} · 未来30天应还 ${formatMoney(v5.due30DaysCents)}", style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            v5.projectedPayoffMonths?.let { "按当前轨迹预计 ${it} 个月后清债" } ?: "按当前轨迹 24 个月内无法清债",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (v5.projectedPayoffMonths != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-        )
     }
 }
