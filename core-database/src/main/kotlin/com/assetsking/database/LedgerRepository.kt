@@ -108,7 +108,9 @@ class LedgerRepository(
         merchant: String?,
         note: String?,
         bankBalanceCents: Long? = null,
-        bankCardTail: String? = null
+        bankCardTail: String? = null,
+        necessity: Boolean? = null,
+        channel: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -154,7 +156,7 @@ class LedgerRepository(
                     // 贷款扣款自动匹配期次（REQ 贷款页 §6-8）：确认时按金额+日期匹配最接近的
                     // 未还期次，匹配上即标记已还并记实际本金/利息/手续费；对不上挂最近计划、
                     // 本金暂按全额（待确认页允许确认前修改，§8）。
-                    val match = findLoanInstallmentMatch(amountCents, postedAt)
+                    val match = suggestLoanMatch(amountCents, postedAt)
                     val plan = match?.first
                     val inst = match?.second
                     if (plan != null && inst != null && inst.total.cents == amountCents) {
@@ -164,19 +166,22 @@ class LedgerRepository(
                             principalCents = inst.principal.cents,
                             interestCents = inst.interest.cents,
                             feeCents = inst.fee.cents,
-                            loanPlanId = plan.id
+                            loanPlanId = plan.id,
+                            necessity = necessity, channel = channel
                         )
                         markInstallmentPaid(plan, inst.number, inst.principal.cents)
                     } else {
                         addTransaction(
                             accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
-                            occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id
+                            occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
+                            necessity = necessity, channel = channel
                         )
                     }
                 } else {
                     addTransaction(
                         accountId, amountCents, type, category, merchant, note,
-                        occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId
+                        occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId,
+                        necessity = necessity, channel = channel
                     )
                 }
             }
@@ -505,11 +510,23 @@ class LedgerRepository(
         interestCents: Long = 0,
         feeCents: Long = 0,
         loanPlanId: String? = null,
-        refundOfId: String? = null
+        refundOfId: String? = null,
+        necessity: Boolean? = null,
+        channel: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
             requireNotNull(database.accountDao().find(accountId))
+            // 手动记退款同样自动关联原消费（REQ 待确认§6-8）：与通知确认路径同一条规则
+            val linkedRefund = refundOfId ?: if (type == TransactionType.REFUND) {
+                database.transactionDao().findInRange(
+                    occurredAt - 30L * 24 * 60 * 60 * 1000, occurredAt
+                ).filter {
+                    it.accountId == accountId &&
+                        it.type == TransactionType.EXPENSE.name &&
+                        it.amountCents <= amountCents
+                }.maxWithOrNull(compareBy({ it.amountCents }, { it.occurredAt }))?.id
+            } else null
             database.transactionDao().insert(
                 TransactionEntity(
                     id = UUID.randomUUID().toString(),
@@ -520,7 +537,9 @@ class LedgerRepository(
                     occurredAt = occurredAt,
                     merchant = merchant?.trim()?.takeIf { it.isNotEmpty() },
                     note = note?.trim()?.takeIf { it.isNotEmpty() },
-                    refundOfId = refundOfId,
+                    refundOfId = linkedRefund,
+                    necessity = necessity,
+                    channel = channel?.trim()?.takeIf { it.isNotEmpty() },
                     isReimbursable = isReimbursable,
                     recurringRuleId = recurringRuleId,
                     principalCents = principalCents,
@@ -846,10 +865,11 @@ class LedgerRepository(
      * 匹配条件：同商户 + 同类型 + 金额相差 15% 以内 + 应扣日前后 5 天，且还没被别的规则认领。
      */
     /**
-     * 在所有进行中的贷款计划里匹配扣款通知对应的期次（REQ 贷款页 §6）。
+     * 在所有进行中的贷款计划里匹配扣款对应的期次（REQ 贷款页 §6）。
      * 评分 = 金额差 × 100000 + 日期差：金额完全一致优先，其次日期接近。
+     * 编辑器用它给「贷款还款」预填计划与明细。
      */
-    private suspend fun findLoanInstallmentMatch(
+    suspend fun suggestLoanMatch(
         amountCents: Long,
         postedAt: Long
     ): Pair<LoanPlanEntity, com.assetsking.model.LoanInstallment>? {

@@ -388,6 +388,55 @@ class LedgerViewModel(
         }
     }
 
+    // ── 统一编辑器（M4）专用保存入口：带必要性/渠道/报销关联 ──
+
+    fun saveEditorTransaction(
+        accountId: String,
+        amountCents: Long,
+        type: TransactionType,
+        category: String,
+        merchant: String?,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        isReimbursable: Boolean = false,
+        necessity: Boolean? = null,
+        channel: String? = null
+    ) {
+        viewModelScope.launch {
+            repository.addTransaction(
+                accountId, amountCents, type, category, merchant, note,
+                occurredAt = occurredAt, isReimbursable = isReimbursable,
+                necessity = necessity, channel = channel
+            )
+        }
+    }
+
+    fun saveReimbursement(
+        accountId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        expenseIds: List<String>
+    ) {
+        viewModelScope.launch { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds) }
+    }
+
+    fun addCategoryEntity(name: String, shortName: String, parentId: String?, iconKey: String, defaultNecessary: Boolean?) {
+        viewModelScope.launch { repository.addCategory(name, shortName, parentId, iconKey, defaultNecessary) }
+    }
+
+    fun updateCategoryEntity(id: String, name: String?, shortName: String?, parentId: String?) {
+        viewModelScope.launch { repository.updateCategory(id, name, shortName, parentId) }
+    }
+
+    fun archiveOrDeleteCategory(id: String) {
+        viewModelScope.launch { repository.deleteCategory(id) }
+    }
+
+    fun mergeCategoryEntity(sourceId: String, targetId: String) {
+        viewModelScope.launch { repository.mergeCategory(sourceId, targetId) }
+    }
+
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
@@ -414,12 +463,14 @@ class LedgerViewModel(
         merchant: String?,
         note: String?,
         bankBalanceCents: Long? = null,
-        bankCardTail: String? = null
+        bankCardTail: String? = null,
+        necessity: Boolean? = null,
+        channel: String? = null
     ) {
         viewModelScope.launch {
             repository.confirmNotification(
                 notificationId, accountId, amountCents, type, category, merchant, note,
-                bankBalanceCents, bankCardTail
+                bankBalanceCents, bankCardTail, necessity, channel
             )
             repository.learnRule(merchant, accountId, type.name, category)
         }
@@ -428,6 +479,11 @@ class LedgerViewModel(
     /** 忽略通知 */
     fun ignoreNotification(notificationId: String) {
         viewModelScope.launch { repository.updateNotificationStatus(notificationId, "IGNORED") }
+    }
+
+    /** 用户确认/手动记账后学习：记住 商户→(账户,收支类型,分类) */
+    fun learnRule(merchant: String?, accountId: String, type: String, category: String) {
+        viewModelScope.launch { repository.learnRule(merchant, accountId, type, category) }
     }
 
     /** 拆分通知（REQ 归并§18）：把被误合并的证据恢复为独立待确认项 */

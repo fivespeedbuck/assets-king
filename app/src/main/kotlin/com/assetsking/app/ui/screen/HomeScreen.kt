@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
+import com.assetsking.app.PendingItem
 import com.assetsking.app.RecordMode
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
@@ -34,6 +35,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val loanPlans by model.loanPlans.collectAsStateWithLifecycle(initialValue = emptyList<LoanPlanEntity>())
     val recurringRules by model.recurringRules.collectAsStateWithLifecycle(initialValue = emptyList<RecurringRuleEntity>())
     val customCategories by model.customCategories.collectAsStateWithLifecycle(initialValue = emptyList<CustomCategoryEntity>())
+    val categories by model.categories.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.CategoryEntity>())
+    val merchants by model.merchants.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.MerchantEntity>())
+    val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
@@ -50,6 +54,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var recordInitialPlanId by remember { mutableStateOf<String?>(null) }
     var showPending by remember { mutableStateOf(false) }
     var showPendingBox by remember { mutableStateOf(false) }
+    var showEditor by remember { mutableStateOf(false) }
+    var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
@@ -74,9 +80,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             if (selectedTab == 0) {
                 FloatingActionButton(
                     onClick = {
-                        recordInitialMode = RecordMode.EXPENSE
-                        recordInitialPlanId = null
-                        showSheet = true
+                        editorPendingItem = null
+                        showEditor = true
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
@@ -203,13 +208,34 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     if (showPendingBox) {
         PendingBoxScreen(
             items = state.pendingItems,
-            ignoredItems = state.ignoredItems,
             accounts = state.accounts,
             merchantLastAccount = state.merchantLastAccount,
-            customCategoryNames = customCategories.map { it.name },
             viewModel = model,
             lastReceivedAt = lastReceivedAt,
+            onOpenEditor = { item ->
+                editorPendingItem = item
+                showEditor = true
+            },
             onBack = { showPendingBox = false }
+        )
+    }
+
+    // 统一编辑器（M4）：手动记账与待确认复用，覆盖在最上层
+    if (showEditor) {
+        TransactionEditorScreen(
+            pendingItem = editorPendingItem,
+            accounts = state.accounts,
+            categories = categories,
+            merchants = merchants,
+            loanPlans = loanPlans,
+            transactions = state.transactions,
+            reimbursableTxs = reimbursable,
+            merchantLastAccount = state.merchantLastAccount,
+            ignoredItems = state.ignoredItems,
+            viewModel = model,
+            repository = repository,
+            onDone = { showEditor = false },
+            onBack = { showEditor = false }
         )
     }
 
