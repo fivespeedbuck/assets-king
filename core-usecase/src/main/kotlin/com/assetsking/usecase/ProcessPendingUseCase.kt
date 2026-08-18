@@ -76,7 +76,8 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             }
             if (sameEvidence != null) {
                 repository.updateNotificationStatus(notification.id, "IGNORED")
-                repository.updateNotificationNote(notification.id, "与已入库证据内容指纹相同（补扫/重推）")
+                // kept=<id>：待确认箱据此把本条显示为该笔的合并证据，并支持拆分（REQ 归并§17-18）
+                repository.updateNotificationNote(notification.id, "与已入库证据内容指纹相同（补扫/重推）kept=${sameEvidence.id}")
                 continue
             }
 
@@ -113,11 +114,11 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 // 留下带商户名的那条 —— 商户名决定能不能自动分类、学规则
                 if (parsed.merchant != null && parseMerchant(duplicate) == null) {
                     repository.updateNotificationStatus(duplicate.id, "IGNORED")
-                    repository.updateNotificationNote(duplicate.id, "与另一条同额通知重复，已保留带商户名的那条")
+                    repository.updateNotificationNote(duplicate.id, "与另一条同额通知重复，已保留带商户名的那条 kept=${notification.id}")
                     seen.remove(duplicate)
                 } else {
                     repository.updateNotificationStatus(notification.id, "IGNORED")
-                    repository.updateNotificationNote(notification.id, "与另一条同额通知重复（同一笔被多个 app 各推一条）")
+                    repository.updateNotificationNote(notification.id, "与另一条同额通知重复（同一笔被多个 app 各推一条）kept=${duplicate.id}")
                     continue
                 }
             }

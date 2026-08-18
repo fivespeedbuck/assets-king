@@ -76,6 +76,15 @@ fun HomeTab(
     }
     // 差额核对标出的账户同样进「需核对」（REQ 账户对账 §4-5）
     val discrepancyAccounts = state.accounts.filter { it.balanceStatus == "DISCREPANCY" }
+    // 待确认净变化（REQ 首页信息优先级§9）：收入方向相抵后的净额
+    val pendingNetCents = state.pendingItems.sumOf { p ->
+        val amt = p.parsed.amountCents ?: 0L
+        when (p.parsed.isExpense) {
+            true -> -amt
+            false -> amt
+            null -> 0L
+        }
+    }
     val v5 = state.v5
     // Box 只是给删除确认 AlertDialog 一个挂点，列表本身不动
     Box(Modifier.fillMaxSize()) {
@@ -92,6 +101,7 @@ fun HomeTab(
                 listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
                 pendingCount = state.pendingItems.size,
+                pendingNetCents = pendingNetCents,
                 needsReconciliationCount = overdueAccounts.size + discrepancyAccounts.size,
                 onShowPending = { onShowPending(true) },
                 onShowReconciliation = onShowReconciliation,
@@ -271,6 +281,7 @@ private fun VaultStatusCard(
     listenerStatus: ListenerStatus,
     lastReceivedAt: Long,
     pendingCount: Int,
+    pendingNetCents: Long,
     needsReconciliationCount: Int,
     onShowPending: () -> Unit,
     onShowReconciliation: () -> Unit,
@@ -301,7 +312,7 @@ private fun VaultStatusCard(
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (pendingCount > 0) {
                     Text(
-                        "待确认 $pendingCount",
+                        "待确认 $pendingCount · 净变化 ${if (pendingNetCents > 0) "+" else ""}${formatMoney(pendingNetCents)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable { onShowPending() }

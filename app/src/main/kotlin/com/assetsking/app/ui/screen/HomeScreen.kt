@@ -49,6 +49,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
     var recordInitialPlanId by remember { mutableStateOf<String?>(null) }
     var showPending by remember { mutableStateOf(false) }
+    var showPendingBox by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
@@ -91,7 +92,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 context = context, model = model, searchQuery = searchQuery,
                 editingAccount = editingAccount, editingTransaction = editingTransaction,
                 onSearchChange = { searchQuery = it },
-                onShowPending = { showPending = it },
+                onShowPending = { showPendingBox = true },
                 onEditAccount = { editingAccount = it },
                 onEditTransaction = { editingTransaction = it },
                 onShowReconciliation = { showReconciliation = true }
@@ -195,6 +196,20 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             customCategoryNames = customCategories.map { it.name },
             initialMode = recordInitialMode,
             initialPlanId = recordInitialPlanId
+        )
+    }
+
+    // 待确认箱全屏页（REQ 待确认箱 UI）：覆盖在 Scaffold 之上
+    if (showPendingBox) {
+        PendingBoxScreen(
+            items = state.pendingItems,
+            ignoredItems = state.ignoredItems,
+            accounts = state.accounts,
+            merchantLastAccount = state.merchantLastAccount,
+            customCategoryNames = customCategories.map { it.name },
+            viewModel = model,
+            lastReceivedAt = lastReceivedAt,
+            onBack = { showPendingBox = false }
         )
     }
 

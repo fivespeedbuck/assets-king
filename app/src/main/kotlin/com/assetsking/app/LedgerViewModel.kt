@@ -56,7 +56,8 @@ private data class BaseState(
     val transactions: List<TransactionEntity>,
     val transfers: List<TransferEntity>,
     val count: Int,
-    val pending: List<RawNotificationEntity>
+    val pending: List<RawNotificationEntity>,
+    val ignored: List<RawNotificationEntity>
 )
 
 data class LedgerUiState(
@@ -67,7 +68,9 @@ data class LedgerUiState(
     val pendingItems: List<PendingItem> = emptyList(),
     val v5: V5Metrics? = null,    // null = 数据加载中
     /** 商户 → 最近一次使用的账户 id（REQ 账户对账 §18 默认账户推断） */
-    val merchantLastAccount: Map<String, String> = emptyMap()
+    val merchantLastAccount: Map<String, String> = emptyMap(),
+    /** 已忽略的证据（判重/对冲/无法识别）：备注里带 kept=<id> 的是某待确认项的合并证据 */
+    val ignoredItems: List<RawNotificationEntity> = emptyList()
 )
 
 class LedgerViewModel(
@@ -89,7 +92,9 @@ class LedgerViewModel(
         repository.unprocessedNotifications,
         repository.pendingNotifications
     ) { accounts, transactions, transfers, count, pending ->
-        BaseState(accounts, transactions, transfers, count, pending)
+        BaseState(accounts, transactions, transfers, count, pending, emptyList())
+    }.combine(repository.ignoredNotifications) { base, ignored ->
+        base.copy(ignored = ignored)
     }.flatMapLatest { base ->
         getV5Metrics().map { v5 ->
             LedgerUiState(
@@ -104,7 +109,8 @@ class LedgerViewModel(
                 merchantLastAccount = base.transactions
                     .filter { !it.merchant.isNullOrBlank() }
                     .groupBy { it.merchant!! }
-                    .mapValues { (_, txs) -> txs.maxByOrNull { it.occurredAt }!!.accountId }
+                    .mapValues { (_, txs) -> txs.maxByOrNull { it.occurredAt }!!.accountId },
+                ignoredItems = base.ignored
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LedgerUiState())
@@ -422,6 +428,14 @@ class LedgerViewModel(
     /** 忽略通知 */
     fun ignoreNotification(notificationId: String) {
         viewModelScope.launch { repository.updateNotificationStatus(notificationId, "IGNORED") }
+    }
+
+    /** 拆分通知（REQ 归并§18）：把被误合并的证据恢复为独立待确认项 */
+    fun splitNotification(notificationId: String) {
+        viewModelScope.launch {
+            repository.updateNotificationStatus(notificationId, "PENDING_CONFIRMATION")
+            repository.updateNotificationNote(notificationId, "")
+        }
     }
 
     companion object {
