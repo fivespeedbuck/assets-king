@@ -62,6 +62,7 @@ class SmsReceiver : BroadcastReceiver() {
                     )
                 )
                 app.processPending.invoke()
+                PendingNotifier.scheduleDebounced(context.applicationContext, scope)
             } catch (_: Exception) {
                 // ponytail: 静默失败比广播崩溃好
             } finally {

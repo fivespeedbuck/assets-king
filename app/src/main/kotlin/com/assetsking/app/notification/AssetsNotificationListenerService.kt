@@ -127,6 +127,7 @@ class AssetsNotificationListenerService : NotificationListenerService() {
                     )
                 )
                 app.processPending.invoke()
+                PendingNotifier.scheduleDebounced(this@AssetsNotificationListenerService, serviceScope)
             } catch (_: Exception) {
                 // ponytail: 静默失败比服务崩溃好
             }
