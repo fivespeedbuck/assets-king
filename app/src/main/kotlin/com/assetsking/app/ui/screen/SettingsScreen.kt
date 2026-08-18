@@ -1,12 +1,15 @@
 package com.assetsking.app.ui.screen
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -99,6 +102,8 @@ fun SettingsScreen(
     var reconcileDays by remember { mutableStateOf((currentInterval / (24 * 60 * 60 * 1000L)).toInt()) }
     var newCatName by remember { mutableStateOf("") }
     var showWindfall by remember { mutableStateOf(false) }
+
+    val smsPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -315,8 +320,11 @@ fun SettingsScreen(
         else true
         val batteryOk = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
             .isIgnoringBatteryOptimizations(context.packageName)
-        val allOk = notifListenerOk && notifPermOk && batteryOk
-        val failCount = listOf(notifListenerOk, notifPermOk, batteryOk).count { !it }
+        val smsPermOk = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECEIVE_SMS
+        ) == PackageManager.PERMISSION_GRANTED
+        val allOk = notifListenerOk && notifPermOk && batteryOk && smsPermOk
+        val failCount = listOf(notifListenerOk, notifPermOk, batteryOk, smsPermOk).count { !it }
         item {
             GlassCard {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -351,6 +359,13 @@ fun SettingsScreen(
                         Text(if (notifPermOk) "✅" else "❌", style = MaterialTheme.typography.bodySmall)
                         if (!notifPermOk) TextButton(onClick = {
                             context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
+                        }) { Text("去开启") }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("短信读取（兜底）", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (smsPermOk) "✅" else "❌", style = MaterialTheme.typography.bodySmall)
+                        if (!smsPermOk) TextButton(onClick = {
+                            smsPermLauncher.launch(Manifest.permission.RECEIVE_SMS)
                         }) { Text("去开启") }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
