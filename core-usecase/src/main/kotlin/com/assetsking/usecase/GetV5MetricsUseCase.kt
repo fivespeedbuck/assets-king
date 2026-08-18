@@ -81,17 +81,28 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         val (monthStart, monthEnd) = monthRange(ym)
 
         val monthTxs = base.transactions.filter { it.occurredAt in monthStart..monthEnd }
+        // 本月实际收入只统计已确认真实收入（REQ 收入§2/§5）：退款/报销到账/转账不进普通收入。
+        // 退款冲减原消费分类由退款关联（M1.3）实现，不是把退款当收入。
         val incomeActual = monthTxs
-            .filter { it.type == "INCOME" || it.type == "REFUND" }
+            .filter { it.type == "INCOME" }
             .sumOf { it.amountCents }
         val feeMonth = monthTxs.filter { it.type == "FEE" }.sumOf { it.amountCents }
         val newBorrowing = monthTxs
             .filter { it.type == "LOAN_DISBURSEMENT" }
             .sumOf { it.amountCents }
-        // 已发生的非必要消费（按设置勾选的分类）→ 占用自由消费、恶化实际缺口
-        val optionalSpent = monthTxs
+        // 已发生的非必要消费（按设置勾选的分类）→ 占用自由消费、恶化实际缺口。
+        // 已关联退款冲减原消费的必要性额度（REQ 待确认§8）：非必要消费退款 → 释放自由开销。
+        val rawOptionalSpent = monthTxs
             .filter { it.type == "EXPENSE" && it.category in optionalCategories }
             .sumOf { it.amountCents }
+        val optionalRefundOffset = monthTxs
+            .filter { it.type == "REFUND" && it.refundOfId != null }
+            .sumOf { refund ->
+                monthTxs.firstOrNull {
+                    it.id == refund.refundOfId && it.type == "EXPENSE" && it.category in optionalCategories
+                }?.let { refund.amountCents } ?: 0L
+            }
+        val optionalSpent = (rawOptionalSpent - optionalRefundOffset).coerceAtLeast(0L)
         // 今日已花（非必要）：对应首页「今日上限」，让用户一眼看到今天还差多少额度
         val todayStart = today.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
         val todayOptionalSpent = monthTxs

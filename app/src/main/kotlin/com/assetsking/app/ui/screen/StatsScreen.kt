@@ -83,7 +83,7 @@ fun StatsScreen(
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("本月现金流", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月收入", style = MaterialTheme.typography.bodyMedium)
+                        Text("本月实际收入", style = MaterialTheme.typography.bodyMedium)
                         Text("+${formatMoney(v5.incomeActualCents)}", fontWeight = FontWeight.Medium, color = Color(0xFF66BB6A))
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

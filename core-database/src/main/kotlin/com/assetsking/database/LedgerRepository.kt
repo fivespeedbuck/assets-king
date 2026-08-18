@@ -135,9 +135,21 @@ class LedgerRepository(
                             kotlin.math.abs(it.amountCents - amountCents) * 100 <= amountCents * 15 &&
                             kotlin.math.abs(it.nextRunAt - postedAt) <= 5L * 24 * 60 * 60 * 1000
                     }?.id
+                // 退款关联原消费（REQ 待确认交易类型 §6-8）：同账户、30 天内的支出中取金额
+                // 最接近且 ≤ 退款额的（同额取最近）——冲减原消费的分类与必要性，不计入本月收入。
+                // ponytail: 找不到原消费仍允许独立退款确认（§7），只不参与冲减。
+                val refundOfId = if (type == TransactionType.REFUND) {
+                    database.transactionDao().findInRange(
+                        postedAt - 30L * 24 * 60 * 60 * 1000, postedAt
+                    ).filter {
+                        it.accountId == accountId &&
+                            it.type == TransactionType.EXPENSE.name &&
+                            it.amountCents <= amountCents
+                    }.maxWithOrNull(compareBy({ it.amountCents }, { it.occurredAt }))?.id
+                } else null
                 addTransaction(
                     accountId, amountCents, type, category, merchant, note,
-                    occurredAt = postedAt, recurringRuleId = ruleId
+                    occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId
                 )
             }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
@@ -452,7 +464,8 @@ class LedgerRepository(
         principalCents: Long = 0,
         interestCents: Long = 0,
         feeCents: Long = 0,
-        loanPlanId: String? = null
+        loanPlanId: String? = null,
+        refundOfId: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -467,6 +480,7 @@ class LedgerRepository(
                     occurredAt = occurredAt,
                     merchant = merchant?.trim()?.takeIf { it.isNotEmpty() },
                     note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    refundOfId = refundOfId,
                     isReimbursable = isReimbursable,
                     recurringRuleId = recurringRuleId,
                     principalCents = principalCents,

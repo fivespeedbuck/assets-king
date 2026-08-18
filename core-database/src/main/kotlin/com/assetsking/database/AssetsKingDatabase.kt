@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -103,6 +103,13 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /** v14→v15：transactions 加 refundOfId 列（退款关联原消费，REQ 待确认交易类型 §6-8）。只加列，非破坏性。 */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN refundOfId TEXT")
+            }
+        }
+
         /** v13→v14：raw_notifications 加 contentFingerprint 列（内容指纹判重）。只加列，非破坏性。 */
         private val MIGRATION_13_14 = object : Migration(13, 14) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -170,7 +177,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15).build().also { instance = it }
         }
     }
 }

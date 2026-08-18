@@ -38,7 +38,8 @@ data class TransactionEntity(
     val principalCents: Long = 0,        // LOAN_PAYMENT: 本金部分
     val interestCents: Long = 0,         // LOAN_PAYMENT: 利息部分
     val feeCents: Long = 0,              // LOAN_PAYMENT: 手续费部分
-    val loanPlanId: String? = null       // LOAN_* 关联的贷款计划，删除回滚用
+    val loanPlanId: String? = null,      // LOAN_* 关联的贷款计划，删除回滚用
+    val refundOfId: String? = null       // REFUND: 关联的原消费流水（REQ 待确认交易类型 §6-8），冲减原分类/必要性
 )
 
 @Entity(tableName = "transfers", indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt")])

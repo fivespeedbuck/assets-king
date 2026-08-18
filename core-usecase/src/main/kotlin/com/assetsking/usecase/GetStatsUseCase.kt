@@ -51,10 +51,23 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
         val monthEnd = cal.timeInMillis
 
         val monthTxs = repository.transactionsInRange(monthStart, monthEnd)
+        val txById = monthTxs.associateBy { it.id }
+        // 已关联退款按原消费冲减（REQ 待确认交易类型 §8）：分类统计是净消费，退款不计入收入。
+        // ponytail: 退款与原消费跨月时（原消费不在本月窗口）不参与本月冲减，M7 统计重构时再统一。
+        val refundOffsetByTx = monthTxs
+            .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null && txById.containsKey(it.refundOfId) }
+            .groupBy { it.refundOfId!! }
+            .mapValues { (_, refunds) -> refunds.sumOf { it.amountCents } }
         val categorySlices = monthTxs
             .filter { it.type == TransactionType.EXPENSE.name }
             .groupBy { runCatching { TransactionCategory.valueOf(it.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED) }
-            .map { (cat, txs) -> CategorySlice(cat, txs.sumOf { it.amountCents }, txs.size) }
+            .map { (cat, txs) ->
+                CategorySlice(
+                    cat,
+                    txs.sumOf { (it.amountCents - (refundOffsetByTx[it.id] ?: 0L)).coerceAtLeast(0L) },
+                    txs.size
+                )
+            }
             .sortedByDescending { it.totalCents }
 
         // 最近12个月
@@ -74,11 +87,15 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
             val end = cal.timeInMillis
             val monthLabel = fmt.format(Date(start))
             val txs = repository.transactionsInRange(start, end)
+            // 支出 = 支出流水 − 已关联退款（退款不计入收入，REQ 收入§5 / 待确认§8）
+            val refundOffset = txs
+                .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null }
+                .sumOf { it.amountCents }
             monthlyBars.add(
                 MonthlyBar(
                     month = monthLabel,
                     incomeCents = txs.filter { it.type in incomeTypes }.sumOf { it.amountCents },
-                    expenseCents = txs.filter { it.type in expenseTypes }.sumOf { it.amountCents }
+                    expenseCents = (txs.filter { it.type in expenseTypes }.sumOf { it.amountCents } - refundOffset).coerceAtLeast(0L)
                 )
             )
         }
@@ -98,7 +115,8 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
     }
 
     companion object {
-        private val incomeTypes = setOf(TransactionType.INCOME.name, TransactionType.REFUND.name)
+        // REFUND 不进普通收入（REQ 收入§5）：冲减原消费分类，见上方 refundOffset
+        private val incomeTypes = setOf(TransactionType.INCOME.name)
         private val expenseTypes = setOf(TransactionType.EXPENSE.name, TransactionType.FEE.name)
     }
 }

@@ -76,7 +76,7 @@ data class V5SettingsInput(
 
 // 预聚合的本月流水数字（usecase 算好传入，保持公式层纯函数）
 data class V5MonthFlow(
-    val incomeActualCents: Long,    // 本月 INCOME+REFUND 流水之和（LOAN_DISBURSEMENT 天然不在内）
+    val incomeActualCents: Long,    // 本月 INCOME 流水之和；REFUND 不计入普通收入（REQ 收入§5），冲减走退款关联
     val feeMonthCents: Long,        // 本月 FEE 流水之和
     val newBorrowingCents: Long,    // 本月 LOAN_DISBURSEMENT 之和
     val optionalSpentCents: Long = 0, // 本月已发生非必要消费（按设置的非必要分类聚合）

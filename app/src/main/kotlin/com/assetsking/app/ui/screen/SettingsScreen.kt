@@ -164,11 +164,11 @@ fun SettingsScreen(
             val monthBudgets = budgets.filter { it.month == currentMonth }
             val budgetSum = monthBudgets.sumOf { it.monthlyLimitCents }
             GlassCard {
-                Text("月收入与必要生活", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text("每月预期收入与必要生活", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "首页的「本月还剩 / 本月能花 / 今天能花」都从这里算：\n" +
-                        "每月能剩 = 月收入 − 必要生活 − 本月必须还款",
+                    "预期收入只用于规划和稳定覆盖估算，不计入本月实际收入：\n" +
+                        "稳定覆盖 = 预期收入 − 必要生活 − 本月必须还款",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -176,7 +176,7 @@ fun SettingsScreen(
                 FormField(
                     value = incomeInput,
                     onValueChange = { incomeInput = it.filter { c -> c.isDigit() || c == '.' } },
-                    label = "稳定月收入（工资等）",
+                    label = "每月预期收入（规划用）",
                     isAmount = true
                 )
                 Spacer(Modifier.height(12.dp))
