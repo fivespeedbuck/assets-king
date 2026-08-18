@@ -54,6 +54,7 @@ fun HomeTab(
     padding: PaddingValues,
     state: LedgerUiState,
     listenerStatus: ListenerStatus,
+    lastReceivedAt: Long,
     context: Context,
     model: LedgerViewModel,
     searchQuery: String,
@@ -83,29 +84,17 @@ fun HomeTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 通知监听状态：未授权 / 授权了但没连上（最坑的一种）/ 正常时不打扰
-        if (listenerStatus != ListenerStatus.OK) {
-            item {
-                GlassCard {
-                    val disabled = listenerStatus == ListenerStatus.DISABLED
-                    Text(
-                        if (disabled) "自动记账尚未开启" else "通知监听已断开",
-                        fontWeight = FontWeight.Bold,
-                        color = if (disabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (disabled) "开启通知读取后，支付通知自动入账。"
-                        else "权限还在，但系统没有把监听服务绑上（装新版本后常见）。回到首页会自动重连，还不行就去设置里关掉再打开。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { openListenerSettings(context) }) {
-                        Text(if (disabled) "去开启" else "去重新绑定")
-                    }
-                }
-            }
+        // 金库状态（REQ §19-22）：入库状态 + 最近入库时间 + 待确认/需核对三个点击区
+        item {
+            VaultStatusCard(
+                listenerStatus = listenerStatus,
+                lastReceivedAt = lastReceivedAt,
+                pendingCount = state.pendingItems.size,
+                needsReconciliationCount = overdueAccounts.size,
+                onShowPending = { onShowPending(true) },
+                onShowReconciliation = onShowReconciliation,
+                context = context
+            )
         }
 
         // ── V5 还债驾驶舱 ──
@@ -271,6 +260,66 @@ fun HomeTab(
                 TextButton(onClick = { transferToDelete = null }) { Text("取消") }
             }
         )
+    }
+}
+
+/** 金库状态卡：入库状态 + 最近入库时间 + 待确认/需核对三个点击区（REQ §19-22）。 */
+@Composable
+private fun VaultStatusCard(
+    listenerStatus: ListenerStatus,
+    lastReceivedAt: Long,
+    pendingCount: Int,
+    needsReconciliationCount: Int,
+    onShowPending: () -> Unit,
+    onShowReconciliation: () -> Unit,
+    context: Context
+) {
+    val (statusLabel, statusColor) = when (listenerStatus) {
+        ListenerStatus.OK -> "金库正常" to Green
+        ListenerStatus.DISCONNECTED -> "入库中断" to MaterialTheme.colorScheme.error
+        ListenerStatus.DISABLED -> "尚未开启" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    GlassCard {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("金库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(statusLabel, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = statusColor)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (pendingCount > 0 || needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (pendingCount > 0) {
+                    Text(
+                        "待确认 $pendingCount",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onShowPending() }
+                    )
+                }
+                if (needsReconciliationCount > 0) {
+                    Text(
+                        "需核对 $needsReconciliationCount",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onShowReconciliation() }
+                    )
+                }
+                if (listenerStatus != ListenerStatus.OK) {
+                    TextButton(onClick = { openListenerSettings(context) }) {
+                        Text(if (listenerStatus == ListenerStatus.DISABLED) "去开启" else "去重绑")
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -40,6 +40,8 @@ class LedgerRepository(
         database.rawNotificationDao().observeByStatus("PENDING_CONFIRMATION")
     val linkedNotifications: Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("LINKED")
+    private val _lastReceivedAt = MutableStateFlow(prefs.getLong("last_notification_received_at", 0L))
+    val lastReceivedAt: Flow<Long> = _lastReceivedAt
     private val categorizer = RuleBasedCategorizer()
 
     suspend fun seedKnownAccounts() {
@@ -58,6 +60,9 @@ class LedgerRepository(
 
     suspend fun saveRawNotification(notification: RawNotificationEntity) {
         database.rawNotificationDao().insert(notification)
+        // 金库「最近入库时间」：每条原始证据落库都刷新，首页据此显示「最近入库 14:32」
+        _lastReceivedAt.value = notification.receivedAt
+        prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
     }
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
@@ -252,8 +257,19 @@ class LedgerRepository(
         database.withTransaction {
             val old = database.accountDao().find(account.id)
             database.accountDao().upsert(account)
-            // 用户手动改了余额：记录 MANUAL 检查点，让手动值成为新的权威基准（余额调整可追溯）
+            // 用户手动改了余额：先记可追溯的余额调整（REQ 账户对账 §7/§9），再记 MANUAL 检查点
             if (old != null && old.balanceCents != account.balanceCents) {
+                database.balanceAdjustmentDao().upsert(
+                    BalanceAdjustmentEntity(
+                        id = UUID.randomUUID().toString(),
+                        accountId = account.id,
+                        beforeCents = old.balanceCents,
+                        afterCents = account.balanceCents,
+                        diffCents = account.balanceCents - old.balanceCents,
+                        reason = "手动对账",
+                        occurredAt = System.currentTimeMillis()
+                    )
+                )
                 database.balanceCheckpointDao().upsert(
                     BalanceCheckpointEntity(
                         id = "manual_${account.id}_${System.currentTimeMillis()}",

@@ -17,9 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecurringRuleEntity::class, SnapshotEntity::class,
         CustomCategoryEntity::class,
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
-        BalanceCheckpointEntity::class
+        BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -36,6 +36,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun windfallDao(): WindfallDao
     abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
     abstract fun balanceCheckpointDao(): BalanceCheckpointDao
+    abstract fun balanceAdjustmentDao(): BalanceAdjustmentDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
@@ -102,6 +103,14 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /** v11→v12：新增 balance_adjustments 表（余额调整记录）。只加表，非破坏性。 */
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `balance_adjustments` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `beforeCents` INTEGER NOT NULL, `afterCents` INTEGER NOT NULL, `diffCents` INTEGER NOT NULL, `reason` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_adjustments_accountId` ON `balance_adjustments` (`accountId`)")
+            }
+        }
+
         private fun backfillOpeningCheckpoints(db: SupportSQLiteDatabase) {
             val accounts = db.query("SELECT id, type, balanceCents FROM accounts")
             val rows = mutableListOf<Triple<String, String, Long>>()
@@ -147,7 +156,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { instance = it }
         }
     }
 }

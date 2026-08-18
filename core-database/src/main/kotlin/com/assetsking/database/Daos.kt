@@ -101,6 +101,18 @@ interface BalanceCheckpointDao {
 }
 
 @Dao
+interface BalanceAdjustmentDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(adjustment: BalanceAdjustmentEntity)
+
+    @Query("SELECT * FROM balance_adjustments ORDER BY occurredAt DESC")
+    fun observeAll(): Flow<List<BalanceAdjustmentEntity>>
+
+    @Query("SELECT * FROM balance_adjustments WHERE accountId = :accountId ORDER BY occurredAt DESC")
+    suspend fun allFor(accountId: String): List<BalanceAdjustmentEntity>
+}
+
+@Dao
 interface RawNotificationDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(notification: RawNotificationEntity)

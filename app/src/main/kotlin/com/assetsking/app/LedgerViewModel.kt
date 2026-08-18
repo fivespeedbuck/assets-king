@@ -117,6 +117,8 @@ class LedgerViewModel(
     /** 自动发现的通知来源：包名 → 应用名 */
     val notificationSources: Flow<Map<String, String>> = repository.notificationSources
     val notificationWhitelist: Flow<Set<String>> = repository.notificationWhitelist
+    /** 最近一次原始证据入库时间（0 = 从未收到） */
+    val lastReceivedAt: Flow<Long> = repository.lastReceivedAt
 
     // ── 从流水反推的两个建议（用户填不准的那两项）──
 

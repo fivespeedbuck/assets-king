@@ -158,3 +158,15 @@ data class BalanceCheckpointEntity(
     val checkedAt: Long,     // 检查点时刻；occurredAt <= checkedAt 的事件已含在 balanceCents 内
     val source: String       // OPENING / BANK_SMS / MANUAL
 )
+
+// 余额调整：无法解释的余额差额的可追溯修正记录（REQ 账户对账 §7/§9）。不计收入/支出/预算/消费统计。
+@Entity(tableName = "balance_adjustments", indices = [Index("accountId")])
+data class BalanceAdjustmentEntity(
+    @PrimaryKey val id: String,
+    val accountId: String,
+    val beforeCents: Long,
+    val afterCents: Long,
+    val diffCents: Long,      // after - before
+    val reason: String,
+    val occurredAt: Long
+)

@@ -40,6 +40,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val necessaryLivingCents by model.necessaryLivingCents.collectAsStateWithLifecycle(initialValue = 0L)
     val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
     val necessaryLivingSuggestion by model.necessaryLivingSuggestion.collectAsStateWithLifecycle()
     val detectedRecurring by model.detectedRecurring.collectAsStateWithLifecycle()
     val uncategorized by model.uncategorized.collectAsStateWithLifecycle()
@@ -86,6 +87,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         when (selectedTab) {
             0 -> HomeTab(
                 padding = padding, state = state, listenerStatus = listenerStatus,
+                lastReceivedAt = lastReceivedAt,
                 context = context, model = model, searchQuery = searchQuery,
                 editingAccount = editingAccount, editingTransaction = editingTransaction,
                 onSearchChange = { searchQuery = it },
