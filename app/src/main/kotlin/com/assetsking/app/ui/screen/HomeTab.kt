@@ -74,6 +74,8 @@ fun HomeTab(
         val lastChecked = account.lastCheckedAt ?: 0L
         System.currentTimeMillis() - lastChecked > reconciliationIntervalMs
     }
+    // 差额核对标出的账户同样进「需核对」（REQ 账户对账 §4-5）
+    val discrepancyAccounts = state.accounts.filter { it.balanceStatus == "DISCREPANCY" }
     val v5 = state.v5
     // Box 只是给删除确认 AlertDialog 一个挂点，列表本身不动
     Box(Modifier.fillMaxSize()) {
@@ -90,7 +92,7 @@ fun HomeTab(
                 listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
                 pendingCount = state.pendingItems.size,
-                needsReconciliationCount = overdueAccounts.size,
+                needsReconciliationCount = overdueAccounts.size + discrepancyAccounts.size,
                 onShowPending = { onShowPending(true) },
                 onShowReconciliation = onShowReconciliation,
                 context = context

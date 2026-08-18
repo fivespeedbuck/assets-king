@@ -65,7 +65,9 @@ data class LedgerUiState(
     val transfers: List<TransferEntity> = emptyList(),
     val unprocessedNotifications: Int = 0,
     val pendingItems: List<PendingItem> = emptyList(),
-    val v5: V5Metrics? = null     // null = 数据加载中
+    val v5: V5Metrics? = null,    // null = 数据加载中
+    /** 商户 → 最近一次使用的账户 id（REQ 账户对账 §18 默认账户推断） */
+    val merchantLastAccount: Map<String, String> = emptyMap()
 )
 
 class LedgerViewModel(
@@ -98,7 +100,11 @@ class LedgerViewModel(
                 pendingItems = base.pending.map { entity ->
                     PendingItem(entity, NotificationParser.parse(entity.content, entity.title))
                 },
-                v5 = v5
+                v5 = v5,
+                merchantLastAccount = base.transactions
+                    .filter { !it.merchant.isNullOrBlank() }
+                    .groupBy { it.merchant!! }
+                    .mapValues { (_, txs) -> txs.maxByOrNull { it.occurredAt }!!.accountId }
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LedgerUiState())

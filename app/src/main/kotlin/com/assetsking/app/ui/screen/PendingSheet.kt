@@ -32,6 +32,7 @@ import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.categoryLabelOrName
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.usecase.AccountInference
 
 private data class TypeOption(val type: TransactionType, val label: String)
 
@@ -47,6 +48,7 @@ fun PendingSheet(
     accounts: List<AccountEntity>,
     viewModel: LedgerViewModel,
     customCategoryNames: List<String> = emptyList(),
+    merchantLastAccount: Map<String, String> = emptyMap(),
     onDismiss: () -> Unit
 ) {
     Sheet(title = "待确认通知", onDismiss = onDismiss) {
@@ -59,7 +61,7 @@ fun PendingSheet(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items.forEach { item ->
                     key(item.notification.id) {
-                        PendingNotificationCard(item, accounts, viewModel, customCategoryNames)
+                        PendingNotificationCard(item, accounts, viewModel, customCategoryNames, merchantLastAccount)
                     }
                 }
             }
@@ -72,7 +74,8 @@ private fun PendingNotificationCard(
     item: PendingItem,
     accounts: List<AccountEntity>,
     viewModel: LedgerViewModel,
-    customCategoryNames: List<String> = emptyList()
+    customCategoryNames: List<String> = emptyList(),
+    merchantLastAccount: Map<String, String> = emptyMap()
 ) {
     val parsed = item.parsed
     val amountCents = parsed.amountCents ?: 0L
@@ -90,7 +93,15 @@ private fun PendingNotificationCard(
             account.name.contains(hint) || hint.contains(account.name)
         }
     }
-    val defaultAccount = matchedAccount ?: accounts.firstOrNull() ?: return
+    // 默认账户推断（REQ 账户对账 §18-20）：银行证据 > 商户历史 > 微信/支付宝来源
+    val inferredId = AccountInference.infer(
+        bankMatchedAccountId = matchedAccount?.id,
+        merchantHistoryAccountId = merchantLastAccount[merchant],
+        sourcePackage = item.notification.packageName,
+        candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
+    )
+    val defaultAccount = accounts.firstOrNull { it.id == inferredId }
+        ?: accounts.firstOrNull() ?: return
 
     val typeLabel = when (defaultType) {
         TransactionType.EXPENSE -> "支出"

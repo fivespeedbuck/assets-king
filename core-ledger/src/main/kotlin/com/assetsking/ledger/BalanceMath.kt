@@ -77,4 +77,13 @@ object BalanceMath {
         val diff = bankBalanceCents - expected
         return BalanceCheck(expected, bankBalanceCents, diff == 0L, diff)
     }
+
+    /**
+     * 新检查点到时的账面应有余额（REQ 账户对账 §4）：上次权威余额 + 期间已确认事件增量。
+     * 与银行报告余额比较即可得差额；不一致说明存在漏单/重复/账户选错/手续费等。
+     */
+    fun expectedBalance(prev: BalanceCheckpoint, deltas: List<LedgerDelta>, newCheckedAt: Long): Long =
+        prev.balanceCents + deltas
+            .filter { it.occurredAt > prev.checkedAt && it.occurredAt <= newCheckedAt }
+            .sumOf { it.deltaCents }
 }

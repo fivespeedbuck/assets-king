@@ -95,6 +95,27 @@ class BalanceMathTest {
         assertEquals(65709L, BalanceMath.balance(0, checkpoint, deltas))
     }
 
+    // ── 差额核对（REQ 账户对账 §4）：上次权威余额 + 期间变化 = 本次银行余额 ──
+
+    @Test
+    fun `expected balance chains two checkpoints with confirmed deltas`() {
+        val prev = BalanceCheckpoint(balanceCents = 65709, checkedAt = 100_000)
+        val deltas = listOf(
+            LedgerDelta(occurredAt = 90_000, deltaCents = -3500), // 检查点之前，baked in
+            LedgerDelta(occurredAt = 150_000, deltaCents = -2498), // 期间，计
+            LedgerDelta(occurredAt = 300_000, deltaCents = -500),  // 本次检查点之后，不计
+        )
+        assertEquals(63211L, BalanceMath.expectedBalance(prev, deltas, newCheckedAt = 200_000))
+    }
+
+    @Test
+    fun `expected balance includes evidence at the new checkpoint time itself`() {
+        // 银行短信「支出24.98 余额657.09」：余额是扣款后的值，本条证据发生在检查点时刻，须计入
+        val prev = BalanceCheckpoint(balanceCents = 68207, checkedAt = 100_000)
+        val deltas = listOf(LedgerDelta(occurredAt = 200_000, deltaCents = -2498))
+        assertEquals(65709L, BalanceMath.expectedBalance(prev, deltas, newCheckedAt = 200_000))
+    }
+
     // ── 余额校验 ──
 
     @Test

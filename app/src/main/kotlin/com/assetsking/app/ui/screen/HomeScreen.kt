@@ -204,6 +204,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             accounts = state.accounts,
             viewModel = model,
             customCategoryNames = customCategories.map { it.name },
+            merchantLastAccount = state.merchantLastAccount,
             onDismiss = { showPending = false }
         )
     }

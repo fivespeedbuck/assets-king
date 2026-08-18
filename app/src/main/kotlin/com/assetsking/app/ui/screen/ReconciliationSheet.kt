@@ -78,6 +78,13 @@ fun ReconciliationSheet(
                             color = MaterialTheme.colorScheme.error
                         )
                     }
+                    if (account.balanceStatus == "DISCREPANCY") {
+                        Text(
+                            "余额与银行报告存在差异，请核对流水后手动调整",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
             HorizontalDivider()
