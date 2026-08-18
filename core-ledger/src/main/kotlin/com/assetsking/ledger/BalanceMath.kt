@@ -25,6 +25,14 @@ data class LedgerDelta(
     val deltaCents: Long
 )
 
+/** 余额校验结果：账面余额+本次影响 的应有余额 vs 银行实际余额，是否一致、差额。 */
+data class BalanceCheck(
+    val expectedCents: Long,
+    val bankCents: Long?,
+    val matches: Boolean,
+    val diffCents: Long
+)
+
 object BalanceMath {
     /** 交易对账户余额的增量。ASSET 支出为负；CREDIT/LOAN 负债方向相反（欠款越还越少）。 */
     fun transactionDelta(accountType: AccountType, type: TransactionType, amountCents: Long): Long {
@@ -56,5 +64,17 @@ object BalanceMath {
         val base = checkpoint?.balanceCents ?: openingBalanceCents
         val after = checkpoint?.checkedAt ?: Long.MIN_VALUE
         return base + deltas.filter { it.occurredAt > after }.sumOf { it.deltaCents }
+    }
+
+    /**
+     * 余额校验预览（REQ 通知归并 §6 / 账户对账 §4-5）：
+     * 账面余额 + 本次影响 = 应有余额，与银行报告余额比较得出是否一致与差额。
+     * 无权威余额时不需要校验（matches 恒 true）。
+     */
+    fun checkBalance(currentBalanceCents: Long, transactionDeltaCents: Long, bankBalanceCents: Long?): BalanceCheck {
+        val expected = currentBalanceCents + transactionDeltaCents
+        if (bankBalanceCents == null) return BalanceCheck(expected, null, true, 0L)
+        val diff = bankBalanceCents - expected
+        return BalanceCheck(expected, bankBalanceCents, diff == 0L, diff)
     }
 }

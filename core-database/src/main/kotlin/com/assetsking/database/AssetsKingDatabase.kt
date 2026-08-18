@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -103,6 +103,13 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /** v12→v13：accounts 加 archived 列（账户归档）。只加列，非破坏性。 */
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE accounts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         /** v11→v12：新增 balance_adjustments 表（余额调整记录）。只加表，非破坏性。 */
         private val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -156,7 +163,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).build().also { instance = it }
         }
     }
 }

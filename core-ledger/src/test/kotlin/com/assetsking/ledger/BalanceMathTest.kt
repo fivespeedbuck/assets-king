@@ -94,4 +94,27 @@ class BalanceMathTest {
         )
         assertEquals(65709L, BalanceMath.balance(0, checkpoint, deltas))
     }
+
+    // ── 余额校验 ──
+
+    @Test
+    fun `balance check matches when bank equals expected`() {
+        val r = BalanceMath.checkBalance(65709, -3500, 62209)
+        assertEquals(true, r.matches)
+        assertEquals(0L, r.diffCents)
+    }
+
+    @Test
+    fun `balance check detects mismatch`() {
+        val r = BalanceMath.checkBalance(65709, -3500, 62000)
+        assertEquals(false, r.matches)
+        assertEquals(-209L, r.diffCents)
+    }
+
+    @Test
+    fun `no bank balance means no check needed`() {
+        val r = BalanceMath.checkBalance(65709, -3500, null)
+        assertEquals(true, r.matches)
+        assertEquals(null, r.bankCents)
+    }
 }

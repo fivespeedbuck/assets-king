@@ -287,6 +287,19 @@ class LedgerRepository(
         database.accountDao().deleteById(accountId)
     }
 
+    /** 归档账户（REQ 账户对账 §14-15）：余额必须为 0，避免总资产凭空减少；历史仍可查。 */
+    suspend fun archiveAccount(accountId: String) {
+        val account = database.accountDao().find(accountId) ?: return
+        require(account.balanceCents == 0L) { "归档前余额必须为 0" }
+        database.accountDao().upsert(account.copy(archived = true))
+    }
+
+    suspend fun restoreAccount(accountId: String) {
+        database.accountDao().find(accountId)?.let {
+            database.accountDao().upsert(it.copy(archived = false))
+        }
+    }
+
     suspend fun updateTransactionCategory(id: String, category: TransactionCategory) {
         database.transactionDao().updateCategory(id, category.name)
     }
@@ -466,7 +479,7 @@ class LedgerRepository(
     suspend fun saveTodaySnapshot() {
         val today = java.time.LocalDate.now().toEpochDay()
         if (database.snapshotDao().findByDay(today) != null) return
-        val all = allAccounts()
+        val all = allAccounts().filter { !it.archived }
         val assets = all.filter { it.type == AccountType.ASSET.name }.sumOf { it.balanceCents }
         val debts = all.filter { it.type != AccountType.ASSET.name }.sumOf { it.balanceCents }
         database.snapshotDao().upsert(

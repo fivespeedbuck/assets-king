@@ -108,7 +108,7 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
 
         // 方案A：录原始账单金额，已还按【账期窗口】扣减（statementDay 推导，无出账日回退自然月）
         val cardTransfers = base.accounts
-            .filter { it.type == "CREDIT" }
+            .filter { it.type == "CREDIT" && !it.archived }
             .mapNotNull { card ->
                 val (s, e) = statementCycle(card, today)
                 val transferred = base.transfers
@@ -122,7 +122,7 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         return computeV5Metrics(
             todayEpochDay = todayEpochDay,
             currentYearMonth = ym.toString(),
-            accounts = base.accounts.map {
+            accounts = base.accounts.filter { !it.archived }.map {
                 V5AccountInput(it.id, it.type, it.balanceCents, it.statementOriginalDueCents, it.pendingCents, it.statementDay, it.dueDay)
             },
             plans = base.plans.map { repository.v5PlanInput(it) },

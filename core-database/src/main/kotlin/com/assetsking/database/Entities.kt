@@ -18,7 +18,8 @@ data class AccountEntity(
     val dueDay: Int? = null,            // 还款日 (1-31)
     val creditLimitCents: Long = 0,     // 信用额度，0=无
     val statementOriginalDueCents: Long = 0, // V5 本期待还【原始账单金额】：录账单上的数字后勿重录；已还部分由系统按账期扣减（方案A）
-    val pendingCents: Long = 0          // V5 银行 pending 消费：单独展示，不计正式总负债
+    val pendingCents: Long = 0,         // V5 银行 pending 消费：单独展示，不计正式总负债
+    val archived: Boolean = false       // 归档（REQ 账户对账 §14-15）：不计入总资产/总欠款，历史可查
 )
 
 @Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt")])
