@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,14 +11,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CreditCardInstallmentEntity
@@ -92,7 +99,9 @@ fun LoanScreen(
     onRecordPayment: (LoanPlanEntity) -> Unit = {},
     onPrepay: (String, String, Long, String?) -> Unit = { _, _, _, _ -> },
     onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> },
-    transactions: List<com.assetsking.database.TransactionEntity> = emptyList()
+    onUpdateInstallment: (String, Int, Long?, Long?, Long?, String?) -> Unit = { _, _, _, _, _, _ -> },
+    transactions: List<com.assetsking.database.TransactionEntity> = emptyList(),
+    addPulse: Int = 0
 ) {
     var showSheet by remember { mutableStateOf(false) }
     var editingPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
@@ -100,6 +109,16 @@ fun LoanScreen(
     var prepaying by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var settling by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var showSettled by remember { mutableStateOf(false) }
+    // 手风琴一次只展开一笔（REQ 贷款页§14）；完整计划与单期编辑
+    var expandedPlanId by remember { mutableStateOf<String?>(null) }
+    var fullPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
+    var editingInstallment by remember { mutableStateOf<Pair<LoanPlanEntity, LoanInstallment>?>(null) }
+    var deleteConfirm by remember { mutableStateOf<LoanPlanEntity?>(null) }
+
+    // 右下角悬浮＋（REQ 贷款页§16）触发新增
+    LaunchedEffect(addPulse) {
+        if (addPulse > 0) { editingPlan = null; showSheet = true }
+    }
 
     // 扣款日汇总：哪天扣多少（信用卡按本期待还，贷款按计划）
     data class DueItem(val label: String, val day: Int, val amount: Long)
@@ -129,6 +148,29 @@ fun LoanScreen(
         }
     }.sortedBy { it.day }
 
+    // 本月还款列表（REQ 贷款页§2-3/§11）：逾期置顶 → 本月待还 → 本月已还（删除线）
+    val activePlans = plans.filter { it.status != "PAID_OFF" }
+    val todayDay = java.time.LocalDate.now().toEpochDay()
+    val monthStartDay = java.time.YearMonth.now().atDay(1).toEpochDay()
+    val monthEndDay = java.time.YearMonth.now().atEndOfMonth().toEpochDay()
+    val zone = java.time.ZoneId.systemDefault()
+    val monthStartMillis = java.time.YearMonth.now().atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val monthEndMillis = java.time.YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+    data class RepayRow(val label: String, val plan: LoanPlanEntity, val amount: Long, val dueDay: Long, val paid: Boolean)
+    val repayRows = buildList {
+        activePlans.forEach { plan ->
+            val accName = accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款"
+            jsonToInstallments(plan.installmentsJson).forEach { inst ->
+                when {
+                    inst.status == InstallmentStatus.PAID && inst.dueDateEpochDay in monthStartDay..monthEndDay ->
+                        add(RepayRow("$accName 第${inst.number}期", plan, inst.total.cents, inst.dueDateEpochDay, true))
+                    inst.status != InstallmentStatus.PAID && inst.dueDateEpochDay <= monthEndDay ->
+                        add(RepayRow("$accName 第${inst.number}期", plan, inst.total.cents, inst.dueDateEpochDay, false))
+                }
+            }
+        }
+    }.sortedWith(compareBy({ it.paid }, { it.dueDay }))
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -154,6 +196,20 @@ fun LoanScreen(
                             fontWeight = FontWeight.Bold,
                             color = if (v5.netDebtReductionCents > 0) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
                         )
+                    }
+                    // 剩余本金/剩余利息/本月已还（REQ 贷款页§10）
+                    val remainP = activePlans.sumOf { if (it.remainingPrincipalCents > 0) it.remainingPrincipalCents else it.principalCents }
+                    val remainI = activePlans.sumOf { p ->
+                        jsonToInstallments(p.installmentsJson).filter { it.status != InstallmentStatus.PAID }.sumOf { it.interest.cents }
+                    }
+                    val monthPaid = transactions.filter { it.type == "LOAN_PAYMENT" && it.occurredAt in monthStartMillis..monthEndMillis }.sumOf { it.amountCents }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("剩余本金 / 剩余利息", style = MaterialTheme.typography.bodyMedium)
+                        Text("${formatMoney(remainP)} / ${formatMoney(remainI)}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("本月已还", style = MaterialTheme.typography.bodyMedium)
+                        Text(formatMoney(monthPaid), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = Color(0xFF66BB6A))
                     }
                     Text(
                         "${v5TrendLabel(v5.trend)} · ${v5StageLabel(v5.stage)}",
@@ -189,21 +245,57 @@ fun LoanScreen(
             }
         }
 
+        // ── 本月还款列表（REQ 贷款页§2-3/§10-11）：逾期置顶 → 本月待还 → 已还删除线 ──
+        if (repayRows.isNotEmpty()) {
+            item {
+                GlassCard {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("本月还款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        repayRows.forEach { r ->
+                            val overdue = !r.paid && r.dueDay < todayDay
+                            val dueDate = java.time.LocalDate.ofEpochDay(r.dueDay)
+                            Row(
+                                Modifier.fillMaxWidth().clickable(enabled = !r.paid) { onRecordPayment(r.plan) }.padding(vertical = 3.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    (if (r.paid) "已还 · " else if (overdue) "逾期 · " else "待还 · ") + r.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = if (overdue) FontWeight.Bold else null,
+                                    color = when { overdue -> MaterialTheme.colorScheme.error; r.paid -> MaterialTheme.colorScheme.onSurfaceVariant; else -> MaterialTheme.colorScheme.onSurface },
+                                    textDecoration = if (r.paid) TextDecoration.LineThrough else null,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text("${dueDate.monthValue}月${dueDate.dayOfMonth}日", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    formatMoney(r.amount),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = when { overdue -> MaterialTheme.colorScheme.error; r.paid -> MaterialTheme.colorScheme.onSurfaceVariant; else -> MaterialTheme.colorScheme.onSurface },
+                                    textDecoration = if (r.paid) TextDecoration.LineThrough else null
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 新增入口 = 右下角悬浮＋（REQ 贷款页§16），这里只留标题
                 Text("贷款计划", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Button(onClick = { showSheet = true }) { Text("＋ 新增") }
             }
         }
         if (plans.isEmpty()) {
             item { GlassCard { Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         } else {
             // 已结清移入底部折叠分组（REQ 贷款页§13/§17）
-            val activePlans = plans.filter { it.status != "PAID_OFF" }
             val settledPlans = plans.filter { it.status == "PAID_OFF" }
             items(activePlans, key = { it.id }) { plan ->
                 val account = accounts.firstOrNull { it.id == plan.accountId }
@@ -234,29 +326,52 @@ fun LoanScreen(
                     val rDay = if (plan.repaymentDay != null) " · ${plan.repaymentDay}日还" else ""
                     val paidCount = installments.count { it.status == InstallmentStatus.PAID }
                     val paidInfo = if (paidCount > 0) " / 已还${paidCount}期" else ""
+                    // 下一还款日（REQ 贷款页§13）
+                    val nextDue = installments.firstOrNull { it.status != InstallmentStatus.PAID }?.dueDateEpochDay
+                        ?.let { d -> " · 下次 ${java.time.LocalDate.ofEpochDay(d).monthValue}月${java.time.LocalDate.ofEpochDay(d).dayOfMonth}日" } ?: ""
                     Text(
-                        "${installments.size}期${paidInfo}${rateInfo}${remainingInfo}${earlyInfo}${rDay} · 总还款 ${formatMoney(summary.totalRepayment.cents)}",
+                        "${installments.size}期${paidInfo}${rateInfo}${remainingInfo}${earlyInfo}${rDay}${nextDue} · 总还款 ${formatMoney(summary.totalRepayment.cents)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    // 还款计划展开
-                    var expanded by remember { mutableStateOf(false) }
-                    TextButton(onClick = { expanded = !expanded }) {
-                        Text(if (expanded) "收起还款计划 ▲" else "查看还款计划 ▼", style = MaterialTheme.typography.labelSmall)
+                    // 手风琴原地展开，一次一笔（REQ 贷款页§14）
+                    val expanded = expandedPlanId == plan.id
+                    TextButton(onClick = { expandedPlanId = if (expanded) null else plan.id }) {
+                        Text(if (expanded) "收起 ▲" else "展开 ▼", style = MaterialTheme.typography.labelSmall)
                     }
                     if (expanded && installments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(start = 8.dp)) {
-                            installments.take(12).forEach { inst ->
+                            // 进度/已还/剩余（REQ 贷款页§14）
+                            val paidInsts = installments.filter { it.status == InstallmentStatus.PAID }
+                            val unpaidInsts = installments.filter { it.status != InstallmentStatus.PAID }
+                            val paidP = paidInsts.sumOf { it.principal.cents }
+                            val paidI = paidInsts.sumOf { it.interest.cents }
+                            val remainP = if (plan.remainingPrincipalCents > 0) plan.remainingPrincipalCents else unpaidInsts.sumOf { it.principal.cents }
+                            val remainI = unpaidInsts.sumOf { it.interest.cents }
+                            Text(
+                                "已还 ${paidInsts.size}/${installments.size} 期 · 已还本金 ${formatMoney(paidP)} · 已还利息 ${formatMoney(paidI)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "剩余本金 ${formatMoney(remainP)} · 剩余利息 ${formatMoney(remainI)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            // 最近 3 期（REQ 贷款页§14）
+                            Spacer(Modifier.height(2.dp))
+                            installments.takeLast(3).forEach { inst ->
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    val prefix = if (inst.status == InstallmentStatus.PAID) "✅" else "○"
-                                    Text("$prefix 第${inst.number}期", style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        "${if (inst.status == InstallmentStatus.PAID) "已还" else "待还"} 第${inst.number}期",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (inst.status == InstallmentStatus.PAID) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurface
+                                    )
                                     Text("本金${formatMoney(inst.principal.cents)} + 利息${formatMoney(inst.interest.cents)}", style = MaterialTheme.typography.bodySmall)
                                     Text(formatMoney(inst.total.cents), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                                 }
                             }
-                            if (installments.size > 12) {
-                                Text("...共 ${installments.size} 期", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                            // 查看完整计划（REQ 贷款页§15）：逐期列表 + 点期编辑
+                            TextButton(onClick = { fullPlan = plan }) { Text("查看完整计划", style = MaterialTheme.typography.labelSmall) }
                             // 提前还款计算
                             var extraPayment by remember { mutableStateOf("") }
                             var earlyResult by remember { mutableStateOf<com.assetsking.ledger.EarlyRepaymentResult?>(null) }
@@ -295,7 +410,8 @@ fun LoanScreen(
                             editingPlan = plan
                             showSheet = true
                         }) { Text("编辑") }
-                        OutlinedButton(onClick = { onDelete(plan.id) }) { Text("删除") }
+                        // 永久删除需二次确认（REQ 贷款页§17）
+                        OutlinedButton(onClick = { deleteConfirm = plan }) { Text("删除") }
                     }
                 }
                 }
@@ -398,6 +514,84 @@ fun LoanScreen(
                 settling = null
             },
             onDismiss = { settling = null }
+        )
+    }
+
+    // 永久删除二次确认（REQ 贷款页§17）
+    deleteConfirm?.let { plan ->
+        AlertDialog(
+            onDismissRequest = { deleteConfirm = null },
+            title = { Text("永久删除贷款计划？") },
+            text = { Text("「${accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款"}」的计划与还款历史将永久删除，已记流水保留。") },
+            confirmButton = {
+                TextButton(onClick = { onDelete(plan.id); deleteConfirm = null }) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteConfirm = null }) { Text("取消") } }
+        )
+    }
+
+    // 完整还款计划（REQ 贷款页§15）：逐期列表，点期数编辑
+    fullPlan?.let { plan ->
+        AlertDialog(
+            onDismissRequest = { fullPlan = null },
+            title = { Text("完整还款计划（${jsonToInstallments(plan.installmentsJson).size} 期）") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    jsonToInstallments(plan.installmentsJson).forEach { inst ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { editingInstallment = plan to inst }.padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${if (inst.status == InstallmentStatus.PAID) "已还" else "待还"} 第${inst.number}期",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (inst.status == InstallmentStatus.PAID) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text("本金${formatMoney(inst.principal.cents)} 利息${formatMoney(inst.interest.cents)} 费${formatMoney(inst.fee.cents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(formatMoney(inst.total.cents), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { fullPlan = null }) { Text("关闭") } },
+            dismissButton = {}
+        )
+    }
+
+    // 单期编辑（REQ 贷款页§5/§15）：金额与状态可改
+    editingInstallment?.let { (plan, inst) ->
+        var p by remember { mutableStateOf("%.2f".format(inst.principal.cents / 100.0)) }
+        var i by remember { mutableStateOf("%.2f".format(inst.interest.cents / 100.0)) }
+        var f by remember { mutableStateOf("%.2f".format(inst.fee.cents / 100.0)) }
+        var st by remember { mutableStateOf(inst.status.name) }
+        AlertDialog(
+            onDismissRequest = { editingInstallment = null },
+            title = { Text("第${inst.number}期") },
+            text = {
+                Column {
+                    FormField(value = p, onValueChange = { p = it.filter { c -> c.isDigit() || c == '.' } }, label = "本金", isAmount = true)
+                    FormField(value = i, onValueChange = { i = it.filter { c -> c.isDigit() || c == '.' } }, label = "利息", isAmount = true)
+                    FormField(value = f, onValueChange = { f = it.filter { c -> c.isDigit() || c == '.' } }, label = "手续费", isAmount = true)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = st == "PAID", onClick = { st = "PAID" }, label = { Text("已还") })
+                        FilterChip(selected = st == "UPCOMING", onClick = { st = "UPCOMING" }, label = { Text("待还") })
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pc = runCatching { java.math.BigDecimal(p.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull()
+                    val ic = runCatching { java.math.BigDecimal(i.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull()
+                    val fc = runCatching { java.math.BigDecimal(f.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull()
+                    if (pc != null) {
+                        onUpdateInstallment(plan.id, inst.number, pc, ic, fc, st)
+                        editingInstallment = null
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { editingInstallment = null }) { Text("取消") } }
         )
     }
 }

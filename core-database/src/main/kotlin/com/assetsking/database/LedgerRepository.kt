@@ -1238,6 +1238,28 @@ class LedgerRepository(
         database.loanPlanDao().deleteById(id)
     }
 
+    /** 编辑单期（REQ 贷款页§5/§15）：任意一期单独改金额/状态；改完剩余本金按未还期次重算。 */
+    suspend fun updateLoanInstallment(
+        planId: String,
+        number: Int,
+        principalCents: Long?,
+        interestCents: Long?,
+        feeCents: Long?,
+        status: String?
+    ) {
+        val plan = database.loanPlanDao().findById(planId) ?: return
+        val insts = jsonToInstallments(plan.installmentsJson).map { inst ->
+            if (inst.number != number) inst else inst.copy(
+                principal = principalCents?.let { Money(it) } ?: inst.principal,
+                interest = interestCents?.let { Money(it) } ?: inst.interest,
+                fee = feeCents?.let { Money(it) } ?: inst.fee,
+                status = status?.let { s -> runCatching { InstallmentStatus.valueOf(s) }.getOrDefault(inst.status) } ?: inst.status
+            )
+        }
+        val unpaidSum = insts.filter { it.status != InstallmentStatus.PAID }.sumOf { it.principal.cents }
+        database.loanPlanDao().upsert(plan.copy(installmentsJson = installmentsToJson(insts), remainingPrincipalCents = unpaidSum))
+    }
+
     // ── V5 借款到账 / 贷款还款（铁律：借款不是收入，还款不是消费）──
 
     /** 借款到账：现金+、贷款剩余本金+；绝不进收入统计（类型为 LOAN_DISBURSEMENT） */

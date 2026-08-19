@@ -424,6 +424,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
     }
 
+    fun updateLoanInstallment(planId: String, number: Int, principalCents: Long?, interestCents: Long?, feeCents: Long?, status: String?) {
+        viewModelScope.launch { repository.updateLoanInstallment(planId, number, principalCents, interestCents, feeCents, status) }
+    }
+
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
