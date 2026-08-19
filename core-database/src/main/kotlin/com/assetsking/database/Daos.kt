@@ -11,6 +11,9 @@ interface AccountDao {
     @Query("SELECT * FROM accounts ORDER BY type, name")
     fun observeAll(): Flow<List<AccountEntity>>
 
+    @Query("SELECT * FROM accounts ORDER BY type, name")
+    suspend fun all(): List<AccountEntity>
+
     @Query("SELECT * FROM accounts WHERE id = :id")
     suspend fun find(id: String): AccountEntity?
 
@@ -47,6 +50,12 @@ interface TransactionDao {
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM transactions")
+    suspend fun deleteAll()
+
+    @Query("SELECT COUNT(*) FROM transactions")
+    suspend fun countAll(): Int
 
     @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id")
     suspend fun updateRecurringRuleId(id: String, ruleId: String?)
@@ -101,6 +110,12 @@ interface TransferDao {
 
     @Query("DELETE FROM transfers WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM transfers")
+    suspend fun deleteAll()
+
+    @Query("SELECT COUNT(*) FROM transfers")
+    suspend fun countAll(): Int
 }
 
 @Dao
@@ -113,6 +128,9 @@ interface BalanceCheckpointDao {
 
     @Query("SELECT * FROM balance_checkpoints WHERE accountId = :accountId ORDER BY checkedAt DESC")
     suspend fun allFor(accountId: String): List<BalanceCheckpointEntity>
+
+    @Query("DELETE FROM balance_checkpoints")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -125,6 +143,9 @@ interface ReimbursementLinkDao {
 
     @Query("DELETE FROM reimbursement_links WHERE reimbursementTxId = :txId")
     suspend fun deleteByReimbursement(txId: String)
+
+    @Query("DELETE FROM reimbursement_links")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -197,6 +218,15 @@ interface RawNotificationDao {
 
     @Query("UPDATE raw_notifications SET processingNote = :note WHERE id = :id")
     suspend fun updateProcessingNote(id: String, note: String)
+
+    @Query("SELECT COUNT(*) FROM raw_notifications WHERE status = 'PENDING_CONFIRMATION'")
+    suspend fun countPendingConfirmation(): Int
+
+    @Query("SELECT COUNT(*) FROM raw_notifications")
+    suspend fun countAll(): Int
+
+    @Query("DELETE FROM raw_notifications")
+    suspend fun deleteAll()
 }
 
 @Dao

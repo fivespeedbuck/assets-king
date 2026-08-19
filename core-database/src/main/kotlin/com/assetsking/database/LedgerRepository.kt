@@ -196,6 +196,70 @@ class LedgerRepository(
         }
     }
 
+    // ── 旧版 → 重构版迁移门禁（REQ 旧功能清理 §4-8）──
+
+    enum class MigrationStatus { DONE, NEED_PIN, PENDING_NOT_EMPTY, READY }
+
+    fun migrationDone(): Boolean = prefs.getBoolean("refactor_migration_done", false)
+
+    /** 有没有旧版流水数据：没有就视为新装，直接免门禁（REQ §6 只针对已积累的旧流水） */
+    private suspend fun hasOldFlowData(): Boolean =
+        database.transactionDao().countAll() > 0 ||
+            database.transferDao().countAll() > 0 ||
+            database.rawNotificationDao().countAll() > 0
+
+    suspend fun migrationStatus(): MigrationStatus = withContext(Dispatchers.IO) {
+        when {
+            migrationDone() -> MigrationStatus.DONE
+            !hasOldFlowData() -> {
+                prefs.edit().putBoolean("refactor_migration_done", true).apply()
+                MigrationStatus.DONE
+            }
+            backupPin().length != 6 -> MigrationStatus.NEED_PIN
+            database.rawNotificationDao().countPendingConfirmation() > 0 -> MigrationStatus.PENDING_NOT_EMPTY
+            else -> MigrationStatus.READY
+        }
+    }
+
+    /** 门禁之一（REQ §5）：旧待确认箱必须为空。这里提供一次性永久清空旧候选与证据。 */
+    suspend fun clearOldPendingBox() {
+        database.rawNotificationDao().deleteAll()
+    }
+
+    /**
+     * 执行迁移（REQ §4/§6-8）：
+     * 先自动加密备份（失败即中止=数据不动，阻止使用）；再清旧流水/转账/证据/报销关联，
+     * 并把各账户当前余额重锚为 OPENING 检查点（BalanceMath 口径一致，REQ §7 账户状态准确）；
+     * 账户/贷款/预算/周期账单保留（REQ §2）。成功后进首页，无核对页（REQ §8）。
+     */
+    suspend fun runMigration(): Boolean = withContext(Dispatchers.IO) {
+        if (migrationDone()) return@withContext true
+        if (backupPin().length != 6) return@withContext false
+        // 备份必须在事务外：wal_checkpoint 不能跑在活动事务里
+        if (!backupNow(manual = false)) return@withContext false
+        val accounts = database.accountDao().all()
+        database.withTransaction {
+            database.transactionDao().deleteAll()
+            database.transferDao().deleteAll()
+            database.reimbursementLinkDao().deleteAll()
+            database.rawNotificationDao().deleteAll()
+            database.balanceCheckpointDao().deleteAll()
+            accounts.forEach { a ->
+                database.balanceCheckpointDao().upsert(
+                    BalanceCheckpointEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        accountId = a.id,
+                        balanceCents = a.balanceCents,
+                        checkedAt = Long.MIN_VALUE,
+                        source = "OPENING"
+                    )
+                )
+            }
+        }
+        prefs.edit().putBoolean("refactor_migration_done", true).apply()
+        true
+    }
+
     /** 恢复：先自动备份当前数据（REQ §5），再整体替换，完成后重启进程生效。 */
     suspend fun restoreFromPicked(uri: android.net.Uri, pin: String): Boolean =
         withContext(Dispatchers.IO) {
