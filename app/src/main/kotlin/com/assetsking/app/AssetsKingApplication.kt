@@ -28,11 +28,12 @@ class AssetsKingApplication : Application() {
             ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<ListenerHeartbeatWorker>(15, TimeUnit.MINUTES).build()
         )
-        // 每周自动备份（REQ 备份§2）：保留最近 13 份
+        // 每日自动备份（REQ 备份§14：数据变化后每日最多一次；保留 7 份日备份 + 3 份月备份）。
+        // UPDATE：口径从「每周×13份」改为「每日×7日+3月」，用 UPDATE 让已排期的旧任务被新周期替换。
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "weekly-backup",
-            ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<BackupWorker>(7, TimeUnit.DAYS).build()
+            ExistingPeriodicWorkPolicy.UPDATE,
+            PeriodicWorkRequestBuilder<BackupWorker>(1, TimeUnit.DAYS).build()
         )
     }
 

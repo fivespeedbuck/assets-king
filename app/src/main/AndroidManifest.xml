@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- REQ 监听§15：首次配置引导里引导用户把 App 加入电池优化白名单（持续监听需要） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- REQ 设置§13：检查 GitHub Release 新版本需要联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:name=".AssetsKingApplication"
         android:allowBackup="false"

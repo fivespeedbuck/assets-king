@@ -137,10 +137,14 @@ class LedgerRepository(
         else prefs.edit().putString("backup_dir_uri", uri.toString()).apply()
     }
 
-    /** 立即备份（手动或自动）。密码未设返回 false。自动备份保留最近 13 份，手动永不删除。 */
+    /** 立即备份（手动或自动）。密码未设返回 false。自动备份每日最多一次，保留 7 份日备份+3 份月备份；手动永不删除。 */
     suspend fun backupNow(manual: Boolean): Boolean = withContext(Dispatchers.IO) {
         val pin = backupPin()
         if (pin.length != 6) return@withContext false
+        // REQ 备份§14：自动备份每日最多一次（今日已备份则跳过，不重复产生文件）
+        if (!manual && prefs.getLong("last_auto_backup_epoch_day", -1L) == java.time.LocalDate.now().toEpochDay()) {
+            return@withContext true
+        }
         runCatching {
             val dbFile = context.getDatabasePath("assets-king.db")
             // WAL 先 checkpoint，尽量让主库文件自包含
@@ -183,13 +187,17 @@ class LedgerRepository(
                 prefs.all.forEach { (k, v) -> put(k, v) }
             }.toString()
             enc("${prefix}_${stamp}.prefs.enc", com.assetsking.ledger.PinCipher.encrypt(prefsJson.toByteArray(Charsets.UTF_8), pin))
-            if (!manual) pruneAutoBackups(safSub, localDir)
+            if (!manual) {
+                pruneAutoBackups(safSub, localDir)
+                prefs.edit().putLong("last_auto_backup_epoch_day", java.time.LocalDate.now().toEpochDay()).apply()
+            }
             true
         }.getOrDefault(false)
     }
 
     private fun pruneAutoBackups(safSub: androidx.documentfile.provider.DocumentFile?, localDir: java.io.File) {
-        // 自动备份保留最近 13 份（约三个月，REQ 备份§3）；手动备份永不自动删除
+        // 审核 §14 口径（用户拍板）：保留最近 7 份日备份 + 最近 3 份月备份；手动备份永不自动删除。
+        // 日备份：每天只留最新一份，取最近 7 天；月备份：每月只留最新一份，取最近 3 个月；其余自动备份删除。
         val stamps: List<String> = if (safSub != null) {
             safSub.listFiles()
                 .mapNotNull { f ->
@@ -203,7 +211,23 @@ class LedgerRepository(
                 ?.map { it.name.removePrefix("auto_").removeSuffix(".db.enc") }
                 ?: emptyList()
         }
-        stamps.drop(13).forEach { stale ->
+        val zone = java.time.ZoneId.systemDefault()
+        // (stamp, LocalDate)，stamps 已按时间倒序，故每组第一个即该组最新一份
+        val parsed = stamps.mapNotNull { s ->
+            runCatching { java.time.Instant.ofEpochMilli(s.toLong()).atZone(zone).toLocalDate() }.getOrNull()?.let { s to it }
+        }
+        val dailyKeep = parsed.groupBy { it.second }
+            .entries.sortedByDescending { it.key }
+            .take(7)
+            .mapNotNull { it.value.firstOrNull()?.first }
+            .toSet()
+        val monthlyKeep = parsed.groupBy { java.time.YearMonth.from(it.second) }
+            .entries.sortedByDescending { it.key }
+            .take(3)
+            .mapNotNull { it.value.firstOrNull()?.first }
+            .toSet()
+        val keep = dailyKeep + monthlyKeep
+        stamps.filter { it !in keep }.forEach { stale ->
             listOf(".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
                 if (safSub != null) safSub.findFile("auto_$stale$ext")?.delete()
                 else java.io.File(localDir, "auto_$stale$ext").delete()

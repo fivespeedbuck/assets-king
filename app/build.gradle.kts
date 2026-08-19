@@ -16,7 +16,10 @@ android {
         versionName = "0.1.0"
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true   // 检查更新需读取 BuildConfig.VERSION_NAME（REQ 设置§13）
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

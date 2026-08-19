@@ -3,6 +3,7 @@ package com.assetsking.app.ui.screen
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
@@ -35,6 +36,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.assetsking.app.BuildConfig
+import com.assetsking.app.UpdateChecker
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CustomCategoryEntity
@@ -94,6 +97,10 @@ fun SettingsScreen(
     var newCatName by remember { mutableStateOf("") }
     var showWindfall by remember { mutableStateOf(false) }
     var backupMsg by remember { mutableStateOf("") }
+    // 检查更新（REQ 设置§13）
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateMsg by remember { mutableStateOf("") }
+    var latestRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
 
     val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -592,12 +599,64 @@ fun SettingsScreen(
         }
 
         item {
-            Text(
-                "资产大王 v0.1.0",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            GlassCard {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "资产大王 v${BuildConfig.VERSION_NAME}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // 检查更新（REQ 设置§13）：检查 GitHub Release，不静默更新
+                        TextButton(
+                            enabled = !checkingUpdate,
+                            onClick = {
+                                checkingUpdate = true
+                                updateMsg = ""
+                                scope.launch {
+                                    val rel = withContext(Dispatchers.IO) { UpdateChecker.fetchLatest() }
+                                    checkingUpdate = false
+                                    when {
+                                        rel == null -> updateMsg = "检查失败：无网络或暂无发布"
+                                        UpdateChecker.isNewer(rel.tag, BuildConfig.VERSION_NAME) -> latestRelease = rel
+                                        else -> updateMsg = "已是最新版本"
+                                    }
+                                }
+                            }
+                        ) { Text(if (checkingUpdate) "检查中…" else "检查更新") }
+                    }
+                    if (updateMsg.isNotEmpty()) {
+                        Text(updateMsg, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         }
+    }
+
+    // 新版本说明弹窗（REQ 设置§13）：展示版本说明，用户确认后跳转浏览器下载 APK
+    latestRelease?.let { rel ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { latestRelease = null },
+            title = { Text("发现新版本 ${rel.tag}", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(rel.name, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        rel.body.ifBlank { "（无版本说明）" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(rel.htmlUrl))) }
+                    latestRelease = null
+                }) { Text("前往下载") }
+            },
+            dismissButton = { TextButton(onClick = { latestRelease = null }) { Text("取消") } }
+        )
     }
 
     if (showBudgetSheet) {

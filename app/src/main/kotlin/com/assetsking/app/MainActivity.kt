@@ -14,6 +14,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.ui.screen.HomeScreen
 import com.assetsking.app.ui.screen.MigrationGateScreen
+import com.assetsking.app.ui.screen.OnboardingScreen
 import com.assetsking.app.ui.screen.isListenerEnabled
 import com.assetsking.database.LedgerRepository
 import com.assetsking.ui.theme.AppTheme
@@ -32,10 +33,17 @@ class MainActivity : ComponentActivity() {
             // 旧版 → 重构版迁移门禁（REQ 旧功能清理 §4-8）：完成前不放行进首页
             var gate by remember { mutableStateOf<LedgerRepository.MigrationStatus?>(null) }
             LaunchedEffect(Unit) { gate = app.repository.migrationStatus() }
+            // 首次配置引导（REQ 监听§15）：一次性引导开权限，完成后不再反复要求
+            val prefs = remember { getSharedPreferences("app_prefs", MODE_PRIVATE) }
+            var onboardingDone by remember { mutableStateOf(prefs.getBoolean("onboarding_done", false)) }
             AssetsKingTheme(theme = AppTheme.byKey(themeKey)) {
-                when (gate) {
-                    null -> {}   // 检查中
-                    LedgerRepository.MigrationStatus.DONE ->
+                when {
+                    !onboardingDone -> OnboardingScreen(onDone = {
+                        prefs.edit().putBoolean("onboarding_done", true).apply()
+                        onboardingDone = true
+                    })
+                    gate == null -> {}   // 检查中
+                    gate == LedgerRepository.MigrationStatus.DONE ->
                         HomeScreen(model = model, repository = app.repository)
                     else -> MigrationGateScreen(
                         repository = app.repository,
