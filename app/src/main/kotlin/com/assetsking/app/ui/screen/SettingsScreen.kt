@@ -42,7 +42,6 @@ import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.WindfallEntity
 import com.assetsking.model.TransactionCategory
-import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
@@ -54,8 +53,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.util.UUID
 
 @Composable
@@ -117,44 +114,16 @@ fun SettingsScreen(
     // ON_RESUME 重读：授权弹窗关掉后回来立即刷新（REQ 监听§14）
     val smsPermOk = rememberSmsGranted()
 
-    val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    // 备份目录 SAF 选择（REQ 备份§2）：拿持久化授权，之后每周自动备份写所选目录
+    val backupDirLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    try {
-                        val reader = BufferedReader(InputStreamReader(context.contentResolver.openInputStream(uri)))
-                        val lines = reader.readLines()
-                        reader.close()
-                        var imported = 0
-                        for (i in 1 until lines.size) {
-                            val cols = lines[i].split(",")
-                            if (cols.size < 5) continue
-                            val amount = cols.getOrNull(3)?.trim()?.toDoubleOrNull() ?: continue
-                            val merchant = cols.getOrNull(4)?.trim()?.takeIf { it.isNotEmpty() }
-                            val cents = (amount * 100).toLong()
-                            if (cents <= 0) continue
-                            val type = when (cols.getOrNull(1)?.trim()) {
-                                "收入" -> TransactionType.INCOME
-                                "退款" -> TransactionType.REFUND
-                                else -> TransactionType.EXPENSE
-                            }
-                            val cat = cols.getOrNull(2)?.trim()?.takeIf { it.isNotEmpty() } ?: TransactionCategory.UNCATEGORIZED.name
-                            try {
-                                repository.addTransaction(
-                                    accountId = accounts.firstOrNull()?.id ?: continue,
-                                    amountCents = cents, type = type, category = cat,
-                                    merchant = merchant,
-                                    note = cols.getOrNull(5)?.trim()?.takeIf { it.isNotEmpty() }
-                                )
-                                imported++
-                            } catch (_: Exception) { }
-                        }
-                        withContext(Dispatchers.Main) { Toast.makeText(context, "导入 $imported 条流水", Toast.LENGTH_SHORT).show() }
-                    } catch (_: Exception) {
-                        withContext(Dispatchers.Main) { Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show() }
-                    }
-                }
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
             }
+            repository.setBackupDirUri(uri)
+            backupMsg = "备份目录已更新"
         }
     }
 
@@ -524,6 +493,18 @@ fun SettingsScreen(
                         }) { Text("立即备份") }
                         OutlinedButton(onClick = { backupLauncher.launch(arrayOf("*/*")) }) { Text("恢复备份") }
                     }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            "备份目录：${
+                                repository.backupDirUri()?.let { u ->
+                                    androidx.documentfile.provider.DocumentFile.fromTreeUri(context, u)?.name
+                                } ?: "应用私有目录"
+                            }",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = { backupDirLauncher.launch(null) }) { Text("选择目录") }
+                    }
                     if (backupMsg.isNotEmpty()) {
                         Text(backupMsg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
@@ -584,64 +565,29 @@ fun SettingsScreen(
             }
         }
 
-        // ── Backup ──
+        // ── 数据管理：分享只用于 CSV（REQ 备份§7）；完整加密备份只存目录，JSON/CSV 导入不支持（REQ 备份§8）──
         item {
             GlassCard {
-            Text("数据管理", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = { csvLauncher.launch("text/*") },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("从 CSV 导入流水") }
-            }
-            Spacer(Modifier.height(8.dp))
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val json = repository.exportAllData()
-                                    withContext(Dispatchers.Main) {
-                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "application/json"
-                                            putExtra(Intent.EXTRA_TEXT, json)
-                                            putExtra(Intent.EXTRA_SUBJECT, "assets-king-backup.json")
-                                        }
-                                        context.startActivity(Intent.createChooser(sendIntent, "导出 JSON"))
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("JSON") }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val csv = repository.exportCsvTransactions()
-                                    withContext(Dispatchers.Main) {
-                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/csv"
-                                            putExtra(Intent.EXTRA_TEXT, csv)
-                                            putExtra(Intent.EXTRA_SUBJECT, "assets-king-transactions.csv")
-                                        }
-                                        context.startActivity(Intent.createChooser(sendIntent, "导出 CSV"))
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("CSV") }
-                }
+                Text("数据管理", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = {
-                        Toast.makeText(context, "导入：将 JSON 备份文件放到 Downloads 目录后点击", Toast.LENGTH_LONG).show()
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                val csv = repository.exportCsvTransactions()
+                                withContext(Dispatchers.Main) {
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/csv"
+                                        putExtra(Intent.EXTRA_TEXT, csv)
+                                        putExtra(Intent.EXTRA_SUBJECT, "assets-king-transactions.csv")
+                                    }
+                                    context.startActivity(Intent.createChooser(sendIntent, "导出 CSV"))
+                                }
+                            }
+                        }
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("导入数据") }
-            }
+                ) { Text("导出流水 CSV") }
             }
         }
 

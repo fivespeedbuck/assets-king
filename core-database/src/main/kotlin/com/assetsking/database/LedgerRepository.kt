@@ -113,6 +113,15 @@ class LedgerRepository(
         prefs.edit().putString("backup_pin", pin).apply()
     }
 
+    /** SAF 备份目录（REQ 备份§2）：null = 应用私有目录 */
+    fun backupDirUri(): android.net.Uri? =
+        prefs.getString("backup_dir_uri", null)?.let { android.net.Uri.parse(it) }
+
+    fun setBackupDirUri(uri: android.net.Uri?) {
+        if (uri == null) prefs.edit().remove("backup_dir_uri").apply()
+        else prefs.edit().putString("backup_dir_uri", uri.toString()).apply()
+    }
+
     /** 立即备份（手动或自动）。密码未设返回 false。自动备份保留最近 13 份，手动永不删除。 */
     suspend fun backupNow(manual: Boolean): Boolean = withContext(Dispatchers.IO) {
         val pin = backupPin()
@@ -121,40 +130,70 @@ class LedgerRepository(
             val dbFile = context.getDatabasePath("assets-king.db")
             // WAL 先 checkpoint，尽量让主库文件自包含
             runCatching { database.openHelper.writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)") }
-            val dir = java.io.File(context.filesDir, "backups/" + if (manual) "manual" else "auto")
-            dir.mkdirs()
             val stamp = System.currentTimeMillis()
             val prefix = if (manual) "manual" else "auto"
-            fun enc(src: java.io.File, ext: String) {
-                if (!src.exists()) return
-                val data = src.readBytes()
-                val out = java.io.File(dir, "${prefix}_${stamp}$ext")
-                out.writeBytes(com.assetsking.ledger.PinCipher.encrypt(data, pin))
+            val kind = if (manual) "manual" else "auto"
+            val localDir = java.io.File(context.filesDir, "backups/$kind")
+
+            // SAF 目录（REQ 备份§2）：所选目录下建 assets-king-backups/{manual,auto}/；失败回退应用私有目录
+            val safSub: androidx.documentfile.provider.DocumentFile? = backupDirUri()?.let { root ->
+                runCatching {
+                    val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, root)
+                        ?: return@runCatching null
+                    val base = tree.findFile("assets-king-backups") ?: tree.createDirectory("assets-king-backups")
+                    base?.findFile(kind) ?: base?.createDirectory(kind)
+                }.getOrNull()
             }
-            enc(dbFile, ".db.enc")
-            enc(java.io.File(dbFile.path + "-wal"), ".wal.enc")
-            enc(java.io.File(dbFile.path + "-shm"), ".shm.enc")
+
+            fun enc(name: String, data: ByteArray) {
+                if (safSub != null) {
+                    runCatching {
+                        safSub.findFile(name)?.delete()
+                        val f = safSub.createFile("application/octet-stream", name) ?: return
+                        context.contentResolver.openOutputStream(f.uri)?.use { it.write(data) }
+                    }
+                } else {
+                    localDir.mkdirs()
+                    java.io.File(localDir, name).writeBytes(data)
+                }
+            }
+            fun encFile(src: java.io.File, ext: String) {
+                if (!src.exists()) return
+                enc("${prefix}_${stamp}$ext", com.assetsking.ledger.PinCipher.encrypt(src.readBytes(), pin))
+            }
+            encFile(dbFile, ".db.enc")
+            encFile(java.io.File(dbFile.path + "-wal"), ".wal.enc")
+            encFile(java.io.File(dbFile.path + "-shm"), ".shm.enc")
             val prefsJson = JSONObject().apply {
                 prefs.all.forEach { (k, v) -> put(k, v) }
             }.toString()
-            java.io.File(dir, "${prefix}_${stamp}.prefs.enc")
-                .writeBytes(com.assetsking.ledger.PinCipher.encrypt(prefsJson.toByteArray(Charsets.UTF_8), pin))
-            if (!manual) pruneAutoBackups(dir)
+            enc("${prefix}_${stamp}.prefs.enc", com.assetsking.ledger.PinCipher.encrypt(prefsJson.toByteArray(Charsets.UTF_8), pin))
+            if (!manual) pruneAutoBackups(safSub, localDir)
             true
         }.getOrDefault(false)
     }
 
-    private fun pruneAutoBackups(dir: java.io.File) {
+    private fun pruneAutoBackups(safSub: androidx.documentfile.provider.DocumentFile?, localDir: java.io.File) {
         // 自动备份保留最近 13 份（约三个月，REQ 备份§3）；手动备份永不自动删除
-        dir.listFiles { f -> f.name.startsWith("auto_") && f.name.endsWith(".db.enc") }
-            ?.sortedByDescending { it.lastModified() }
-            ?.drop(13)
-            ?.forEach { stale ->
-                val stamp = stale.name.removePrefix("auto_").removeSuffix(".db.enc")
-                listOf(".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
-                    java.io.File(dir, "auto_$stamp$ext").delete()
+        val stamps: List<String> = if (safSub != null) {
+            safSub.listFiles()
+                .mapNotNull { f ->
+                    f.name?.takeIf { it.startsWith("auto_") && it.endsWith(".db.enc") }
+                        ?.removePrefix("auto_")?.removeSuffix(".db.enc")
                 }
+                .sortedDescending()
+        } else {
+            localDir.listFiles { f -> f.name.startsWith("auto_") && f.name.endsWith(".db.enc") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.map { it.name.removePrefix("auto_").removeSuffix(".db.enc") }
+                ?: emptyList()
+        }
+        stamps.drop(13).forEach { stale ->
+            listOf(".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
+                if (safSub != null) safSub.findFile("auto_$stale$ext")?.delete()
+                else java.io.File(localDir, "auto_$stale$ext").delete()
             }
+        }
     }
 
     /** 恢复：先自动备份当前数据（REQ §5），再整体替换，完成后重启进程生效。 */
