@@ -40,7 +40,7 @@ import com.assetsking.ui.format.formatTime
 import java.util.Calendar
 import java.util.UUID
 
-private val intervals = listOf("MONTHLY" to "每月", "WEEKLY" to "每周", "DAILY" to "每天", "YEARLY" to "每年")
+private val intervals = listOf("MONTHLY" to "每月", "WEEKLY" to "每周", "DAILY" to "每天", "QUARTERLY" to "每季度", "YEARLY" to "每年")
 private val recurringTypes = listOf(TransactionType.EXPENSE to "支出", TransactionType.INCOME to "收入")
 
 @Composable
@@ -128,6 +128,7 @@ private fun RecurringRuleSheet(
             "DAILY" -> cal.add(Calendar.DAY_OF_MONTH, 1)
             "WEEKLY" -> cal.add(Calendar.WEEK_OF_YEAR, 1)
             "MONTHLY" -> cal.add(Calendar.MONTH, 1)
+            "QUARTERLY" -> cal.add(Calendar.MONTH, 3)
             "YEARLY" -> cal.add(Calendar.YEAR, 1)
         }
         cal.timeInMillis

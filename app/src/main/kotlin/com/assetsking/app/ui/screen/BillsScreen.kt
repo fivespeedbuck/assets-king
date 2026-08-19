@@ -58,23 +58,37 @@ fun BillsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            Text(
-                "本月固定账单：扣了自动打勾，没扣的直接在这里确认入账。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // 本月已扣/待扣汇总（REQ 导航§3）
+            val claimedTxs = transactions.filter { tx ->
+                sorted.any { rule ->
+                    tx.recurringRuleId == rule.id &&
+                        kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000
+                }
+            }
+            val pendingSum = sorted.filter { rule ->
+                transactions.none { tx -> tx.recurringRuleId == rule.id && kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000 }
+            }.sumOf { it.amountCents }
+            GlassCard {
+                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Text("本月已扣 ${formatMoney(claimedTxs.sumOf { it.amountCents })}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
+                    Text("待扣 ${formatMoney(pendingSum)}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                }
+            }
         }
         items(sorted.size, key = { sorted[it].id }) { idx ->
             val rule = sorted[idx]
-            val claimed = transactions.any { tx ->
+            val claimedTx = transactions.firstOrNull { tx ->
                 tx.recurringRuleId == rule.id &&
                     kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000
             }
+            val claimed = claimedTx != null
             val match = pendingItems.firstOrNull { pi ->
                 val amt = pi.parsed.amountCents ?: return@firstOrNull false
                 pi.parsed.isExpense != false &&
                     kotlin.math.abs(amt - rule.amountCents) * 100 <= rule.amountCents * 15
             }
+            // 超过应扣日仍未匹配 → 待核实，不认定逾期也不自动造流水（REQ 导航§11）
+            val needsVerify = !claimed && rule.nextRunAt < System.currentTimeMillis()
             GlassCard {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -85,7 +99,10 @@ fun BillsScreen(
                         Text(rule.merchant ?: "未命名", fontWeight = FontWeight.Medium)
                         Text(
                             "${accounts.firstOrNull { it.id == rule.accountId }?.name ?: "?"} · " +
-                                "${formatMoney(rule.amountCents)} · 下次 ${fmt.format(Date(rule.nextRunAt))}",
+                                "预计 ${formatMoney(rule.amountCents)}" +
+                                (if (claimedTx != null && claimedTx.amountCents != rule.amountCents)
+                                    " · 实际 ${formatMoney(claimedTx.amountCents)}" else "") +
+                                " · 下次 ${fmt.format(Date(rule.nextRunAt))}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -99,6 +116,7 @@ fun BillsScreen(
                     }
                     when {
                         claimed -> Text("✓ 已扣", color = Color(0xFF66BB6A), fontWeight = FontWeight.Bold)
+                        needsVerify -> Text("待核实", color = Color(0xFFFFB74D), fontWeight = FontWeight.Bold)
                         match != null -> Button(onClick = {
                             val parsed = match.parsed
                             val hint = parsed.bankHint

@@ -964,6 +964,7 @@ class LedgerRepository(
             "DAILY" -> cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
             "WEEKLY" -> cal.add(java.util.Calendar.WEEK_OF_YEAR, 1)
             "MONTHLY" -> cal.add(java.util.Calendar.MONTH, 1)
+            "QUARTERLY" -> cal.add(java.util.Calendar.MONTH, 3)  // REQ 导航§10：每季度
             "YEARLY" -> cal.add(java.util.Calendar.YEAR, 1)
         }
         return cal.timeInMillis
