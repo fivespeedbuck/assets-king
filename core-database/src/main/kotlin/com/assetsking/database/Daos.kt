@@ -42,8 +42,8 @@ interface TransactionDao {
     @Query("UPDATE transactions SET category = :category WHERE id = :id")
     suspend fun updateCategory(id: String, category: String)
 
-    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note WHERE id = :id")
-    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?)
+    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity WHERE id = :id")
+    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?)
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: String)

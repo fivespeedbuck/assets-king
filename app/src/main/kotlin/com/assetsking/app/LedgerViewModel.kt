@@ -199,10 +199,11 @@ class LedgerViewModel(
 
     fun updateTransaction(
         id: String, amountCents: Long, type: TransactionType,
-        category: String, merchant: String?, note: String?
+        category: String, merchant: String?, note: String?,
+        accountId: String, occurredAt: Long, necessity: Boolean?
     ) {
         viewModelScope.launch {
-            repository.updateTransaction(id, amountCents, type, category, merchant, note)
+            repository.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity)
         }
     }
 
@@ -403,6 +404,10 @@ class LedgerViewModel(
 
     fun mergeCategoryEntity(sourceId: String, targetId: String) {
         viewModelScope.launch { repository.mergeCategory(sourceId, targetId) }
+    }
+
+    fun reorderCategories(orderedIds: List<String>) {
+        viewModelScope.launch { repository.reorderCategories(orderedIds) }
     }
 
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {

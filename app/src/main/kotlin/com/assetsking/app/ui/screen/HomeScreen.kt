@@ -276,8 +276,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         EditTransactionSheet(
             transaction = tx,
             accountName = state.accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty(),
-            onSave = { id, amountCents, type, category, merchant, note ->
-                model.updateTransaction(id, amountCents, type, category, merchant, note)
+            accounts = state.accounts,
+            onSave = { id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity ->
+                model.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity)
                 editingTransaction = null
             },
             onDelete = { model.deleteTransaction(it); editingTransaction = null },

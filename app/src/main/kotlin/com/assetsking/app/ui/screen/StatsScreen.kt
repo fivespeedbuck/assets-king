@@ -174,10 +174,24 @@ fun StatsScreen(
                             val parent = categories.firstOrNull { it.id == parentId }
                             Triple(parent?.name ?: "其他", total, catColor(i))
                         }
+                        // 双层环（REQ 统计§14）：内圈一级占比、外圈必要/非必要/默认构成
+                        val defaultSpent = expenses.filter { it.necessity == null }.sumOf { netOf(it) }
                         DonutChart(
                             totalCents = monthExpense,
                             slices = slices.map { (_, total, color) -> total to color },
+                            outerSlices = listOf(
+                                necessarySpent to StatsGreen,
+                                optionalSpent to StatsRed,
+                                defaultSpent to MaterialTheme.colorScheme.surfaceVariant
+                            ).filter { it.first > 0 },
                             modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
+                        )
+                        Text(
+                            "外圈：必要 ${formatMoney(necessarySpent)} · 非必要 ${formatMoney(optionalSpent)} · 默认 ${formatMoney(defaultSpent)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(6.dp))
                         // 分类列表：金额/占比/非必要占比，点击下钻（REQ 统计§3/§14）
@@ -256,27 +270,36 @@ fun StatsScreen(
     }
 }
 
-/** 环形图：分类占比环 + 中心总支出（REQ 统计§14；双层构成为下钻页的 必要/非必要 环） */
+/** 环形图：内圈占比环 + 可选外圈构成环 + 中心总支出（REQ 统计§14 双层同屏） */
 @Composable
 private fun DonutChart(
     totalCents: Long,
     slices: List<Pair<Long, Color>>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    outerSlices: List<Pair<Long, Color>> = emptyList()
 ) {
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
-            val outer = size.minDimension / 2f * 0.85f
-            var start = -90f
-            slices.forEach { (cents, color) ->
-                if (cents <= 0 || totalCents <= 0) return@forEach
-                val sweep = cents * 360f / totalCents
-                drawArc(
-                    color, start, sweep, false,
-                    style = Stroke(width = size.minDimension * 0.14f),
-                    size = Size(outer * 2, outer * 2),
-                    topLeft = Offset(size.width / 2 - outer, size.height / 2 - outer)
-                )
-                start += sweep
+            val dim = size.minDimension
+            fun ring(radius: Float, strokeW: Float, segs: List<Pair<Long, Color>>) {
+                var start = -90f
+                segs.forEach { (cents, color) ->
+                    if (cents <= 0 || totalCents <= 0) return@forEach
+                    val sweep = cents * 360f / totalCents
+                    drawArc(
+                        color, start, sweep, false,
+                        style = Stroke(width = strokeW),
+                        size = Size(radius * 2, radius * 2),
+                        topLeft = Offset(size.width / 2 - radius, size.height / 2 - radius)
+                    )
+                    start += sweep
+                }
+            }
+            if (outerSlices.isNotEmpty()) {
+                ring(dim / 2f * 0.92f, dim * 0.07f, outerSlices)   // 外圈：必要/非必要构成
+                ring(dim / 2f * 0.72f, dim * 0.12f, slices)        // 内圈：一级占比
+            } else {
+                ring(dim / 2f * 0.85f, dim * 0.14f, slices)
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -286,32 +309,55 @@ private fun DonutChart(
     }
 }
 
+/** 组合图（REQ 统计§19）：并列柱（绿收入/红支出）+ 结余折线（蓝，中轴为零线） */
 @Composable
 private fun TrendChart(bars: List<com.assetsking.usecase.MonthlyBar>) {
     val max = bars.maxOfOrNull { maxOf(it.incomeCents, it.expenseCents, 1L) } ?: 1L
+    val balanceMax = bars.maxOfOrNull { kotlin.math.abs(it.incomeCents - it.expenseCents).coerceAtLeast(1L) } ?: 1L
+    val balanceColor = Color(0xFF5C9CE6)
+    val zeroLineColor = MaterialTheme.colorScheme.surfaceVariant
     Column {
-        bars.forEach { bar ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(bar.month.substring(5) + "月", style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
-                Box(Modifier.weight(1f).height(18.dp)) {
-                    // 收入柱（绿）+ 支出柱（红）
-                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(bar.incomeCents.toFloat()).height(10.dp).background(StatsGreen, androidx.compose.foundation.shape.RoundedCornerShape(4.dp)))
-                        Spacer(Modifier.width(2.dp))
-                        Box(Modifier.weight(bar.expenseCents.toFloat()).height(10.dp).background(StatsRed, androidx.compose.foundation.shape.RoundedCornerShape(4.dp)))
-                        Box(Modifier.weight((max - bar.incomeCents - bar.expenseCents).coerceAtLeast(0).toFloat()))
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (bar.incomeCents - bar.expenseCents >= 0) "+${formatMoney(bar.incomeCents - bar.expenseCents)}" else "−${formatMoney(bar.expenseCents - bar.incomeCents)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (bar.incomeCents - bar.expenseCents >= 0) StatsGreen else StatsRed
+        Canvas(Modifier.fillMaxWidth().height(170.dp)) {
+            val chartH = size.height - 26f
+            val n = bars.size.coerceAtLeast(1)
+            val groupW = size.width / n
+            val barW = (groupW * 0.26f).coerceIn(2f, 18.dp.toPx())
+            // 零线
+            drawLine(
+                zeroLineColor,
+                Offset(0f, chartH / 2),
+                Offset(size.width, chartH / 2),
+                strokeWidth = 1f
+            )
+            val balancePts = ArrayList<Offset>(bars.size)
+            bars.forEachIndexed { i, bar ->
+                val cx = groupW * i + groupW / 2
+                val inH = chartH * (bar.incomeCents.toFloat() / max)
+                val exH = chartH * (bar.expenseCents.toFloat() / max)
+                drawRect(
+                    StatsGreen,
+                    topLeft = Offset(cx - barW - 1.dp.toPx(), chartH - inH),
+                    size = Size(barW, inH)
                 )
+                drawRect(
+                    StatsRed,
+                    topLeft = Offset(cx + 1.dp.toPx(), chartH - exH),
+                    size = Size(barW, exH)
+                )
+                val bal = (bar.incomeCents - bar.expenseCents).toFloat()
+                balancePts.add(Offset(cx, chartH / 2 - bal / balanceMax * (chartH / 2 - 10f)))
             }
+            // 结余折线 + 端点
+            for (i in 0 until balancePts.size - 1) {
+                drawLine(balanceColor, balancePts[i], balancePts[i + 1], strokeWidth = 2.dp.toPx())
+            }
+            balancePts.forEach { pt -> drawCircle(balanceColor, radius = 3.dp.toPx(), center = pt) }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            bars.forEach { bar -> Text(bar.month.substring(5) + "月", style = MaterialTheme.typography.labelSmall) }
         }
         Spacer(Modifier.height(4.dp))
-        Text("绿=收入 红=支出 右侧=结余/赤字", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("绿=收入 红=支出 蓝线=结余/赤字", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

@@ -551,7 +551,10 @@ class LedgerRepository(
         type: TransactionType,
         category: String,
         merchant: String?,
-        note: String?
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        necessity: Boolean?
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -561,8 +564,12 @@ class LedgerRepository(
             val loanTypes = setOf(TransactionType.LOAN_DISBURSEMENT, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT)
             val isLoanTx = type in loanTypes || oldType in loanTypes
             if (!isLoanTx) {
-                database.transactionDao().update(id, amountCents, type.name, category, merchant, note)
+                database.transactionDao().update(
+                    id, amountCents, type.name, category, merchant, note,
+                    accountId, occurredAt, necessity
+                )
                 recomputeBalance(old.accountId)
+                if (accountId != old.accountId) recomputeBalance(accountId)
             }
         }
     }
@@ -885,6 +892,14 @@ class LedgerRepository(
 
     suspend fun restoreCategory(id: String) {
         database.categoryDao().findById(id)?.let { database.categoryDao().upsert(it.copy(isArchived = false)) }
+    }
+
+    /** 一级分类拖动排序（REQ 编辑器§8）：按给定顺序重写 sortOrder，二级顺序不动。 */
+    suspend fun reorderCategories(orderedIds: List<String>) {
+        val byId = database.categoryDao().all().associateBy { it.id }
+        orderedIds.forEachIndexed { index, id ->
+            byId[id]?.let { if (it.sortOrder != index) database.categoryDao().upsert(it.copy(sortOrder = index)) }
+        }
     }
 
     /** 合并分类（REQ 分类§23）：历史流水、学习规则迁移到目标，来源分类移除。 */

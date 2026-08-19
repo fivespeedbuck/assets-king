@@ -1,9 +1,18 @@
 package com.assetsking.app.ui.screen
 
+import android.content.ClipData
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.draganddrop.dragAndDropSource
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -347,7 +357,8 @@ fun TransactionEditorScreen(
                     childrenOf = childrenOf,
                     selectedCategoryId = categoryId,
                     onSelect = { categoryId = it.id },
-                    onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true }
+                    onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true },
+                    onReorder = { viewModel.reorderCategories(it) }
                 )
             }
 
@@ -558,29 +569,71 @@ private fun MerchantField(
     }
 }
 
-/** 一级宫格（每行 5 个，大字体 4 个），点击在其行下方原地展开二级面板（REQ 编辑器§3/§25/§28）。 */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/** 一级宫格（每行 5 个，大字体 4 个），点击在其行下方原地展开二级面板（REQ 编辑器§3/§25/§28）；长按拖动排序（REQ 编辑器§8）。 */
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryGrid(
     parents: List<CategoryEntity>,
     childrenOf: (String?) -> List<CategoryEntity>,
     selectedCategoryId: String?,
     onSelect: (CategoryEntity) -> Unit,
-    onAddChild: (String) -> Unit
+    onAddChild: (String) -> Unit,
+    onReorder: (List<String>) -> Unit
 ) {
     val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale
     val perRow = if (fontScale > 1.15f) 4 else 5
     var expandedParent by remember { mutableStateOf<String?>(null) }
+    // 拖动排序的本地顺序；数据源变化（改名/新增）时重新对齐
+    var order by remember(parents) { mutableStateOf(parents) }
+    var draggingId by remember { mutableStateOf<String?>(null) }
+
+    fun moveItem(draggedId: String, targetId: String) {
+        val from = order.indexOfFirst { it.id == draggedId }
+        val to = order.indexOfFirst { it.id == targetId }
+        if (from < 0 || to < 0 || from == to) return
+        val list = order.toMutableList().apply { add(to, removeAt(from)) }
+        order = list
+        onReorder(list.map { it.id })
+    }
+
     Column {
-        parents.chunked(perRow).forEach { row ->
+        order.chunked(perRow).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 row.forEach { parent ->
                     val selected = selectedCategoryId != null && selectedCategoryId.startsWith("${parent.id}-")
+                    val dropTarget = remember(parent.id) {
+                        object : DragAndDropTarget {
+                            var onItemDropped: ((String, String) -> Unit)? = null
+                            override fun onDrop(event: DragAndDropEvent): Boolean {
+                                val draggedId = event.toAndroidDragEvent().clipData?.getItemAt(0)?.text?.toString()
+                                if (draggedId != null) onItemDropped?.invoke(draggedId, parent.id)
+                                return true
+                            }
+                        }
+                    }
+                    dropTarget.onItemDropped = { draggedId, targetId -> moveItem(draggedId, targetId) }
                     Column(
-                        Modifier.weight(1f).clickable {
-                            expandedParent = if (expandedParent == parent.id) null else parent.id
-                            if (selectedCategoryId == null) expandedParent = parent.id
-                        }.padding(vertical = 6.dp),
+                        Modifier.weight(1f).alpha(if (draggingId == parent.id) 0.4f else 1f)
+                            .clickable {
+                                expandedParent = if (expandedParent == parent.id) null else parent.id
+                                if (selectedCategoryId == null) expandedParent = parent.id
+                            }
+                            .dragAndDropSource {
+                                detectTapGestures(onLongPress = {
+                                    draggingId = parent.id
+                                    startTransfer(
+                                        DragAndDropTransferData(
+                                            clipData = ClipData.newPlainText("category", parent.id)
+                                        )
+                                    )
+                                    draggingId = null
+                                })
+                            }
+                            .dragAndDropTarget(
+                                shouldStartDragAndDrop = { it.mimeTypes().contains("text/plain") },
+                                target = dropTarget
+                            )
+                            .padding(vertical = 6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         androidx.compose.foundation.layout.Box(

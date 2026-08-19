@@ -1,18 +1,23 @@
 package com.assetsking.app.ui.screen
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.assetsking.database.AccountEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.TransactionCategory
@@ -30,6 +36,7 @@ import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.format.formatTime
 
 private val editableTypes = listOf(TransactionType.EXPENSE, TransactionType.INCOME, TransactionType.REFUND)
 
@@ -40,11 +47,13 @@ private fun txTypeLabel(type: TransactionType): String = when (type) {
     else -> type.name
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditTransactionSheet(
     transaction: TransactionEntity,
     accountName: String,
-    onSave: (String, Long, TransactionType, String, String?, String?) -> Unit,
+    accounts: List<AccountEntity> = emptyList(),
+    onSave: (String, Long, TransactionType, String, String?, String?, String, Long, Boolean?) -> Unit,
     onDelete: (String) -> Unit,
     onDismiss: () -> Unit,
     recurringRules: List<RecurringRuleEntity> = emptyList(),
@@ -60,17 +69,36 @@ fun EditTransactionSheet(
     var categoryStr by remember { mutableStateOf(transaction.category) }
     var merchant by remember { mutableStateOf(transaction.merchant.orEmpty()) }
     var note by remember { mutableStateOf(transaction.note.orEmpty()) }
+    var accountId by remember { mutableStateOf(transaction.accountId) }
+    var occurredAt by remember { mutableStateOf(transaction.occurredAt) }
+    var necessity by remember { mutableStateOf(transaction.necessity) }
+    var accountDropdownExpanded by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Sheet(title = "编辑流水", onDismiss = onDismiss) {
-        // 钱从哪出 / 进到哪：账户不可改（要换账户删了重记），但必须让用户看得见
-        Text(
-            if (currentType == TransactionType.INCOME || currentType == TransactionType.REFUND)
-                "钱进到「$accountName」" else "钱从「$accountName」出",
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.primary,
-            style = MaterialTheme.typography.bodyMedium
-        )
+        // 资金账户（REQ 流水§8 统一编辑）：换账户时仓库层对旧/新账户各自重算余额
+        Text("资金账户", fontWeight = FontWeight.Medium)
+        val selectedAccountName = accounts.firstOrNull { it.id == accountId }?.name ?: accountName
+        Row(Modifier.fillMaxWidth()) {
+            TextButton(onClick = { accountDropdownExpanded = true }) {
+                Text(
+                    selectedAccountName + if (transaction.channel != null) " · 渠道${transaction.channel}" else "",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+        DropdownMenu(expanded = accountDropdownExpanded, onDismissRequest = { accountDropdownExpanded = false }) {
+            accounts.filter { !it.archived }.forEach { a ->
+                DropdownMenuItem(
+                    text = { Text(a.name) },
+                    onClick = {
+                        accountId = a.id
+                        accountDropdownExpanded = false
+                    }
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
 
         FormField(
@@ -102,6 +130,29 @@ fun EditTransactionSheet(
 
         Spacer(Modifier.height(8.dp))
         FormField(value = merchant, onValueChange = { merchant = it }, label = "商户/来源")
+
+        // 必要性（REQ 流水§8）：仅支出可改；null = 按分类默认
+        if (type == TransactionType.EXPENSE) {
+            Spacer(Modifier.height(8.dp))
+            Text("必要性", fontWeight = FontWeight.Medium)
+            ChipRow(
+                items = listOf<Boolean?>(null, true, false),
+                selected = necessity,
+                onSelected = { necessity = it },
+                label = { when (it) { null -> "默认"; true -> "必要"; else -> "非必要" } },
+                id = { it.toString() }
+            )
+        }
+
+        // 时间（REQ 流水§8）：改动后仓库层按时间重放重算
+        Spacer(Modifier.height(8.dp))
+        Text("时间", fontWeight = FontWeight.Medium)
+        Text(
+            formatTime(occurredAt),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth().clickable { showDatePicker = true }.padding(vertical = 4.dp)
+        )
 
         Spacer(Modifier.height(8.dp))
         FormField(value = note, onValueChange = { note = it }, label = "备注（可选）")
@@ -158,7 +209,10 @@ fun EditTransactionSheet(
                     type,
                     categoryStr,
                     merchant.trim().takeIf { it.isNotEmpty() },
-                    note.trim().takeIf { it.isNotEmpty() }
+                    note.trim().takeIf { it.isNotEmpty() },
+                    accountId,
+                    occurredAt,
+                    if (type == TransactionType.EXPENSE) necessity else transaction.necessity
                 )
             },
             enabled = amount.toDoubleOrNull()?.let { it > 0 } == true,
@@ -189,5 +243,19 @@ fun EditTransactionSheet(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("删除流水") }
         }
+    }
+
+    if (showDatePicker) {
+        val state = rememberDatePickerState(initialSelectedDateMillis = occurredAt)
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.selectedDateMillis?.let { occurredAt = it }
+                    showDatePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("取消") } }
+        ) { androidx.compose.material3.DatePicker(state = state) }
     }
 }
