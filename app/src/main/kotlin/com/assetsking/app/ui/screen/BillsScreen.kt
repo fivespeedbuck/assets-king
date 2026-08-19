@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +28,8 @@ import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
 import java.text.SimpleDateFormat
+import java.time.YearMonth
+import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
 
@@ -89,6 +92,17 @@ fun BillsScreen(
             }
             // 超过应扣日仍未匹配 → 待核实，不认定逾期也不自动造流水（REQ 导航§11）
             val needsVerify = !claimed && rule.nextRunAt < System.currentTimeMillis()
+            // 连续三个月实际明显偏离预计 → 提示调整，不自动改（REQ 导航§9）
+            val zone = ZoneId.systemDefault()
+            val deviatingMonths = (1..3).map { YearMonth.now().minusMonths(it.toLong()) }.count { m ->
+                val start = m.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val end = m.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val tx = transactions.firstOrNull {
+                    it.recurringRuleId == rule.id && it.occurredAt in start until end
+                }
+                tx != null && kotlin.math.abs(tx.amountCents - rule.amountCents) * 100 > rule.amountCents * 20
+            }
+            val showDeviation = deviatingMonths == 3
             GlassCard {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -112,6 +126,20 @@ fun BillsScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                        if (showDeviation) {
+                            Text(
+                                "近 3 月实际扣款均明显偏离预计，建议调整金额",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFFB74D)
+                            )
+                        }
+                        if (claimed && claimedTx != null) {
+                            // 取消关联（REQ 导航§7）：流水保留，只摘掉周期账单归属
+                            TextButton(
+                                onClick = { viewModel.linkToRecurringRule(claimedTx.id, null) },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                            ) { Text("取消关联", style = MaterialTheme.typography.labelSmall) }
                         }
                     }
                     when {

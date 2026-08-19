@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
+import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.LedgerRepository
@@ -44,6 +45,7 @@ import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionType
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
@@ -406,10 +408,26 @@ private fun VaultStatusCard(
     onShowReconciliation: () -> Unit,
     context: Context
 ) {
-    val (statusLabel, statusColor) = when (listenerStatus) {
-        ListenerStatus.OK -> "金库正常" to MaterialTheme.colorScheme.primary
-        ListenerStatus.DISCONNECTED -> "入库暂时中断" to HomeRed
-        ListenerStatus.DISABLED -> "尚未开启" to MaterialTheme.colorScheme.onSurfaceVariant
+    // 重连补扫中（服务 onListenerConnected 里跑 SmsRescan 期间）
+    val rescanning by AssetsNotificationListenerService.rescanning.collectAsStateWithLifecycle()
+    val smsGranted = rememberSmsGranted()
+
+    // REQ 监听§15/§21：通知使用权缺失红「自动记账已中断」；仅短信缺失橙「短信补扫未开启」；
+    // 断开红「入库暂时中断」；重连补扫中「恢复中」
+    val (statusLabel, statusColor) = when {
+        listenerStatus == ListenerStatus.DISABLED -> "自动记账已中断" to HomeRed
+        listenerStatus == ListenerStatus.DISCONNECTED -> "入库暂时中断" to HomeRed
+        rescanning -> "恢复中 · 补扫中" to MaterialTheme.colorScheme.primary
+        !smsGranted -> "短信补扫未开启" to HomeOrange
+        else -> "金库正常" to MaterialTheme.colorScheme.primary
+    }
+    // 漏收窗口（REQ 监听§21）：掉线期间的账目靠短信兜底补收，文案随权限状态变化
+    val gapHint = when {
+        listenerStatus == ListenerStatus.DISCONNECTED && smsGranted ->
+            "漏收窗口已开启：短信兜底将补收掉线期间账目"
+        listenerStatus == ListenerStatus.DISCONNECTED && !smsGranted ->
+            "短信兜底未开启：掉线期间账目可能漏记"
+        else -> null
     }
     GlassCard {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -424,6 +442,13 @@ private fun VaultStatusCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().clickable { }
             )
+            gapHint?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (smsGranted) HomeOrange else HomeRed
+                )
+            }
             if (pendingCount > 0 || needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {

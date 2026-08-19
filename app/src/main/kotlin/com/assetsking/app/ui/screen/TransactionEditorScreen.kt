@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -148,7 +149,6 @@ fun TransactionEditorScreen(
     var feeCents by remember { mutableStateOf(0L) }
     // 报销垫付多选
     val expenseIds = remember { mutableStateOf(listOf<String>()) }
-    var saveTrigger by remember { mutableStateOf(false) }
 
     val evaluated = AmountExpression.evaluate(amountExpr)
     val amountCents = evaluated?.let { (it * 100).roundToLong() } ?: 0L
@@ -221,6 +221,36 @@ fun TransactionEditorScreen(
                     }
                 }
             )
+        },
+        // REQ 编辑器§19：确认按钮吸底固定；必填缺失或校验冲突时禁用并列缺项
+        bottomBar = {
+            Column(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                    .imePadding().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 12.dp)
+            ) {
+                if (missing.isNotEmpty() && (amountExpr.isNotBlank() || pendingItem != null)) {
+                    Text(
+                        "还需补充：${missing.joinToString("、")}",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Button(
+                    onClick = {
+                        if (missing.isEmpty()) {
+                            doSave(
+                                kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
+                                merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
+                                loanPlanId, principalCents, interestCents, feeCents, expenseIds.value,
+                                pendingItem, viewModel
+                            )
+                            onDone()
+                        }
+                    },
+                    enabled = amountCents > 0 && missing.isEmpty(),
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) { Text("确认入账", fontWeight = FontWeight.Bold) }
+            }
         }
     ) { padding ->
         Column(
@@ -389,30 +419,6 @@ fun TransactionEditorScreen(
                 BalancePreviewInEditor(pendingItem, accounts, accountId, amountCents, kind, incomeSub)
             }
 
-            // ── 缺项列表 + 确认（REQ 编辑器§19）──
-            if (missing.isNotEmpty() && saveTrigger) {
-                Text(
-                    "还需补充：${missing.joinToString("、")}",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Button(
-                onClick = {
-                    saveTrigger = true
-                    if (missing.isEmpty()) {
-                        doSave(
-                            kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
-                            merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
-                            loanPlanId, principalCents, interestCents, feeCents, expenseIds.value,
-                            pendingItem, viewModel
-                        )
-                        onDone()
-                    }
-                },
-                enabled = amountCents > 0,
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-            ) { Text("确认入账", fontWeight = FontWeight.Bold) }
             Spacer(Modifier.height(24.dp))
         }
     }

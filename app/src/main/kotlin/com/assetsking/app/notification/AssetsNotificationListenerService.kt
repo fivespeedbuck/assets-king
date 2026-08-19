@@ -69,11 +69,14 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         val app = application as? AssetsKingApplication
         if (app != null) {
             serviceScope.launch {
-                runCatching {
+                _rescanning.value = true
+                try {
                     SmsRescan.rescan(this@AssetsNotificationListenerService, app.repository)
                     app.processPending.invoke()
                     // 重连补扫产生的待确认：防抖 Job 已随旧进程死亡，直接补评估发通知
                     PendingNotifier.ensureNotified(this@AssetsNotificationListenerService)
+                } finally {
+                    _rescanning.value = false
                 }
             }
         }
@@ -160,6 +163,10 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         // 否则刚点完「重新绑定」还会继续显示「已断开」直到下次进前台
         private val _connected = MutableStateFlow(false)
         val connected: StateFlow<Boolean> = _connected
+
+        /** 重连补扫进行中（首页金库卡显示「恢复中」的触发路径） */
+        private val _rescanning = MutableStateFlow(false)
+        val rescanning: StateFlow<Boolean> = _rescanning
 
         var isConnected: Boolean
             get() = _connected.value

@@ -3,13 +3,11 @@ package com.assetsking.app.ui.screen
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -115,6 +113,9 @@ fun SettingsScreen(
     }
 
     val smsPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    // ON_RESUME 重读：授权弹窗关掉后回来立即刷新（REQ 监听§14）
+    val smsPermOk = rememberSmsGranted()
 
     val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -346,9 +347,6 @@ fun SettingsScreen(
         else true
         val batteryOk = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
             .isIgnoringBatteryOptimizations(context.packageName)
-        val smsPermOk = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECEIVE_SMS
-        ) == PackageManager.PERMISSION_GRANTED
         val allOk = notifListenerOk && notifPermOk && batteryOk && smsPermOk
         val failCount = listOf(notifListenerOk, notifPermOk, batteryOk, smsPermOk).count { !it }
         item {

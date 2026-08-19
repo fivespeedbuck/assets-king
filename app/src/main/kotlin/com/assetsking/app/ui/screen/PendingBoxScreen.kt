@@ -2,6 +2,7 @@ package com.assetsking.app.ui.screen
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -168,9 +169,9 @@ fun PendingBoxScreen(
                         }
                     }
                     item(key = item.notification.id) {
+                        // 左滑驻留：露出红色删除按钮后停住，点按钮才弹二次确认（REQ 待确认箱§11）
                         val dismissState = rememberSwipeToDismissBoxState(confirmValueChange = { value ->
-                            if (value == SwipeToDismissBoxValue.EndToStart) deleteTarget = item
-                            false // 只弹二次确认，不允许一滑到底直接删（REQ 待确认箱§11）
+                            value == SwipeToDismissBoxValue.EndToStart
                         })
                         SwipeToDismissBox(
                             state = dismissState,
@@ -179,7 +180,19 @@ fun PendingBoxScreen(
                                 Box(
                                     Modifier.fillMaxSize().background(BoxRed).padding(horizontal = 20.dp),
                                     contentAlignment = Alignment.CenterEnd
-                                ) { Text("删除", color = Color.White, fontWeight = FontWeight.Bold) }
+                                ) {
+                                    Text(
+                                        "删除",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .clickable {
+                                                deleteTarget = item
+                                                scope.launch { dismissState.reset() }
+                                            }
+                                            .padding(vertical = 12.dp, horizontal = 20.dp)
+                                    )
+                                }
                             }
                         ) {
                             PendingBoxCard(
