@@ -140,6 +140,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     cardInstallments = cardInstallments,
                     onSaveInstallment = { model.saveCardInstallment(it) },
                     onDeleteInstallment = { model.deleteCardInstallment(it) },
+                    transactions = state.transactions,
                     onRecordPayment = { plan ->
                         recordInitialMode = RecordMode.LOAN_PAYMENT
                         recordInitialPlanId = plan.id

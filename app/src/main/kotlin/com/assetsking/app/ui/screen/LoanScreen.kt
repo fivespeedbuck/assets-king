@@ -91,13 +91,15 @@ fun LoanScreen(
     onDeleteInstallment: (String) -> Unit = {},
     onRecordPayment: (LoanPlanEntity) -> Unit = {},
     onPrepay: (String, String, Long, String?) -> Unit = { _, _, _, _ -> },
-    onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> }
+    onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> },
+    transactions: List<com.assetsking.database.TransactionEntity> = emptyList()
 ) {
     var showSheet by remember { mutableStateOf(false) }
     var editingPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var showInstallmentSheet by remember { mutableStateOf(false) }
     var prepaying by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var settling by remember { mutableStateOf<LoanPlanEntity?>(null) }
+    var showSettled by remember { mutableStateOf(false) }
 
     // 扣款日汇总：哪天扣多少（信用卡按本期待还，贷款按计划）
     data class DueItem(val label: String, val day: Int, val amount: Long)
@@ -161,6 +163,18 @@ fun LoanScreen(
                 } else {
                     Text("加载中…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                // 还款成果（REQ 年终奖还债§6）：累计已还本金/已付利息/已付手续费/已结清项目
+                val loanPayments = transactions.filter { it.type == "LOAN_PAYMENT" }
+                val paidPrincipal = loanPayments.sumOf { if (it.principalCents > 0) it.principalCents else it.amountCents }
+                val paidInterest = loanPayments.sumOf { it.interestCents }
+                val paidFee = loanPayments.sumOf { it.feeCents }
+                val settledCount = plans.count { it.status == "PAID_OFF" }
+                Spacer(Modifier.height(4.dp))
+                Text("还款成果", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "已还本金 ${formatMoney(paidPrincipal)} · 已付利息 ${formatMoney(paidInterest)} · 已付手续费 ${formatMoney(paidFee)} · 已结清 ${settledCount} 笔",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 if (dueItems.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text("每月扣款日", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -188,7 +202,10 @@ fun LoanScreen(
         if (plans.isEmpty()) {
             item { GlassCard { Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         } else {
-            items(plans, key = { it.id }) { plan ->
+            // 已结清移入底部折叠分组（REQ 贷款页§13/§17）
+            val activePlans = plans.filter { it.status != "PAID_OFF" }
+            val settledPlans = plans.filter { it.status == "PAID_OFF" }
+            items(activePlans, key = { it.id }) { plan ->
                 val account = accounts.firstOrNull { it.id == plan.accountId }
                 val installments = jsonToInstallments(plan.installmentsJson)
                 val summary = LoanCalculator.summarize(
@@ -281,6 +298,31 @@ fun LoanScreen(
                         OutlinedButton(onClick = { onDelete(plan.id) }) { Text("删除") }
                     }
                 }
+                }
+            }
+            // 已结清贷款移入底部折叠分组（REQ 贷款页§13/§17：默认折叠，历史可查）
+            if (settledPlans.isNotEmpty()) {
+                item {
+                    TextButton(onClick = { showSettled = !showSettled }) {
+                        Text("已结清 ${settledPlans.size} 笔 ${if (showSettled) "▲" else "▼"}", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                if (showSettled) {
+                    items(settledPlans, key = { it.id }) { plan ->
+                        val account = accounts.firstOrNull { it.id == plan.accountId }
+                        GlassCard {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("${account?.name ?: "未知账户"} · 已结清", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
+                                Text("总还款 ${formatMoney(LoanCalculator.summarize(LoanPlan(
+                                    id = plan.id, accountId = plan.accountId,
+                                    principal = Money(plan.principalCents),
+                                    startDateEpochDay = plan.startDateEpochDay,
+                                    repaymentMethod = runCatching { RepaymentMethod.valueOf(plan.repaymentMethod) }.getOrDefault(RepaymentMethod.CUSTOM),
+                                    installments = jsonToInstallments(plan.installmentsJson)
+                                )).totalRepayment.cents)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                 }
             }
         }
