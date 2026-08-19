@@ -15,6 +15,8 @@ import androidx.core.content.ContextCompat
 import com.assetsking.app.AssetsKingApplication
 import com.assetsking.app.R
 import com.assetsking.database.RawNotificationEntity
+import com.assetsking.ui.format.formatMoney
+import com.assetsking.usecase.GetV5MetricsUseCase
 import com.assetsking.usecase.NotificationParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -43,6 +46,8 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         return START_STICKY
     }
 
+    private var lastKeepAliveUpdate = 0L
+
     private fun startKeepAliveNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
@@ -53,9 +58,32 @@ class AssetsNotificationListenerService : NotificationListenerService() {
             .setContentText("正在监听银行短信和支付通知")
             .setSmallIcon(R.drawable.ic_launcher)
             .setOngoing(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)  // 锁屏只显示「资产大王正在监听」（REQ 监听§6）
             .build()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
         ServiceCompat.startForeground(this, KEEP_ALIVE_NOTIF_ID, notif, type)
+        updateKeepAliveText()
+    }
+
+    /** 常驻通知显示总资产/总欠款（REQ 监听§5）；60 秒防抖避免聊天洪峰反复查库。 */
+    private fun updateKeepAliveText() {
+        val now = System.currentTimeMillis()
+        if (now - lastKeepAliveUpdate < 60_000) return
+        lastKeepAliveUpdate = now
+        val app = application as? AssetsKingApplication ?: return
+        serviceScope.launch {
+            runCatching {
+                val m = GetV5MetricsUseCase(app.repository).invoke().first()
+                val notif = Notification.Builder(this@AssetsNotificationListenerService, CHANNEL_KEEP_ALIVE)
+                    .setContentTitle("资产大王")
+                    .setContentText("总资产 ${formatMoney(m.availableCashCents)} · 总欠款 ${formatMoney(m.totalDebtCents)} · 监听中")
+                    .setSmallIcon(R.drawable.ic_launcher)
+                    .setOngoing(true)
+                    .setVisibility(Notification.VISIBILITY_PRIVATE)
+                    .build()
+                getSystemService(NotificationManager::class.java).notify(KEEP_ALIVE_NOTIF_ID, notif)
+            }
+        }
     }
 
     override fun onListenerConnected() {
@@ -75,6 +103,7 @@ class AssetsNotificationListenerService : NotificationListenerService() {
                     app.processPending.invoke()
                     // 重连补扫产生的待确认：防抖 Job 已随旧进程死亡，直接补评估发通知
                     PendingNotifier.ensureNotified(this@AssetsNotificationListenerService)
+                    updateKeepAliveText()
                 } finally {
                     _rescanning.value = false
                 }
@@ -106,6 +135,7 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         // 先登记来源（不放行的也记）——设置页据此列出开关，漏配的银行一键就能打开
         repository.recordNotificationSource(sbn.packageName, appLabel)
         if (!repository.isWhitelisted(sbn.packageName)) return
+        updateKeepAliveText()
 
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
