@@ -4,10 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.ui.screen.HomeScreen
 import com.assetsking.app.ui.screen.isListenerEnabled
+import com.assetsking.ui.theme.AppTheme
 import com.assetsking.ui.theme.AssetsKingTheme
 
 class MainActivity : ComponentActivity() {
@@ -15,11 +18,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            AssetsKingTheme {
-                val app = application as AssetsKingApplication
-                val model: LedgerViewModel = viewModel(
-                    factory = LedgerViewModel.factory(app)
-                )
+            val app = application as AssetsKingApplication
+            val model: LedgerViewModel = viewModel(
+                factory = LedgerViewModel.factory(app)
+            )
+            val themeKey by model.themeKey.collectAsStateWithLifecycle(initialValue = null)
+            AssetsKingTheme(theme = AppTheme.byKey(themeKey)) {
                 HomeScreen(model = model, repository = app.repository)
             }
         }

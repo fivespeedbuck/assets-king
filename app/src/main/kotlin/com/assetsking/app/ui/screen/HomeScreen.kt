@@ -41,6 +41,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val upcomingRepayments by model.upcomingRepayments.collectAsStateWithLifecycle(initialValue = emptyList())
     val enabledModules by model.enabledModules.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val freeSpendingCents by model.freeSpendingCents.collectAsStateWithLifecycle(initialValue = 50_000L)
+    val themeKey by model.themeKey.collectAsStateWithLifecycle(initialValue = null)
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
@@ -184,7 +185,11 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     onDeleteWindfall = { model.deleteWindfall(it) },
                     onMarkWindfallReceived = { id, actualCents, cashAccountId ->
                         model.markWindfallReceived(id, actualCents, cashAccountId)
-                    }
+                    },
+                    freeSpendingCents = freeSpendingCents,
+                    onSetFreeSpending = { model.setFreeSpendingCents(it) },
+                    themeKey = themeKey,
+                    onSetTheme = { model.setThemeKey(it) }
                 )
             }
         }

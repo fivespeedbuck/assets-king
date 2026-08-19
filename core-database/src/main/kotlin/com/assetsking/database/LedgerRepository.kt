@@ -84,6 +84,15 @@ class LedgerRepository(
         prefs.edit().putInt("pending_notified_count", count).apply()
     }
 
+    // ── 主题选择（REQ 主题§12：新装默认浅绿，升级保留当前选择）──
+    private val _themeKey = MutableStateFlow(prefs.getString("theme_key", null))
+    val themeKey: Flow<String?> = _themeKey
+
+    fun setThemeKey(key: String) {
+        _themeKey.value = key
+        prefs.edit().putString("theme_key", key).apply()
+    }
+
     // ── 自由开销额度（REQ 统计§12：初始 500 元/月，设置页可改）──
     private val _freeSpendingCents = MutableStateFlow(prefs.getLong("free_spending_cents", 50_000L))
     val freeSpendingCents: Flow<Long> = _freeSpendingCents

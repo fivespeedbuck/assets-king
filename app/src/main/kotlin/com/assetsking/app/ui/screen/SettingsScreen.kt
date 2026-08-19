@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -91,7 +92,11 @@ fun SettingsScreen(
     currentTotalDebtCents: Long = 0,
     onSaveWindfall: (WindfallEntity) -> Unit = {},
     onDeleteWindfall: (String) -> Unit = {},
-    onMarkWindfallReceived: (String, Long, String) -> Unit = { _, _, _ -> }
+    onMarkWindfallReceived: (String, Long, String) -> Unit = { _, _, _ -> },
+    freeSpendingCents: Long = 50_000,
+    onSetFreeSpending: (Long) -> Unit = {},
+    themeKey: String? = null,
+    onSetTheme: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     var showBudgetSheet by remember { mutableStateOf(false) }
@@ -179,6 +184,21 @@ fun SettingsScreen(
                     label = "每月预期收入（规划用）",
                     isAmount = true
                 )
+                Spacer(Modifier.height(12.dp))
+                // 自由开销额度（REQ 统计§12 / 设置§5：最常调整的规划参数之一）
+                var freeInput by remember {
+                    mutableStateOf(if (freeSpendingCents > 0) "%.2f".format(freeSpendingCents / 100.0) else "")
+                }
+                FormField(
+                    value = freeInput,
+                    onValueChange = { freeInput = it.filter { c -> c.isDigit() || c == '.' } },
+                    label = "自由开销额度（每月）",
+                    isAmount = true
+                )
+                TextButton(onClick = {
+                    val cents = runCatching { java.math.BigDecimal(freeInput.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull()
+                    if (cents != null && cents > 0) onSetFreeSpending(cents)
+                }) { Text("保存自由开销") }
                 Spacer(Modifier.height(12.dp))
                 Text("必要生活（自动 = 分项预算之和）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
@@ -442,49 +462,26 @@ fun SettingsScreen(
             }
         }
 
-        // ── 从流水里认出来的固定扣款 ──
+        // ── 主题（REQ 主题§1/§12：五套直接切换立即保存；升级保留原选择）──
         item {
             GlassCard {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("疑似固定扣款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = onRefreshSpendPatterns) { Text("重新扫描") }
-                }
-                Text(
-                    "从流水里找「同商户 + 金额稳定 + 约一个月一次 + 至少 3 次」的扣款。" +
-                        "确认后进周期性账单参与预测；真实扣款到账时会认领已有那笔，不会重复记账。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                if (detectedRecurring.isEmpty()) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text("主题", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.assetsking.ui.theme.AppTheme.entries.forEach { t ->
+                            FilterChip(
+                                selected = themeKey == t.key || (themeKey == null && t.key == "light_green"),
+                                onClick = { onSetTheme(t.key) },
+                                label = { Text(t.label) }
+                            )
+                        }
+                    }
                     Text(
-                        "暂时没认出来。需要同一个商户至少扣过 3 次才能确定是固定扣款，先让自动记账攒几个月。",
+                        "龙巢是唯一深色主题，视觉稿与材质由 Codex 阶段接入；其余四套为浅色。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } else {
-                    detectedRecurring.forEach { d ->
-                        val account = accounts.firstOrNull { it.id == d.accountId }
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("${d.merchant} · ${formatMoney(d.amountCents)}/月", fontWeight = FontWeight.Medium)
-                                Text(
-                                    "${account?.name ?: "?"} · 每月${d.dayOfMonth}日前后 · 已扣${d.occurrences}次",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Button(onClick = { onConfirmDetectedRecurring(d) }) { Text("确认") }
-                        }
-                    }
                 }
             }
         }

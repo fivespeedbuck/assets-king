@@ -140,6 +140,13 @@ class LedgerViewModel(
         repository.setFreeSpendingCents(cents)
     }
 
+    /** 主题选择（REQ 主题§1：5 套，龙巢深色给 Codex） */
+    val themeKey: Flow<String?> = repository.themeKey
+
+    fun setThemeKey(key: String) {
+        repository.setThemeKey(key)
+    }
+
     fun setHomeModules(enabled: Set<String>) {
         repository.setHomeModules(enabled)
     }
