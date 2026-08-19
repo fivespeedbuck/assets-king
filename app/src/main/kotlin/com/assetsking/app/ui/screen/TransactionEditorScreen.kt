@@ -669,16 +669,20 @@ private fun CategoryGrid(
                 Column(
                     Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(10.dp)).padding(8.dp)
                 ) {
+                    // 二级超 10 个显示常用 9 个 +「更多」展开（REQ 编辑器§29）
+                    var showAll by remember(parent.id) { mutableStateOf(false) }
+                    val children = childrenOf(parent.id)
+                    val shown = if (children.size > 9 && !showAll) children.take(9) else children
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        childrenOf(parent.id).take(9).forEach { child ->
+                        shown.forEach { child ->
                             FilterChip(
                                 selected = selectedCategoryId == child.id,
                                 onClick = { onSelect(child) },
                                 label = { Text(child.name) }
                             )
                         }
-                        if (childrenOf(parent.id).size > 9) {
-                            FilterChip(selected = false, onClick = {}, label = { Text("更多") })
+                        if (children.size > 9) {
+                            FilterChip(selected = false, onClick = { showAll = !showAll }, label = { Text(if (showAll) "收起" else "更多") })
                         }
                         // 新增二级：固定末尾（REQ 编辑器§9）
                         OutlinedButton(onClick = { onAddChild(parent.id) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
@@ -831,8 +835,8 @@ internal fun CategoryManageDialog(
         dismissButton = {}
     )
     renameTarget?.let { target ->
-        RenameCategoryDialog(target, onDismiss = { renameTarget = null }) { name, shortName ->
-            viewModel.updateCategoryEntity(target.id, name, shortName, null)
+        RenameCategoryDialog(target, onDismiss = { renameTarget = null }) { name, shortName, iconKey ->
+            viewModel.updateCategoryEntity(target.id, name, shortName, null, iconKey)
             renameTarget = null
         }
     }
@@ -878,20 +882,40 @@ internal fun CategoryManageDialog(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun RenameCategoryDialog(target: CategoryEntity, onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+private fun RenameCategoryDialog(target: CategoryEntity, onDismiss: () -> Unit, onSave: (String, String, String) -> Unit) {
     var name by remember { mutableStateOf(target.name) }
     var shortName by remember { mutableStateOf(target.shortName) }
+    var iconKey by remember { mutableStateOf(target.iconKey) }
+    var search by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("改名") },
+        title = { Text("改名/换图标") },
         text = {
             Column {
                 OutlinedTextField(name, { name = it }, label = { Text("完整名称") })
                 OutlinedTextField(shortName, { shortName = it.take(2) }, label = { Text("两字简称") })
+                // 换图标（REQ 编辑器§20）
+                OutlinedTextField(search, { search = it }, label = { Text("搜索图标") })
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconLibrary.search(search).take(12).forEach { entry ->
+                        Column(
+                            Modifier.clickable { iconKey = entry.key }.padding(4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                entry.icon,
+                                contentDescription = entry.key,
+                                modifier = Modifier.size(28.dp),
+                                tint = if (iconKey == entry.key) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onSave(name, shortName) }) { Text("保存") } },
+        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onSave(name, shortName, iconKey) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }

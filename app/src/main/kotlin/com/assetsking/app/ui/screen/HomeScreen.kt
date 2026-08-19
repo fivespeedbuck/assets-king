@@ -2,6 +2,12 @@ package com.assetsking.app.ui.screen
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -58,6 +64,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var showEditor by remember { mutableStateOf(false) }
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
     var showBills by remember { mutableStateOf(false) }
+    var showReimbursement by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var accountDetail by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -74,11 +81,23 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                listOf("首页", "统计", "账单", "贷款", "设置").forEachIndexed { idx, label ->
+                listOf("首页", "统计", "流水", "贷款", "设置").forEachIndexed { idx, label ->
                     NavigationBarItem(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
-                        icon = { Text(when (idx) { 0 -> "🏠"; 1 -> "📊"; 2 -> "📅"; 3 -> "💳"; else -> "⚙️" }) },
+                        // 线性图标+中文，不用 Emoji（REQ 视觉§4）
+                        icon = {
+                            Icon(
+                                when (idx) {
+                                    0 -> Icons.Filled.Home
+                                    1 -> Icons.Filled.BarChart
+                                    2 -> Icons.Filled.ReceiptLong
+                                    3 -> Icons.Filled.CreditCard
+                                    else -> Icons.Filled.Settings
+                                },
+                                contentDescription = label
+                            )
+                        },
                         label = { Text(label) }
                     )
                 }
@@ -117,6 +136,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onGotoStats = { selectedTab = 1 },
                 onGotoLoans = { selectedTab = 3 },
                 onGotoBills = { showBills = true },
+                onGotoReimbursement = { showReimbursement = true },
                 onEditAccount = { accountDetail = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -249,6 +269,14 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             accounts = state.accounts,
             viewModel = model,
             onBack = { showBills = false }
+        )
+    }
+
+    // 报销栏目（REQ 报销§2/§6）：首页待报销模块点击进完整列表
+    if (showReimbursement) {
+        ReimbursementScreen(
+            reimbursableTxs = state.transactions.filter { it.isReimbursable },
+            onBack = { showReimbursement = false }
         )
     }
 

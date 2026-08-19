@@ -101,6 +101,16 @@ fun AccountDetailScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    // 信用卡拆分展示（REQ 信用卡欠款口径§2）：本期应还 + 未出账，都计入总欠款
+                    if (account.type == AccountType.CREDIT.name && account.statementOriginalDueCents > 0) {
+                        Spacer(Modifier.height(4.dp))
+                        val statement = account.statementOriginalDueCents
+                        val unbilled = (account.balanceCents - statement).coerceAtLeast(0L)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("本期应还 ${formatMoney(statement)}", style = MaterialTheme.typography.bodySmall, color = DetailOrange)
+                            Text("未出账 ${formatMoney(unbilled)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                     // 余额口径（REQ 账户对账§12）：有有效检查点=已对账余额；现金/钱包=账面余额
                     val valid = latest != null && latest.checkedAt > 0
                     Text(

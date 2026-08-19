@@ -202,6 +202,17 @@ fun StatsScreen(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        // 报销单独显示（REQ 报销§5）：本月报销到账已从消费/预算冲减，不计普通收入
+                        val monthReimbursed = monthTxs.filter { it.type == "REIMBURSEMENT" }.sumOf { it.amountCents }
+                        if (monthReimbursed > 0) {
+                            Text(
+                                "本月报销到账 ${formatMoney(monthReimbursed)}（已从消费冲减）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StatsGreen,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                         Spacer(Modifier.height(6.dp))
                         // 分类列表：金额/占比/非必要占比，点击下钻（REQ 统计§3/§14）
                         slices.forEach { (name, total, color) ->

@@ -400,8 +400,8 @@ class LedgerViewModel(
         viewModelScope.launch { repository.addCategory(name, shortName, parentId, iconKey, defaultNecessary, kind) }
     }
 
-    fun updateCategoryEntity(id: String, name: String?, shortName: String?, parentId: String?) {
-        viewModelScope.launch { repository.updateCategory(id, name, shortName, parentId) }
+    fun updateCategoryEntity(id: String, name: String?, shortName: String?, parentId: String?, iconKey: String? = null) {
+        viewModelScope.launch { repository.updateCategory(id, name, shortName, parentId, iconKey) }
     }
 
     fun archiveOrDeleteCategory(id: String) {

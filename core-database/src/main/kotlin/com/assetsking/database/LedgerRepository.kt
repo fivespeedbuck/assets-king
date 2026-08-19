@@ -1018,15 +1018,15 @@ class LedgerRepository(
         return entity
     }
 
-    /** 改名/调整归属：同步更新所有关联历史流水（REQ 分类§22），历史统计不变口径。 */
-    suspend fun updateCategory(id: String, name: String?, shortName: String?, parentId: String?) {
+    /** 改名/换图标/调整归属：改名同步更新所有关联历史流水（REQ 分类§20/§22），历史统计不变口径。 */
+    suspend fun updateCategory(id: String, name: String?, shortName: String?, parentId: String?, iconKey: String? = null) {
         val cat = database.categoryDao().findById(id) ?: return
         val newName = name?.trim()?.takeIf { it.isNotEmpty() } ?: cat.name
         if (newName != cat.name) {
             database.transactionDao().updateCategoryName(cat.name, newName)
         }
         database.categoryDao().upsert(
-            cat.copy(name = newName, shortName = shortName?.take(2) ?: cat.shortName, parentId = parentId ?: cat.parentId)
+            cat.copy(name = newName, shortName = shortName?.take(2) ?: cat.shortName, parentId = parentId ?: cat.parentId, iconKey = iconKey ?: cat.iconKey)
         )
     }
 

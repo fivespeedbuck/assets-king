@@ -93,6 +93,7 @@ fun HomeTab(
     onGotoStats: () -> Unit,
     onGotoLoans: () -> Unit,
     onGotoBills: () -> Unit,
+    onGotoReimbursement: () -> Unit,
     onEditAccount: (AccountEntity?) -> Unit
 ) {
     var showModuleLibrary by remember { mutableStateOf(false) }
@@ -264,7 +265,8 @@ fun HomeTab(
                         money = ::money,
                         onGotoStats = onGotoStats,
                         onGotoLoans = onGotoLoans,
-                        onGotoBills = onGotoBills
+                        onGotoBills = onGotoBills,
+                        onGotoReimbursement = onGotoReimbursement
                     )
                 }
             }
@@ -312,7 +314,8 @@ private fun HomeModuleCard(
     money: (Long) -> String,
     onGotoStats: () -> Unit,
     onGotoLoans: () -> Unit,
-    onGotoBills: () -> Unit
+    onGotoBills: () -> Unit,
+    onGotoReimbursement: () -> Unit
 ) {
     val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
     val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
@@ -325,7 +328,7 @@ private fun HomeModuleCard(
         if (key == "trend") stats = GetStatsUseCase(repository).invoke()
     }
 
-    GlassCard(Modifier.fillMaxWidth().clickable { when (key) { "recurring" -> onGotoBills(); "repayments" -> onGotoLoans(); else -> onGotoStats() } }) {
+    GlassCard(Modifier.fillMaxWidth().clickable { when (key) { "recurring" -> onGotoBills(); "repayments" -> onGotoLoans(); "reimbursement" -> onGotoReimbursement(); else -> onGotoStats() } }) {
         Column(Modifier.padding(14.dp)) {
             when (key) {
                 "budget" -> {
