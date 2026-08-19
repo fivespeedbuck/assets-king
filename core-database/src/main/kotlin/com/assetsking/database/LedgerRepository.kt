@@ -84,6 +84,15 @@ class LedgerRepository(
         prefs.edit().putInt("pending_notified_count", count).apply()
     }
 
+    // ── 自由开销额度（REQ 统计§12：初始 500 元/月，设置页可改）──
+    private val _freeSpendingCents = MutableStateFlow(prefs.getLong("free_spending_cents", 50_000L))
+    val freeSpendingCents: Flow<Long> = _freeSpendingCents
+
+    fun setFreeSpendingCents(cents: Long) {
+        _freeSpendingCents.value = cents
+        prefs.edit().putLong("free_spending_cents", cents).apply()
+    }
+
     // ── 首页可配置模块（REQ 首页可配置模块 §1-10）：启用集合存 prefs，默认 本月预算+待报销+周期扣款 ──
 
     private val _enabledModules = MutableStateFlow(

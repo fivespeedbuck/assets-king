@@ -40,6 +40,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
     val upcomingRepayments by model.upcomingRepayments.collectAsStateWithLifecycle(initialValue = emptyList())
     val enabledModules by model.enabledModules.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val freeSpendingCents by model.freeSpendingCents.collectAsStateWithLifecycle(initialValue = 50_000L)
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
@@ -110,7 +111,13 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onEditAccount = { editingAccount = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
-                StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts, v5 = state.v5)
+                StatsScreen(
+                    state = state,
+                    categories = categories,
+                    budgets = budgets,
+                    repository = repository,
+                    freeSpendingCents = freeSpendingCents
+                )
             }
             2 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 TransactionsScreen(

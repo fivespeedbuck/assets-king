@@ -1,304 +1,334 @@
 package com.assetsking.app.ui.screen
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.assetsking.database.AccountEntity
+import com.assetsking.app.LedgerUiState
 import com.assetsking.database.BudgetEntity
+import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
-import com.assetsking.database.RecurringRuleEntity
-import com.assetsking.ledger.V5Metrics
-import com.assetsking.model.AccountType
-import com.assetsking.model.TransactionCategory
+import com.assetsking.database.TransactionEntity
 import com.assetsking.ui.component.GlassCard
-import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.usecase.GetStatsUseCase
 import com.assetsking.usecase.StatsData
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
+private val StatsGreen = Color(0xFF66BB6A)
+private val StatsRed = Color(0xFFE57373)
+
+private val categoryPalette = listOf(
+    Color(0xFF5C9CE6), Color(0xFF9B8AFB), Color(0xFFF2A93B), Color(0xFF6BCB8F),
+    Color(0xFFE86E6E), Color(0xFF4ECDC4), Color(0xFFF28DB2), Color(0xFF8D6E63),
+    Color(0xFF90A4AE), Color(0xFFFFB74D), Color(0xFF7986CB)
+)
+
+private fun catColor(index: Int): Color = categoryPalette[index % categoryPalette.size]
+
+/**
+ * 统计页三张核心大卡（REQ 统计与流水 §2-21）：
+ * ①本月消费组成双层环形图（内圈一级占比、外圈必要/非必要构成，可下钻）
+ * ②本月预算（必要预算 + 自由开销两条总进度 + 前 4 分类）
+ * ③收支趋势（并列柱 + 结余折线，3/6/12 月切换）
+ */
 @Composable
 fun StatsScreen(
-    repository: LedgerRepository,
+    state: LedgerUiState,
+    categories: List<CategoryEntity>,
     budgets: List<BudgetEntity>,
-    recurringRules: List<RecurringRuleEntity>,
-    accounts: List<AccountEntity>,
-    v5: V5Metrics? = null
+    repository: LedgerRepository,
+    freeSpendingCents: Long
 ) {
+    var month by remember { mutableStateOf(YearMonth.now()) }
+    var trendMonths by remember { mutableStateOf(3) }
+    var showMonthPicker by remember { mutableStateOf(false) }
+    var drillCategory by remember { mutableStateOf<CategoryEntity?>(null) }
     var stats by remember { mutableStateOf<StatsData?>(null) }
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            stats = GetStatsUseCase(repository).invoke()
+    LaunchedEffect(Unit) { stats = GetStatsUseCase(repository).invoke() }
+
+    val zone = ZoneId.systemDefault()
+    val monthStart = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    val monthEnd = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+    val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
+    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null }
+        .groupBy { it.refundOfId!! }.mapValues { (_, rs) -> rs.sumOf { it.amountCents } }
+
+    // 消费净额（冲减退款/报销）
+    fun netOf(tx: TransactionEntity): Long =
+        (tx.amountCents - (refundOffset[tx.id] ?: 0L) - tx.reimbursedCents).coerceAtLeast(0L)
+
+    val expenses = monthTxs.filter { it.type == "EXPENSE" }
+    val monthIncome = monthTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
+    val monthExpense = expenses.sumOf { netOf(it) }
+
+    // 一级分类消费（按 DB 分类名聚合）
+    val topLevelTotals = expenses.groupBy { tx ->
+        categories.firstOrNull { it.name == tx.category }?.parentId
+            ?: categories.firstOrNull { it.id == tx.category }?.id
+            ?: "other"
+    }.mapValues { (_, txs) -> txs.sumOf { netOf(it) } }
+        .entries.sortedByDescending { it.value }
+
+    // 预算：必要已花 / 非必要已花
+    val budgetSum = budgets.filter { it.month == month.toString() }.sumOf { it.monthlyLimitCents }
+    val necessarySpent = expenses.filter { it.necessity == true }.sumOf { netOf(it) }
+    val optionalSpent = expenses.filter { it.necessity == false }.sumOf { netOf(it) }
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // ── 月份切换（REQ 统计§21）──
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                IconButton(onClick = { month = month.minusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上月") }
+                Text(
+                    "${month.year}年${month.monthValue}月",
+                    Modifier.clickable { showMonthPicker = true }.padding(horizontal = 8.dp),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                IconButton(onClick = { month = month.plusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下月") }
+            }
+        }
+
+        // ── ①本月消费组成（REQ 统计§14-16）──
+        item {
+            GlassCard {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    val drill = drillCategory
+                    if (drill != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("全部支出", Modifier.clickable { drillCategory = null }, color = MaterialTheme.colorScheme.primary)
+                            Text(" ＞ ${drill.name}", fontWeight = FontWeight.Bold)
+                        }
+                        // 下钻：该一级分类的 必要/非必要 比例 + 二级构成（REQ 统计§15）
+                        val children = categories.filter { it.parentId == drill.id }
+                        val total = expenses.filter { categories.firstOrNull { c -> c.name == it.category }?.parentId == drill.id }.sumOf { netOf(it) }
+                        val necessary = expenses.filter {
+                            categories.firstOrNull { c -> c.name == it.category }?.parentId == drill.id && it.necessity == true
+                        }.sumOf { netOf(it) }
+                        val optional = (total - necessary).coerceAtLeast(0L)
+                        DonutChart(
+                            totalCents = total,
+                            slices = listOf(necessary to StatsGreen, optional to StatsRed),
+                            modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
+                        )
+                        Text("必要 ${formatMoney(necessary)} · 非必要 ${formatMoney(optional)}", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(6.dp))
+                        children.forEach { child ->
+                            val childTotal = expenses.filter { it.category == child.name }.sumOf { netOf(it) }
+                            if (childTotal > 0) {
+                                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text(child.name)
+                                    Text(formatMoney(childTotal))
+                                }
+                            }
+                        }
+                    } else {
+                        Text("本月消费组成", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(6.dp))
+                        val slices = topLevelTotals.mapIndexed { i, (parentId, total) ->
+                            val parent = categories.firstOrNull { it.id == parentId }
+                            Triple(parent?.name ?: "其他", total, catColor(i))
+                        }
+                        DonutChart(
+                            totalCents = monthExpense,
+                            slices = slices.map { (_, total, color) -> total to color },
+                            modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        // 分类列表：金额/占比/非必要占比，点击下钻（REQ 统计§3/§14）
+                        slices.forEach { (name, total, color) ->
+                            val parent = categories.firstOrNull { it.name == name }
+                            val nonNec = if (parent != null) expenses.filter {
+                                categories.firstOrNull { c -> c.name == it.category }?.parentId == parent.id && it.necessity == false
+                            }.sumOf { netOf(it) } else 0L
+                            Row(
+                                Modifier.fillMaxWidth().clickable { parent?.let { drillCategory = it } }.padding(vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.size(10.dp).background(color, CircleShape))
+                                Spacer(Modifier.width(8.dp))
+                                Text(name, Modifier.weight(1f))
+                                Text(
+                                    "${formatMoney(total)} · ${if (monthExpense > 0) (total * 100 / monthExpense) else 0}%" +
+                                        if (nonNec > 0) " · 非必要 ${nonNec * 100 / total.coerceAtLeast(1)}%" else "",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                        if (slices.isEmpty()) Text("本月暂无消费", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+
+        // ── ②本月预算（REQ 统计§6/§17-18）──
+        item {
+            GlassCard {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text("本月预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    ProgressLine("必要预算", necessarySpent, budgetSum, StatsGreen)
+                    ProgressLine("自由开销", optionalSpent, freeSpendingCents, StatsRed)
+                    Spacer(Modifier.height(8.dp))
+                    val budgetCats = budgets.filter { it.month == month.toString() }
+                        .sortedByDescending { b -> expenses.filter { it.category == b.category }.sumOf { netOf(it) } }.take(4)
+                    budgetCats.forEach { b ->
+                        val spent = expenses.filter { it.category == b.category }.sumOf { netOf(it) }
+                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(b.category, style = MaterialTheme.typography.bodySmall)
+                            Text("${formatMoney(spent)} / ${formatMoney(b.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall, color = if (spent > b.monthlyLimitCents) StatsRed else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ③收支趋势（REQ 统计§19-20）──
+        item {
+            GlassCard {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("收支趋势", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Row {
+                            listOf(3, 6, 12).forEach { n ->
+                                FilterChip(selected = trendMonths == n, onClick = { trendMonths = n }, label = { Text("${n}月") }, modifier = Modifier.padding(horizontal = 2.dp))
+                            }
+                        }
+                    }
+                    val bars = stats?.monthlyBars?.takeLast(trendMonths) ?: emptyList()
+                    if (bars.isNotEmpty()) {
+                        TrendChart(bars)
+                    } else {
+                        Text("加载中…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
     }
 
-    val data = stats ?: return
-    val snapshots by repository.snapshots.collectAsStateWithLifecycle(initialValue = emptyList())
-
-    // Cash flow prediction
-    val now = System.currentTimeMillis()
-    val thirtyDaysLater = now + 30 * 24 * 60 * 60 * 1000L
-    val upcoming = recurringRules
-        .filter { it.isActive && it.nextRunAt in now..thirtyDaysLater }
-        .sortedBy { it.nextRunAt }
-    val predictedIncome = upcoming.filter { it.type == "INCOME" || it.type == "REFUND" }.sumOf { it.amountCents }
-    val predictedExpense = upcoming.filter { it.type == "EXPENSE" }.sumOf { it.amountCents }
-    val currentNetWorth = accounts.sumOf {
-        if (it.type == AccountType.ASSET.name) it.balanceCents else -it.balanceCents
+    if (showMonthPicker) {
+        MonthPickerDialog(initial = month, onPick = { month = it; showMonthPicker = false }, onDismiss = { showMonthPicker = false })
     }
-    val projectedNet = currentNetWorth + predictedIncome - predictedExpense
+}
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // ── V5 本月现金流 ──
-        if (v5 != null) {
-            item {
-                GlassCard {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("本月现金流", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月实际收入", style = MaterialTheme.typography.bodyMedium)
-                        Text("+${formatMoney(v5.incomeActualCents)}", fontWeight = FontWeight.Medium, color = Color(0xFF66BB6A))
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月必须还款", style = MaterialTheme.typography.bodyMedium)
-                        Text("-${formatMoney(v5.mustRepayCents)}", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("新增借款（不是收入）", style = MaterialTheme.typography.bodyMedium)
-                        Text("+${formatMoney(v5.newBorrowingCents)}", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月净降债", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            if (v5.netDebtReductionCents >= 0) "+${formatMoney(v5.netDebtReductionCents)}" else formatMoney(v5.netDebtReductionCents),
-                            fontWeight = FontWeight.Medium,
-                            color = if (v5.netDebtReductionCents > 0) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
-                        )
-                    }
-                    Text("资金缺口 = 收入 − 必要生活 − 必须还款", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                }
+/** 环形图：分类占比环 + 中心总支出（REQ 统计§14；双层构成为下钻页的 必要/非必要 环） */
+@Composable
+private fun DonutChart(
+    totalCents: Long,
+    slices: List<Pair<Long, Color>>,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val outer = size.minDimension / 2f * 0.85f
+            var start = -90f
+            slices.forEach { (cents, color) ->
+                if (cents <= 0 || totalCents <= 0) return@forEach
+                val sweep = cents * 360f / totalCents
+                drawArc(
+                    color, start, sweep, false,
+                    style = Stroke(width = size.minDimension * 0.14f),
+                    size = Size(outer * 2, outer * 2),
+                    topLeft = Offset(size.width / 2 - outer, size.height / 2 - outer)
+                )
+                start += sweep
             }
         }
-
-        // Prediction card
-        item {
-            GlassCard {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("未来30天预测", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                if (upcoming.isEmpty()) {
-                    Text("暂无即将到期的周期性账单", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                } else {
-                    for (rule in upcoming) {
-                        val account = accounts.firstOrNull { it.id == rule.accountId }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(
-                                "${rule.merchant ?: "周期性账单"} · ${account?.name ?: "?"}",
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1
-                            )
-                            Text(
-                                if (rule.type == "INCOME") "+${formatMoney(rule.amountCents)}" else "-${formatMoney(rule.amountCents)}",
-                                color = if (rule.type == "INCOME") Color(0xFF66BB6A) else Color(0xFFEF5350),
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-                HorizontalDivider()
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("目前净资产", style = MaterialTheme.typography.bodyMedium)
-                    Text(formatMoney(currentNetWorth), fontWeight = FontWeight.Medium)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("预计收入", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF66BB6A))
-                    Text("+${formatMoney(predictedIncome)}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("预计支出", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFEF5350))
-                    Text("-${formatMoney(predictedExpense)}", color = Color(0xFFEF5350), fontWeight = FontWeight.Medium)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("预计余额", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        formatMoney(projectedNet),
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (projectedNet >= 0) Color(0xFF66BB6A) else Color(0xFFEF5350)
-                    )
-                }
-            }
-            }
-        }
-
-        // Spend alerts
-        val today = java.time.LocalDate.now()
-        val daysRemaining = today.lengthOfMonth() - today.dayOfMonth + 1
-        val alerts = budgets.mapNotNull { budget ->
-            val cat = runCatching { TransactionCategory.valueOf(budget.category) }.getOrNull() ?: return@mapNotNull null
-            val spent = data.categorySlices.firstOrNull { it.category == cat }?.totalCents ?: 0L
-            val daysPast = today.dayOfMonth - 1
-            if (daysPast <= 0) return@mapNotNull null
-            val dailyRate = spent.toDouble() / daysPast
-            val projected = (dailyRate * today.lengthOfMonth()).toLong()
-            if (projected > budget.monthlyLimitCents) {
-                Triple(cat, projected, projected - budget.monthlyLimitCents)
-            } else null
-        }
-        if (alerts.isNotEmpty()) {
-            item {
-                GlassCard {
-                    Text("消费预警", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = Color(0xFFEF5350))
-                    Spacer(Modifier.height(8.dp))
-                    alerts.forEach { (cat, projected, over) ->
-                        Text(
-                            "⚠ ${categoryLabel(cat)}：预计本月 ${formatMoney(projected)}，超预算 ${formatMoney(over)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(vertical = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Snapshot curve
-        if (snapshots.isNotEmpty()) {
-            item {
-                GlassCard {
-                    Text("资产快照（最近）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    snapshots.take(30).forEach { snap ->
-                        val date = java.time.LocalDate.ofEpochDay(snap.dateEpochDay)
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(date.toString(), style = MaterialTheme.typography.bodySmall)
-                            Text(formatMoney(snap.netWorth), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Category breakdown
-        item {
-            GlassCard {
-                Text("支出分类（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                if (data.categorySlices.isEmpty()) {
-                    Text("暂无支出数据", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                } else {
-                    val total = data.categorySlices.sumOf { it.totalCents }.toFloat()
-                    data.categorySlices.forEach { slice ->
-                        val pct = if (total > 0) slice.totalCents / total else 0f
-                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(categoryLabel(slice.category), style = MaterialTheme.typography.bodyMedium)
-                                Text("${formatMoney(slice.totalCents)} (${(pct * 100).toInt()}%)", style = MaterialTheme.typography.bodySmall)
-                            }
-                            LinearProgressIndicator(
-                                progress = { pct },
-                                modifier = Modifier.fillMaxWidth().height(8.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Budget progress
-        if (budgets.isNotEmpty()) {
-            item {
-                GlassCard {
-                    Text("预算执行（本月）", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    budgets.forEach { budget ->
-                        val cat = runCatching { TransactionCategory.valueOf(budget.category) }.getOrDefault(TransactionCategory.UNCATEGORIZED)
-                        val label = runCatching { TransactionCategory.valueOf(budget.category) }.getOrNull()?.let { categoryLabel(it) } ?: budget.category
-                        val spent = data.categorySlices.firstOrNull { it.category == cat }?.totalCents ?: 0L
-                        val pct = if (budget.monthlyLimitCents > 0) (spent.toFloat() / budget.monthlyLimitCents).coerceIn(0f, 1.5f) else 0f
-                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(label, style = MaterialTheme.typography.bodyMedium)
-                                Text("${formatMoney(spent)} / ${formatMoney(budget.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall)
-                            }
-                            LinearProgressIndicator(
-                                progress = { pct.coerceIn(0f, 1f) },
-                                modifier = Modifier.fillMaxWidth().height(8.dp),
-                                color = if (pct > 1f) Color(0xFFEF5350) else Color(0xFF66BB6A),
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Monthly summary
-        item {
-            GlassCard {
-                Text("月度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                data.monthlyBars.reversed().forEach { bar ->
-                    IncomeExpenseRow(bar.month, bar.incomeCents, bar.expenseCents)
-                }
-            }
-        }
-
-        // Yearly summary
-        item {
-            GlassCard {
-                Text("年度收支", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                data.yearlyBars.forEach { bar ->
-                    IncomeExpenseRow(bar.year, bar.incomeCents, bar.expenseCents)
-                }
-            }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("总支出", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(formatMoney(totalCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
         }
     }
 }
 
-/** 月度/年度收支共用一行：标签 + 收/支/净额 */
 @Composable
-private fun IncomeExpenseRow(label: String, incomeCents: Long, expenseCents: Long) {
-    val net = incomeCents - expenseCents
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("收 ${formatMoney(incomeCents)}", color = Color(0xFF66BB6A), style = MaterialTheme.typography.bodySmall)
-            Text("支 ${formatMoney(expenseCents)}", color = Color(0xFFEF5350), style = MaterialTheme.typography.bodySmall)
+private fun TrendChart(bars: List<com.assetsking.usecase.MonthlyBar>) {
+    val max = bars.maxOfOrNull { maxOf(it.incomeCents, it.expenseCents, 1L) } ?: 1L
+    Column {
+        bars.forEach { bar ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(bar.month.substring(5) + "月", style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
+                Box(Modifier.weight(1f).height(18.dp)) {
+                    // 收入柱（绿）+ 支出柱（红）
+                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(bar.incomeCents.toFloat()).height(10.dp).background(StatsGreen, androidx.compose.foundation.shape.RoundedCornerShape(4.dp)))
+                        Spacer(Modifier.width(2.dp))
+                        Box(Modifier.weight(bar.expenseCents.toFloat()).height(10.dp).background(StatsRed, androidx.compose.foundation.shape.RoundedCornerShape(4.dp)))
+                        Box(Modifier.weight((max - bar.incomeCents - bar.expenseCents).coerceAtLeast(0).toFloat()))
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (bar.incomeCents - bar.expenseCents >= 0) "+${formatMoney(bar.incomeCents - bar.expenseCents)}" else "−${formatMoney(bar.expenseCents - bar.incomeCents)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (bar.incomeCents - bar.expenseCents >= 0) StatsGreen else StatsRed
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("绿=收入 红=支出 右侧=结余/赤字", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun ProgressLine(label: String, spent: Long, budget: Long, color: Color) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
             Text(
-                if (net >= 0) "+${formatMoney(net)}" else formatMoney(net),
-                fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.bodySmall
+                "${formatMoney(spent)} / ${formatMoney(budget)} · ${if (budget > 0) spent * 100 / budget else 0}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (budget > 0 && spent > budget) StatsRed else MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        Box(Modifier.fillMaxWidth().height(8.dp).background(MaterialTheme.colorScheme.surfaceVariant, androidx.compose.foundation.shape.RoundedCornerShape(4.dp))) {
+            val frac = if (budget > 0) (spent.toFloat() / budget).coerceIn(0f, 1f) else 0f
+            Box(Modifier.fillMaxWidth(frac).height(8.dp).background(color, androidx.compose.foundation.shape.RoundedCornerShape(4.dp)))
         }
     }
 }

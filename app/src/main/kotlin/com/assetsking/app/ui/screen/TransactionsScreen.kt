@@ -429,7 +429,7 @@ private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>) {
 }
 
 @Composable
-private fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, onDismiss: () -> Unit) {
+internal fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, onDismiss: () -> Unit) {
     var year by remember { mutableStateOf(initial.year) }
     AlertDialog(
         onDismissRequest = onDismiss,

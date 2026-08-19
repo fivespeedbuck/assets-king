@@ -133,6 +133,12 @@ class LedgerViewModel(
     val upcomingRepayments: Flow<List<UpcomingRepayment>> = UpcomingRepaymentsUseCase(repository).invoke()
     /** 首页已启用的可配置模块（REQ 首页可配置模块） */
     val enabledModules: Flow<Set<String>> = repository.enabledModules
+    /** 自由开销额度（REQ 统计§12，初始 500 元/月） */
+    val freeSpendingCents: Flow<Long> = repository.freeSpendingCents
+
+    fun setFreeSpendingCents(cents: Long) {
+        repository.setFreeSpendingCents(cents)
+    }
 
     fun setHomeModules(enabled: Set<String>) {
         repository.setHomeModules(enabled)
