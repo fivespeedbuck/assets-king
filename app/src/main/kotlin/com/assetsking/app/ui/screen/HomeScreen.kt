@@ -58,6 +58,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var showPendingBox by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
+    var showBills by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
@@ -79,7 +80,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             }
         },
         floatingActionButton = {
-            if (selectedTab == 0) {
+            // 手动记账入口在流水页（REQ 流水§6），不占首页
+            if (selectedTab == 2) {
                 FloatingActionButton(
                     onClick = {
                         editorPendingItem = null
@@ -104,18 +106,22 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onShowReconciliation = { showReconciliation = true },
                 onGotoStats = { selectedTab = 1 },
                 onGotoLoans = { selectedTab = 3 },
+                onGotoBills = { showBills = true },
                 onEditAccount = { editingAccount = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(repository = repository, budgets = budgets, recurringRules = recurringRules, accounts = state.accounts, v5 = state.v5)
             }
             2 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
-                BillsScreen(
-                    rules = recurringRules,
-                    transactions = state.transactions,
-                    pendingItems = state.pendingItems,
-                    accounts = state.accounts,
-                    viewModel = model
+                TransactionsScreen(
+                    state = state,
+                    categories = categories,
+                    model = model,
+                    onOpenEditor = {
+                        editorPendingItem = null
+                        showEditor = true
+                    },
+                    onEditTransaction = { editingTransaction = it }
                 )
             }
             3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -209,6 +215,18 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     }
 
     // 待确认箱全屏页（REQ 待确认箱 UI）：覆盖在 Scaffold 之上
+    // 周期账单页（不占底部导航，从首页「本月待扣」模块进入，REQ 导航§3-4）
+    if (showBills) {
+        BillsScreen(
+            rules = recurringRules,
+            transactions = state.transactions,
+            pendingItems = state.pendingItems,
+            accounts = state.accounts,
+            viewModel = model,
+            onBack = { showBills = false }
+        )
+    }
+
     if (showPendingBox) {
         PendingBoxScreen(
             items = state.pendingItems,

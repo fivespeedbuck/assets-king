@@ -138,6 +138,14 @@ class LedgerViewModel(
         repository.setHomeModules(enabled)
     }
 
+    fun setTransactionNecessity(id: String, necessity: Boolean?) {
+        viewModelScope.launch { repository.setTransactionNecessity(id, necessity) }
+    }
+
+    fun setTransactionCategoryName(id: String, categoryName: String) {
+        viewModelScope.launch { repository.setTransactionCategoryName(id, categoryName) }
+    }
+
     init {
         // 首次启动播种分类库；账户种子由既有流程负责，不动
         viewModelScope.launch { repository.seedDefaultCategoriesIfEmpty() }

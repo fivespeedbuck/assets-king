@@ -41,10 +41,18 @@ fun BillsScreen(
     transactions: List<TransactionEntity>,
     pendingItems: List<PendingItem>,
     accounts: List<AccountEntity>,
-    viewModel: LedgerViewModel
+    viewModel: LedgerViewModel,
+    onBack: () -> Unit = {}
 ) {
     val sorted = rules.sortedBy { it.nextRunAt }
     val fmt = SimpleDateFormat("M月d日", Locale.CHINA)
+    Column(Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onBack != {}) {
+                androidx.compose.material3.TextButton(onClick = onBack) { Text("← 返回") }
+            }
+            Text("周期账单", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 16.dp))
+        }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -117,5 +125,6 @@ fun BillsScreen(
             }
         }
         item { Spacer(Modifier.height(8.dp)) }
+    }
     }
 }

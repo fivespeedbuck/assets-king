@@ -183,21 +183,21 @@ class LedgerRepository(
                             interestCents = inst.interest.cents,
                             feeCents = inst.fee.cents,
                             loanPlanId = plan.id,
-                            necessity = necessity, channel = channel
+                            necessity = necessity, channel = channel, notificationId = notificationId
                         )
                         markInstallmentPaid(plan, inst.number, inst.principal.cents)
                     } else {
                         addTransaction(
                             accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
                             occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
-                            necessity = necessity, channel = channel
+                            necessity = necessity, channel = channel, notificationId = notificationId
                         )
                     }
                 } else {
                     addTransaction(
                         accountId, amountCents, type, category, merchant, note,
                         occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId,
-                        necessity = necessity, channel = channel
+                        necessity = necessity, channel = channel, notificationId = notificationId
                     )
                 }
             }
@@ -429,6 +429,14 @@ class LedgerRepository(
         database.transactionDao().updateCategory(id, category.name)
     }
 
+    suspend fun setTransactionCategoryName(id: String, categoryName: String) {
+        database.transactionDao().updateCategory(id, categoryName)
+    }
+
+    suspend fun setTransactionNecessity(id: String, necessity: Boolean?) {
+        database.transactionDao().updateNecessity(id, necessity)
+    }
+
     suspend fun updateTransaction(
         id: String,
         amountCents: Long,
@@ -509,6 +517,11 @@ class LedgerRepository(
             }
             database.transactionDao().deleteById(id)
             recomputeBalance(accountId)
+            // 由通知确认的流水删除后：原通知回到待确认箱重新处理（REQ 流水§9）
+            tx.notificationId?.let { nid ->
+                database.rawNotificationDao().updateStatus(nid, "PENDING_CONFIRMATION")
+                database.rawNotificationDao().updateProcessingNote(nid, "流水已删除，回到待确认")
+            }
         }
     }
 
@@ -528,7 +541,8 @@ class LedgerRepository(
         loanPlanId: String? = null,
         refundOfId: String? = null,
         necessity: Boolean? = null,
-        channel: String? = null
+        channel: String? = null,
+        notificationId: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -556,6 +570,7 @@ class LedgerRepository(
                     refundOfId = linkedRefund,
                     necessity = necessity,
                     channel = channel?.trim()?.takeIf { it.isNotEmpty() },
+                    notificationId = notificationId,
                     isReimbursable = isReimbursable,
                     recurringRuleId = recurringRuleId,
                     principalCents = principalCents,

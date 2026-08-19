@@ -42,7 +42,8 @@ data class TransactionEntity(
     val refundOfId: String? = null,      // REFUND: 关联的原消费流水（REQ 待确认交易类型 §6-8），冲减原分类/必要性
     val reimbursedCents: Long = 0,       // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
     val necessity: Boolean? = null,      // 本笔最终必要性（REQ 分类§2）：true=必要 false=非必要 null=按场景默认
-    val channel: String? = null          // 支付渠道（REQ 流水§5）：微信/支付宝/银行短信…与资金账户分开
+    val channel: String? = null,         // 支付渠道（REQ 流水§5）：微信/支付宝/银行短信…与资金账户分开
+    val notificationId: String? = null   // 由通知确认生成的流水：删除时原通知回待确认箱（REQ 流水§9）
 )
 
 // 一级/二级分类（REQ 初始分类库）：稳定 ID + 显示名可改 + 归档不物理删除

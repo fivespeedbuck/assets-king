@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReimbursementLinkEntity::class,
         CategoryEntity::class, MerchantEntity::class
     ],
-    version = 18,
+    version = 19,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -105,6 +105,13 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `balance_checkpoints` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `checkedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`id`))")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_checkpoints_accountId` ON `balance_checkpoints` (`accountId`)")
                 backfillOpeningCheckpoints(db)
+            }
+        }
+
+        /** v18→v19：transactions 加 notificationId 列（删除通知流水时原通知回待确认箱，REQ 流水§9）。只加列，非破坏性。 */
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN notificationId TEXT")
             }
         }
 
@@ -207,7 +214,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19).build().also { instance = it }
         }
     }
 }

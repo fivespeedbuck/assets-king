@@ -72,6 +72,9 @@ interface TransactionDao {
     @Query("UPDATE transactions SET reimbursedCents = :cents WHERE id = :id")
     suspend fun updateReimbursed(id: String, cents: Long)
 
+    @Query("UPDATE transactions SET necessity = :necessity WHERE id = :id")
+    suspend fun updateNecessity(id: String, necessity: Boolean?)
+
     @Query("UPDATE transactions SET category = :newName WHERE category = :oldName")
     suspend fun updateCategoryName(oldName: String, newName: String)
 
