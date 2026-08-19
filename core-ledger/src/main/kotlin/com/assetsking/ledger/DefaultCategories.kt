@@ -12,7 +12,8 @@ data class CategorySeed(
     val shortName: String,         // 两字简称（宫格用，REQ 分类§26）
     val parentId: String?,         // null = 一级
     val iconKey: String,           // 线性图标库 key（UI 层映射到 material-icons-extended）
-    val defaultNecessary: Boolean? = null
+    val defaultNecessary: Boolean? = null,
+    val kind: String = "EXPENSE"   // EXPENSE=消费分类，INCOME=收入分类（REQ 预期收入§4 独立小型分类库）
 )
 
 object DefaultCategories {
@@ -113,5 +114,14 @@ object DefaultCategories {
         CategorySeed("social-red-packet", "红包礼金", "红包", "social", "redeem", false),
         CategorySeed("social-family", "孝敬家人", "孝敬", "social", "family-restroom", false),
         CategorySeed("social-donation", "公益捐赠", "捐赠", "social", "volunteer-activism", false)
+    )
+
+    /** 收入分类库（REQ 预期收入§4）：独立于消费分类的小型分类库，5 个一级默认；编辑器内可新增一级/二级收入分类。 */
+    val incomeSeeds: List<CategorySeed> = listOf(
+        CategorySeed("income-salary", "工资", "工资", null, "payments", kind = "INCOME"),
+        CategorySeed("income-bonus", "年终奖", "年终", null, "savings", kind = "INCOME"),
+        CategorySeed("income-parttime", "兼职劳务", "兼职", null, "work", kind = "INCOME"),
+        CategorySeed("income-interest", "利息收益", "利息", null, "percent", kind = "INCOME"),
+        CategorySeed("income-gift", "红包赠与", "红包", null, "redeem", kind = "INCOME")
     )
 }

@@ -937,19 +937,25 @@ class LedgerRepository(
 
     val categories: Flow<List<CategoryEntity>> = database.categoryDao().observeAll()
 
-    /** 首次启动播种 11 个一级 + 二级分类；用户已动过分类库就不再动。 */
+    /** 首次启动播种分类库（REQ 初始分类库 + 预期收入§4）：消费/收入两类独立判断，缺哪类种哪类；用户已动过的那类不再动。 */
     suspend fun seedDefaultCategoriesIfEmpty() {
-        if (database.categoryDao().all().isNotEmpty()) return
-        database.categoryDao().insertAll(
-            DefaultCategories.seeds.mapIndexed { index, s ->
-                CategoryEntity(
-                    id = s.id, name = s.name, shortName = s.shortName,
-                    parentId = s.parentId, iconKey = s.iconKey,
-                    defaultNecessary = s.defaultNecessary,
-                    sortOrder = index, isCustom = false
-                )
-            }
-        )
+        val existing = database.categoryDao().all()
+        suspend fun seedIfMissing(kind: String, list: List<com.assetsking.ledger.CategorySeed>) {
+            if (existing.any { it.kind == kind }) return
+            database.categoryDao().insertAll(
+                list.mapIndexed { index, s ->
+                    CategoryEntity(
+                        id = s.id, name = s.name, shortName = s.shortName,
+                        parentId = s.parentId, iconKey = s.iconKey,
+                        defaultNecessary = s.defaultNecessary,
+                        kind = kind,
+                        sortOrder = index, isCustom = false
+                    )
+                }
+            )
+        }
+        seedIfMissing("EXPENSE", DefaultCategories.seeds)
+        seedIfMissing("INCOME", DefaultCategories.incomeSeeds)
     }
 
     suspend fun addCategory(
@@ -957,13 +963,15 @@ class LedgerRepository(
         shortName: String,
         parentId: String?,
         iconKey: String,
-        defaultNecessary: Boolean?
+        defaultNecessary: Boolean?,
+        kind: String = "EXPENSE"
     ): CategoryEntity {
         val maxOrder = database.categoryDao().all().maxOfOrNull { it.sortOrder } ?: 0
         val entity = CategoryEntity(
             id = UUID.randomUUID().toString(),
             name = name.trim(), shortName = shortName.trim().take(2),
             parentId = parentId, iconKey = iconKey, defaultNecessary = defaultNecessary,
+            kind = kind,
             sortOrder = maxOrder + 1, isCustom = true
         )
         database.categoryDao().upsert(entity)

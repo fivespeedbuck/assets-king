@@ -42,11 +42,14 @@ import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pets
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Percent
 import androidx.compose.material.icons.filled.Redeem
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.RestaurantMenu
 import androidx.compose.material.icons.filled.RiceBowl
 import androidx.compose.material.icons.filled.Sanitizer
+import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.SelfImprovement
@@ -62,6 +65,7 @@ import androidx.compose.material.icons.filled.Subway
 import androidx.compose.material.icons.filled.Train
 import androidx.compose.material.icons.filled.VolunteerActivism
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Work
 import androidx.compose.ui.graphics.vector.ImageVector
 
 /**
@@ -132,6 +136,10 @@ object IconLibrary {
         Entry("edit-note", "文具 笔记 办公", Icons.Filled.EditNote),
         Entry("redeem", "红包 礼金", Icons.Filled.Redeem),
         Entry("family-restroom", "家人 家庭", Icons.Filled.FamilyRestroom),
+        Entry("payments", "工资 薪水 月薪", Icons.Filled.Payments),
+        Entry("savings", "年终奖 奖金 存钱", Icons.Filled.Savings),
+        Entry("work", "兼职 劳务 工作", Icons.Filled.Work),
+        Entry("percent", "利息 收益 理财", Icons.Filled.Percent),
         Entry("more-horiz", "其他 更多", Icons.Filled.MoreHoriz),
     )
 

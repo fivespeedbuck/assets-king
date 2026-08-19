@@ -57,7 +57,8 @@ data class CategoryEntity(
     val defaultNecessary: Boolean? = null, // 二级默认必要性：true/false/null=按场景
     val sortOrder: Int = 0,
     val isArchived: Boolean = false,
-    val isCustom: Boolean = false        // 用户新增（预置分类改名也不改 ID）
+    val isCustom: Boolean = false,       // 用户新增（预置分类改名也不改 ID）
+    val kind: String = "EXPENSE"         // 分类库种类（REQ 预期收入§4）：EXPENSE=消费分类，INCOME=独立小型收入分类库
 )
 
 // 交易对象库（REQ 商户库§4-8）：标准商户 + 原名别名 + 学习规则；消费商户与收入来源共用

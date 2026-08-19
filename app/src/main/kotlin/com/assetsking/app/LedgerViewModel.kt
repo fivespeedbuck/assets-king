@@ -390,8 +390,8 @@ class LedgerViewModel(
         viewModelScope.launch { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds) }
     }
 
-    fun addCategoryEntity(name: String, shortName: String, parentId: String?, iconKey: String, defaultNecessary: Boolean?) {
-        viewModelScope.launch { repository.addCategory(name, shortName, parentId, iconKey, defaultNecessary) }
+    fun addCategoryEntity(name: String, shortName: String, parentId: String?, iconKey: String, defaultNecessary: Boolean?, kind: String = "EXPENSE") {
+        viewModelScope.launch { repository.addCategory(name, shortName, parentId, iconKey, defaultNecessary, kind) }
     }
 
     fun updateCategoryEntity(id: String, name: String?, shortName: String?, parentId: String?) {

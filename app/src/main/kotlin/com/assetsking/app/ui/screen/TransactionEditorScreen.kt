@@ -183,9 +183,12 @@ fun TransactionEditorScreen(
         val cutoff = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
         transactions.filter { it.occurredAt >= cutoff }.groupingBy { it.category }.eachCount()
     }
-    val parents = categories.filter { it.parentId == null && !it.isArchived }
+    // 收入用独立分类库（REQ 预期收入§4）；切换类型时清掉上一类型的已选分类，防止错带
+    val catKind = if (kind == EditorKind.INCOME) "INCOME" else "EXPENSE"
+    LaunchedEffect(kind) { categoryId = null; necessity = null }
+    val parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == catKind }
     val childrenOf = { parentId: String? ->
-        categories.filter { it.parentId == parentId && !it.isArchived }
+        categories.filter { it.parentId == parentId && !it.isArchived && it.kind == catKind }
             .sortedByDescending { catUsage[it.name] ?: 0 }
     }
 
@@ -451,6 +454,7 @@ fun TransactionEditorScreen(
     if (showCategoryManage) {
         CategoryManageDialog(
             categories = categories,
+            catKind = catKind,
             onDismiss = { showCategoryManage = false },
             onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true; showCategoryManage = false },
             viewModel = viewModel
@@ -461,9 +465,10 @@ fun TransactionEditorScreen(
         NewCategoryDialog(
             parentId = newCategoryParentId,
             parents = parents,
+            catKind = catKind,
             onDismiss = { showNewCategory = false },
             onCreate = { name, shortName, parentId, iconKey, defaultNecessary ->
-                viewModel.addCategoryEntity(name, shortName, parentId, iconKey, defaultNecessary)
+                viewModel.addCategoryEntity(name, shortName, parentId, iconKey, defaultNecessary, catKind)
                 showNewCategory = false
             }
         )
@@ -600,7 +605,9 @@ private fun CategoryGrid(
         order.chunked(perRow).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 row.forEach { parent ->
-                    val selected = selectedCategoryId != null && selectedCategoryId.startsWith("${parent.id}-")
+                    // 收入分类库的种子是一级且无二级：选中即一级本身；有二级的一级仍以二级命中高亮
+                    val selected = selectedCategoryId == parent.id ||
+                        (selectedCategoryId != null && selectedCategoryId.startsWith("${parent.id}-"))
                     val dropTarget = remember(parent.id) {
                         object : DragAndDropTarget {
                             var onItemDropped: ((String, String) -> Unit)? = null
@@ -615,8 +622,12 @@ private fun CategoryGrid(
                     Column(
                         Modifier.weight(1f).alpha(if (draggingId == parent.id) 0.4f else 1f)
                             .clickable {
-                                expandedParent = if (expandedParent == parent.id) null else parent.id
-                                if (selectedCategoryId == null) expandedParent = parent.id
+                                // 无二级分类（收入种子等）：点一级直接选中；否则展开二级面板
+                                if (childrenOf(parent.id).isEmpty()) onSelect(parent)
+                                else {
+                                    expandedParent = if (expandedParent == parent.id) null else parent.id
+                                    if (selectedCategoryId == null) expandedParent = parent.id
+                                }
                             }
                             .dragAndDropSource {
                                 detectTapGestures(onLongPress = {
@@ -774,6 +785,7 @@ private fun BalancePreviewInEditor(
 @Composable
 private fun CategoryManageDialog(
     categories: List<CategoryEntity>,
+    catKind: String,
     onDismiss: () -> Unit,
     onAddChild: (String) -> Unit,
     viewModel: LedgerViewModel
@@ -781,13 +793,14 @@ private fun CategoryManageDialog(
     var renameTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var mergeSource by remember { mutableStateOf<CategoryEntity?>(null) }
     var mergeTarget by remember { mutableStateOf<CategoryEntity?>(null) }
+    val kindCats = categories.filter { it.kind == catKind }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("分类管理") },
+        title = { Text(if (catKind == "INCOME") "收入分类管理" else "分类管理") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("一级分类", fontWeight = FontWeight.Bold)
-                categories.filter { it.parentId == null }.forEach { parent ->
+                kindCats.filter { it.parentId == null }.forEach { parent ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("${parent.name}（${parent.shortName}）")
                         Row {
@@ -800,7 +813,7 @@ private fun CategoryManageDialog(
                 }
                 HorizontalDivider()
                 Text("二级分类", fontWeight = FontWeight.Bold)
-                categories.filter { it.parentId != null }.forEach { child ->
+                kindCats.filter { it.parentId != null }.forEach { child ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("${child.name}${if (child.isArchived) "（已归档）" else ""}")
                         Row {
@@ -822,7 +835,7 @@ private fun CategoryManageDialog(
         }
     }
     mergeSource?.let { source ->
-        val targets = categories.filter { it.id != source.id && it.parentId == source.parentId }
+        val targets = kindCats.filter { it.id != source.id && it.parentId == source.parentId }
         AlertDialog(
             onDismissRequest = { mergeSource = null },
             title = { Text("把「${source.name}」合并到") },
@@ -865,6 +878,7 @@ private fun RenameCategoryDialog(target: CategoryEntity, onDismiss: () -> Unit, 
 private fun NewCategoryDialog(
     parentId: String?,
     parents: List<CategoryEntity>,
+    catKind: String,
     onDismiss: () -> Unit,
     onCreate: (String, String, String?, String, Boolean?) -> Unit
 ) {
@@ -873,6 +887,7 @@ private fun NewCategoryDialog(
     var iconKey by remember { mutableStateOf("more-horiz") }
     var necessary by remember { mutableStateOf<Boolean?>(null) }
     var search by remember { mutableStateOf("") }
+    val isIncome = catKind == "INCOME"
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (parentId == null) "新增一级分类" else "新增二级分类") },
@@ -880,9 +895,12 @@ private fun NewCategoryDialog(
             Column {
                 OutlinedTextField(name, { name = it; shortName = name.take(2) }, label = { Text("完整名称 *") })
                 OutlinedTextField(shortName, { shortName = it.take(2) }, label = { Text("两字简称") })
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = necessary == true, onClick = { necessary = true }, label = { Text("默认必要") })
-                    FilterChip(selected = necessary == false, onClick = { necessary = false }, label = { Text("默认非必要") })
+                // 收入分类没有必要性概念（REQ 预期收入§4）
+                if (!isIncome) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = necessary == true, onClick = { necessary = true }, label = { Text("默认必要") })
+                        FilterChip(selected = necessary == false, onClick = { necessary = false }, label = { Text("默认非必要") })
+                    }
                 }
                 OutlinedTextField(search, { search = it }, label = { Text("搜索图标") })
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
