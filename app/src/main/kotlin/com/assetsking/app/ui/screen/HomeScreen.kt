@@ -40,6 +40,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
     val upcomingRepayments by model.upcomingRepayments.collectAsStateWithLifecycle(initialValue = emptyList())
     val enabledModules by model.enabledModules.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val moduleOrder by model.homeModuleOrder.collectAsStateWithLifecycle(initialValue = emptyList<String>())
     val freeSpendingCents by model.freeSpendingCents.collectAsStateWithLifecycle(initialValue = 50_000L)
     val themeKey by model.themeKey.collectAsStateWithLifecycle(initialValue = null)
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
@@ -100,6 +101,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 budgets = budgets, recurringRules = recurringRules,
                 upcomingRepayments = upcomingRepayments,
                 enabledModules = enabledModules,
+                moduleOrder = moduleOrder,
                 onShowPending = { showPendingBox = true },
                 onShowReconciliation = { showReconciliation = true },
                 onGotoStats = { selectedTab = 1 },

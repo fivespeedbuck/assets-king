@@ -307,8 +307,21 @@ class LedgerRepository(
         prefs.edit().putStringSet("home_modules", enabled).apply()
     }
 
+    // 首页模块显示顺序（REQ 首页可配置模块§3 拖动排序）：逗号分隔字符串，只存启用过的顺序，其余回退默认
+    private val _moduleOrder = MutableStateFlow(
+        prefs.getString("home_module_order", null)?.split(",")?.filter { it.isNotBlank() }
+            ?: defaultModuleOrder
+    )
+    val moduleOrder: Flow<List<String>> = _moduleOrder
+
+    fun reorderHomeModules(ordered: List<String>) {
+        _moduleOrder.value = ordered
+        prefs.edit().putString("home_module_order", ordered.joinToString(",")).apply()
+    }
+
     companion object {
         val defaultEnabledModules: Set<String> = setOf("budget", "reimbursement", "recurring")
+        val defaultModuleOrder: List<String> = listOf("budget", "reimbursement", "recurring", "week", "ranking", "trend", "accounts", "repayments")
     }
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =

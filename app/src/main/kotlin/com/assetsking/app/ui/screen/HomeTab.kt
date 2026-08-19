@@ -1,8 +1,13 @@
 package com.assetsking.app.ui.screen
 
+import android.content.ClipData
 import android.content.Context
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.draganddrop.dragAndDropSource
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +20,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -63,6 +73,7 @@ private val HomeRed = Color(0xFFE57373)
 private val HomeOrange = Color(0xFFFFB74D)
 
 /** 首页固定核心区 + 可配置模块（REQ 首页信息优先级/UI结构/可配置模块）。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeTab(
     padding: PaddingValues,
@@ -76,6 +87,7 @@ fun HomeTab(
     recurringRules: List<RecurringRuleEntity>,
     upcomingRepayments: List<UpcomingRepayment>,
     enabledModules: Set<String>,
+    moduleOrder: List<String>,
     onShowPending: () -> Unit,
     onShowReconciliation: () -> Unit,
     onGotoStats: () -> Unit,
@@ -106,6 +118,20 @@ fun HomeTab(
     val dueTotal = dueSoon.sumOf { it.totalCents }
     val dueEarliest = dueSoon.minOfOrNull { it.dueDateEpochDay }
     val anyOverdue = dueSoon.any { it.overdue }
+
+    // 模块顺序：用户拖过用保存的顺序，新启用/未排过的补到默认位置（REQ 首页可配置模块§3）
+    val orderedModules = moduleOrder.filter { it in enabledModules } +
+        enabledModules.filter { it !in moduleOrder }.sortedBy { defaultModuleIndex(it) }
+    var dragOrder by remember(enabledModules) { mutableStateOf(orderedModules) }
+
+    fun moveModule(draggedId: String, targetId: String) {
+        val from = dragOrder.indexOfFirst { it == draggedId }
+        val to = dragOrder.indexOfFirst { it == targetId }
+        if (from < 0 || to < 0 || from == to) return
+        val list = dragOrder.toMutableList().apply { add(to, removeAt(from)) }
+        dragOrder = list
+        model.reorderHomeModules(list)
+    }
 
     LazyColumn(
         Modifier.fillMaxSize().padding(padding),
@@ -199,20 +225,48 @@ fun HomeTab(
                 TextButton(onClick = { showModuleLibrary = true }) { Text("＋ 添加模块", style = MaterialTheme.typography.labelMedium) }
             }
         }
-        enabledModules.toList().sortedBy { moduleOrder(it) }.forEach { module ->
+        dragOrder.forEach { module ->
             item(key = "module-$module") {
-                HomeModuleCard(
-                    key = module,
-                    state = state,
-                    budgets = budgets,
-                    recurringRules = recurringRules,
-                    upcomingRepayments = upcomingRepayments,
-                    repository = repository,
-                    money = ::money,
-                    onGotoStats = onGotoStats,
-                    onGotoLoans = onGotoLoans,
-                    onGotoBills = onGotoBills
-                )
+                val dropTarget = remember(module) {
+                    object : DragAndDropTarget {
+                        var onItemDropped: ((String, String) -> Unit)? = null
+                        override fun onDrop(event: DragAndDropEvent): Boolean {
+                            val draggedId = event.toAndroidDragEvent().clipData?.getItemAt(0)?.text?.toString()
+                            if (draggedId != null) onItemDropped?.invoke(draggedId, module)
+                            return true
+                        }
+                    }
+                }
+                dropTarget.onItemDropped = { draggedId, targetId -> moveModule(draggedId, targetId) }
+                Box(
+                    Modifier
+                        .dragAndDropSource {
+                            detectTapGestures(onLongPress = {
+                                startTransfer(
+                                    DragAndDropTransferData(
+                                        clipData = ClipData.newPlainText("module", module)
+                                    )
+                                )
+                            })
+                        }
+                        .dragAndDropTarget(
+                            shouldStartDragAndDrop = { it.mimeTypes().contains("text/plain") },
+                            target = dropTarget
+                        )
+                ) {
+                    HomeModuleCard(
+                        key = module,
+                        state = state,
+                        budgets = budgets,
+                        recurringRules = recurringRules,
+                        upcomingRepayments = upcomingRepayments,
+                        repository = repository,
+                        money = ::money,
+                        onGotoStats = onGotoStats,
+                        onGotoLoans = onGotoLoans,
+                        onGotoBills = onGotoBills
+                    )
+                }
             }
         }
     }
@@ -243,7 +297,8 @@ fun HomeTab(
     }
 }
 
-private fun moduleOrder(key: String): Int = listOf("budget", "reimbursement", "recurring", "week", "ranking", "trend", "accounts", "repayments").indexOf(key).let { if (it < 0) 99 else it }
+private fun defaultModuleIndex(key: String): Int =
+    LedgerRepository.defaultModuleOrder.indexOf(key).let { if (it < 0) 99 else it }
 
 /** 8 个可配置模块（REQ 首页可配置模块§5），全部可下钻。 */
 @Composable

@@ -147,6 +147,12 @@ class LedgerViewModel(
         repository.setHomeModules(enabled)
     }
 
+    val homeModuleOrder: Flow<List<String>> = repository.moduleOrder
+
+    fun reorderHomeModules(ordered: List<String>) {
+        repository.reorderHomeModules(ordered)
+    }
+
     fun setTransactionNecessity(id: String, necessity: Boolean?) {
         viewModelScope.launch { repository.setTransactionNecessity(id, necessity) }
     }
