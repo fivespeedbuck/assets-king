@@ -63,6 +63,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var selectedTab by remember { mutableStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     var showReconciliation by remember { mutableStateOf(false) }
+    // 统计页下钻流水（REQ 统计§3/§7/§20）：月份+分类带进流水页筛选，消费一次后清空
+    var txDrillMonth by remember { mutableStateOf<java.time.YearMonth?>(null) }
+    var txDrillCategory by remember { mutableStateOf<String?>(null) }
     val listenerStatus = rememberListenerStatus()
 
     Scaffold(
@@ -115,7 +118,10 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     categories = categories,
                     budgets = budgets,
                     repository = repository,
-                    freeSpendingCents = freeSpendingCents
+                    freeSpendingCents = freeSpendingCents,
+                    onGotoTransactions = { m, cat ->
+                        txDrillMonth = m; txDrillCategory = cat; selectedTab = 2
+                    }
                 )
             }
             2 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -127,7 +133,10 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                         editorPendingItem = null
                         showEditor = true
                     },
-                    onEditTransaction = { editingTransaction = it }
+                    onEditTransaction = { editingTransaction = it },
+                    initialFilterMonth = txDrillMonth,
+                    initialFilterCategory = txDrillCategory,
+                    onDrillConsumed = { txDrillMonth = null; txDrillCategory = null }
                 )
             }
             3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {

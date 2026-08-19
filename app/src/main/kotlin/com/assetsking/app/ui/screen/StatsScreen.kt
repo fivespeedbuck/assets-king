@@ -3,6 +3,7 @@ package com.assetsking.app.ui.screen
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -39,6 +41,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -81,13 +84,17 @@ fun StatsScreen(
     categories: List<CategoryEntity>,
     budgets: List<BudgetEntity>,
     repository: LedgerRepository,
-    freeSpendingCents: Long
+    freeSpendingCents: Long,
+    onGotoTransactions: (YearMonth, String?) -> Unit
 ) {
     var month by remember { mutableStateOf(YearMonth.now()) }
     var trendMonths by remember { mutableStateOf(3) }
     var showMonthPicker by remember { mutableStateOf(false) }
     var drillCategory by remember { mutableStateOf<CategoryEntity?>(null) }
     var stats by remember { mutableStateOf<StatsData?>(null) }
+    var showAllBudgets by remember { mutableStateOf(false) }
+    // 趋势卡选中月（REQ 统计§20）：默认本月；点柱切换顶部数字，再点一次下钻流水
+    var selectedBar by remember { mutableStateOf(YearMonth.now()) }
 
     LaunchedEffect(Unit) { stats = GetStatsUseCase(repository).invoke() }
 
@@ -142,7 +149,9 @@ fun StatsScreen(
                     if (drill != null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("全部支出", Modifier.clickable { drillCategory = null }, color = MaterialTheme.colorScheme.primary)
-                            Text(" ＞ ${drill.name}", fontWeight = FontWeight.Bold)
+                            Text(" ＞ ${drill.name}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            // 下钻流水（REQ 统计§3/§15）：带月份+分类跳流水页筛选
+                            TextButton(onClick = { onGotoTransactions(month, drill.name) }) { Text("查看流水", style = MaterialTheme.typography.labelSmall) }
                         }
                         // 下钻：该一级分类的 必要/非必要 比例 + 二级构成（REQ 统计§15）
                         val children = categories.filter { it.parentId == drill.id }
@@ -238,6 +247,11 @@ fun StatsScreen(
                             Text("${formatMoney(spent)} / ${formatMoney(b.monthlyLimitCents)}", style = MaterialTheme.typography.bodySmall, color = if (spent > b.monthlyLimitCents) StatsRed else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                    // 查看全部（REQ 统计§17-18）：完整预算页，未消费分类也显示 0%
+                    TextButton(
+                        onClick = { showAllBudgets = true },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("查看全部", style = MaterialTheme.typography.labelSmall) }
                 }
             }
         }
@@ -256,7 +270,22 @@ fun StatsScreen(
                     }
                     val bars = stats?.monthlyBars?.takeLast(trendMonths) ?: emptyList()
                     if (bars.isNotEmpty()) {
-                        TrendChart(bars)
+                        // 选中月顶部数字（REQ 统计§5/§20）：默认本月，点击柱切换，再点一次下钻流水
+                        val sel = bars.firstOrNull { it.month == selectedBar.toString() } ?: bars.last()
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Text("${selectedBar.monthValue}月 收入 ${formatMoney(sel.incomeCents)}", color = StatsGreen, style = MaterialTheme.typography.labelMedium)
+                            Text("支出 ${formatMoney(sel.expenseCents)}", color = StatsRed, style = MaterialTheme.typography.labelMedium)
+                            Text("结余 ${formatMoney(sel.incomeCents - sel.expenseCents)}", color = if (sel.incomeCents >= sel.expenseCents) StatsGreen else StatsRed, style = MaterialTheme.typography.labelMedium)
+                        }
+                        TrendChart(
+                            bars = bars,
+                            selectedMonth = selectedBar,
+                            onBarClick = { ym ->
+                                if (ym == selectedBar) onGotoTransactions(ym, null)  // 再点一次下钻流水
+                                else selectedBar = ym
+                            }
+                        )
+                        Text("点柱选月 · 再点一次进流水", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         Text("加载中…", style = MaterialTheme.typography.bodySmall)
                     }
@@ -267,6 +296,27 @@ fun StatsScreen(
 
     if (showMonthPicker) {
         MonthPickerDialog(initial = month, onPick = { month = it; showMonthPicker = false }, onDismiss = { showMonthPicker = false })
+    }
+    if (showAllBudgets) {
+        // 完整预算页（REQ 统计§18）：所有已设预算，未消费显示 0%
+        AlertDialog(
+            onDismissRequest = { showAllBudgets = false },
+            title = { Text("${month.year}年${month.monthValue}月 全部预算") },
+            text = {
+                val monthBudgets = budgets.filter { it.month == month.toString() }
+                Column {
+                    if (monthBudgets.isEmpty()) {
+                        Text("本月未设分类预算", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    monthBudgets.forEach { b ->
+                        val spent = expenses.filter { it.category == b.category }.sumOf { netOf(it) }
+                        ProgressLine(b.category, spent, b.monthlyLimitCents, StatsGreen)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAllBudgets = false }) { Text("关闭") } },
+            dismissButton = {}
+        )
     }
 }
 
@@ -309,15 +359,29 @@ private fun DonutChart(
     }
 }
 
-/** 组合图（REQ 统计§19）：并列柱（绿收入/红支出）+ 结余折线（蓝，中轴为零线） */
+/** 组合图（REQ 统计§19）：并列柱（绿收入/红支出）+ 结余折线（蓝，中轴为零线）；点柱选月（REQ 统计§7/§20） */
 @Composable
-private fun TrendChart(bars: List<com.assetsking.usecase.MonthlyBar>) {
+private fun TrendChart(
+    bars: List<com.assetsking.usecase.MonthlyBar>,
+    selectedMonth: YearMonth,
+    onBarClick: (YearMonth) -> Unit
+) {
     val max = bars.maxOfOrNull { maxOf(it.incomeCents, it.expenseCents, 1L) } ?: 1L
     val balanceMax = bars.maxOfOrNull { kotlin.math.abs(it.incomeCents - it.expenseCents).coerceAtLeast(1L) } ?: 1L
     val balanceColor = Color(0xFF5C9CE6)
     val zeroLineColor = MaterialTheme.colorScheme.surfaceVariant
+    val highlightColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+    val months = bars.map { bar -> YearMonth.of(bar.month.substring(0, 4).toInt(), bar.month.substring(5).toInt()) }
     Column {
-        Canvas(Modifier.fillMaxWidth().height(170.dp)) {
+        Canvas(
+            Modifier.fillMaxWidth().height(170.dp)
+                .pointerInput(bars) {
+                    detectTapGestures { off ->
+                        val idx = (off.x / (size.width / bars.size.coerceAtLeast(1))).toInt().coerceIn(0, months.size - 1)
+                        onBarClick(months[idx])
+                    }
+                }
+        ) {
             val chartH = size.height - 26f
             val n = bars.size.coerceAtLeast(1)
             val groupW = size.width / n
@@ -332,6 +396,14 @@ private fun TrendChart(bars: List<com.assetsking.usecase.MonthlyBar>) {
             val balancePts = ArrayList<Offset>(bars.size)
             bars.forEachIndexed { i, bar ->
                 val cx = groupW * i + groupW / 2
+                // 选中月高亮背景
+                if (months[i] == selectedMonth) {
+                    drawRect(
+                        highlightColor,
+                        topLeft = Offset(cx - groupW / 2, 0f),
+                        size = Size(groupW, chartH)
+                    )
+                }
                 val inH = chartH * (bar.incomeCents.toFloat() / max)
                 val exH = chartH * (bar.expenseCents.toFloat() / max)
                 drawRect(
@@ -354,7 +426,15 @@ private fun TrendChart(bars: List<com.assetsking.usecase.MonthlyBar>) {
             balancePts.forEach { pt -> drawCircle(balanceColor, radius = 3.dp.toPx(), center = pt) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            bars.forEach { bar -> Text(bar.month.substring(5) + "月", style = MaterialTheme.typography.labelSmall) }
+            months.forEachIndexed { i, ym ->
+                Text(
+                    "${ym.monthValue}月",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (ym == selectedMonth) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = if (ym == selectedMonth) FontWeight.Bold else null,
+                    modifier = Modifier.clickable { onBarClick(ym) }
+                )
+            }
         }
         Spacer(Modifier.height(4.dp))
         Text("绿=收入 红=支出 蓝线=结余/赤字", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

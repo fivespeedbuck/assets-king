@@ -101,7 +101,10 @@ fun TransactionsScreen(
     categories: List<CategoryEntity>,
     model: LedgerViewModel,
     onOpenEditor: () -> Unit,
-    onEditTransaction: (TransactionEntity) -> Unit
+    onEditTransaction: (TransactionEntity) -> Unit,
+    initialFilterMonth: YearMonth? = null,
+    initialFilterCategory: String? = null,
+    onDrillConsumed: () -> Unit = {}
 ) {
     var month by remember { mutableStateOf(YearMonth.now()) }
     var calendarMode by remember { mutableStateOf(false) }
@@ -123,6 +126,15 @@ fun TransactionsScreen(
     var fChannel by remember { mutableStateOf<String?>(null) }
     var fMinCents by remember { mutableStateOf("") }
     var fMaxCents by remember { mutableStateOf("") }
+
+    // 统计页下钻（REQ 统计§3/§7/§20）：一次性带入月份+分类筛选，随后通知父级清空
+    androidx.compose.runtime.LaunchedEffect(initialFilterMonth, initialFilterCategory) {
+        if (initialFilterMonth != null) {
+            month = initialFilterMonth
+            fCategory = initialFilterCategory
+        }
+        onDrillConsumed()
+    }
 
     val zone = ZoneId.systemDefault()
     val monthStart = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
