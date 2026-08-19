@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReimbursementLinkEntity::class,
         CategoryEntity::class, MerchantEntity::class
     ],
-    version = 20,
+    version = 21,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -105,6 +105,13 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS `balance_checkpoints` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `balanceCents` INTEGER NOT NULL, `checkedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`id`))")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_balance_checkpoints_accountId` ON `balance_checkpoints` (`accountId`)")
                 backfillOpeningCheckpoints(db)
+            }
+        }
+
+        /** v20→v21：accounts 加 startDateEpochDay 列（新增账户启用日期，REQ 账户对账§17）。只加列，非破坏性。 */
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE accounts ADD COLUMN startDateEpochDay INTEGER")
             }
         }
 
@@ -221,7 +228,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21).build().also { instance = it }
         }
     }
 }

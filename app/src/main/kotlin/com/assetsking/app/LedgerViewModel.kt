@@ -428,6 +428,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.updateLoanInstallment(planId, number, principalCents, interestCents, feeCents, status) }
     }
 
+    suspend fun checkpointsFor(accountId: String) = repository.checkpointsFor(accountId)
+
+    suspend fun adjustmentsFor(accountId: String) = repository.adjustmentsFor(accountId)
+
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }

@@ -59,6 +59,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
     var showBills by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
+    var accountDetail by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
@@ -116,7 +117,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onGotoStats = { selectedTab = 1 },
                 onGotoLoans = { selectedTab = 3 },
                 onGotoBills = { showBills = true },
-                onEditAccount = { editingAccount = it }
+                onEditAccount = { accountDetail = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(
@@ -292,6 +293,17 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             onSave = { model.updateAccount(it); editingAccount = null },
             onDelete = { model.deleteAccount(it); editingAccount = null },
             onDismiss = { editingAccount = null }
+        )
+    }
+
+    // 账户详情页（REQ 账户对账§1-3/§8/§12-13）
+    accountDetail?.let { account ->
+        AccountDetailScreen(
+            account = account,
+            viewModel = model,
+            onEdit = { editingAccount = account; accountDetail = null },
+            onReconcile = { showReconciliation = true; accountDetail = null },
+            onBack = { accountDetail = null }
         )
     }
 

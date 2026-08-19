@@ -601,7 +601,8 @@ class LedgerRepository(
                 lastCheckedAt = System.currentTimeMillis(),
                 statementDay = statementDay,
                 dueDay = dueDay,
-                creditLimitCents = creditLimitCents
+                creditLimitCents = creditLimitCents,
+                startDateEpochDay = java.time.LocalDate.now().toEpochDay()
             )
         )
         database.balanceCheckpointDao().upsert(
@@ -951,6 +952,14 @@ class LedgerRepository(
     }
 
     val snapshots: Flow<List<SnapshotEntity>> = database.snapshotDao().observeAll()
+
+    // ── 账户详情（REQ 账户对账 §2/§8）：对账历史与余额调整 ──
+
+    suspend fun checkpointsFor(accountId: String): List<BalanceCheckpointEntity> =
+        database.balanceCheckpointDao().allFor(accountId)
+
+    suspend fun adjustmentsFor(accountId: String): List<BalanceAdjustmentEntity> =
+        database.balanceAdjustmentDao().allFor(accountId)
 
     // ── Custom Categories ──
 
