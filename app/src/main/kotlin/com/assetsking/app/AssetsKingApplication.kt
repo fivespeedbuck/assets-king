@@ -29,10 +29,16 @@ class AssetsKingApplication : Application() {
             ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<ListenerHeartbeatWorker>(15, TimeUnit.MINUTES).build()
         )
+        // 每周自动备份（REQ 备份§2）：保留最近 13 份
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "weekly-backup",
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<BackupWorker>(7, TimeUnit.DAYS).build()
+        )
     }
 
     val database by lazy { AssetsKingDatabase.get(this) }
-    val repository by lazy { LedgerRepository(database, getSharedPreferences("app_prefs", MODE_PRIVATE)) }
+    val repository by lazy { LedgerRepository(this, database, getSharedPreferences("app_prefs", MODE_PRIVATE)) }
 
     val seedAccounts by lazy { SeedAccountsUseCase(repository) }
     val recordTransaction by lazy { RecordTransactionUseCase(repository) }

@@ -107,6 +107,21 @@ fun SettingsScreen(
     var reconcileDays by remember { mutableStateOf((currentInterval / (24 * 60 * 60 * 1000L)).toInt()) }
     var newCatName by remember { mutableStateOf("") }
     var showWindfall by remember { mutableStateOf(false) }
+    var backupMsg by remember { mutableStateOf("") }
+
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = repository.restoreFromPicked(uri, repository.backupPin())
+                if (ok) {
+                    // 恢复完成：杀掉进程重启，让 Room 重新打开恢复后的库（ponytail: 粗暴但可靠）
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                } else {
+                    backupMsg = "恢复失败：检查备份密码与文件"
+                }
+            }
+        }
+    }
 
     val smsPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -482,6 +497,47 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+
+        // ── 数据与安全（REQ 备份§1-9：6 位密码加密、立即备份、恢复、CSV 导出）──
+        item {
+            GlassCard {
+                Column(Modifier.fillMaxWidth()) {
+                    Text("数据与安全", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "6 位备份密码主要防止文件被随手打开，强度低于长密码；密码遗忘后备份无法恢复。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    var pinInput by remember { mutableStateOf(repository.backupPin()) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FormField(
+                            value = pinInput,
+                            onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(6) },
+                            label = "6 位备份密码",
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            if (pinInput.length == 6) {
+                                repository.setBackupPin(pinInput)
+                                backupMsg = "密码已保存"
+                            } else backupMsg = "密码必须是 6 位数字"
+                        }) { Text("保存") }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            scope.launch {
+                                backupMsg = if (repository.backupNow(manual = true)) "备份完成" else "请先设置 6 位备份密码"
+                            }
+                        }) { Text("立即备份") }
+                        OutlinedButton(onClick = { backupLauncher.launch(arrayOf("*/*")) }) { Text("恢复备份") }
+                    }
+                    if (backupMsg.isNotEmpty()) {
+                        Text(backupMsg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
         }

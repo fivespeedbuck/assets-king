@@ -274,17 +274,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         )
     }
 
-    if (showPending) {
-        PendingSheet(
-            items = state.pendingItems,
-            accounts = state.accounts,
-            viewModel = model,
-            customCategoryNames = customCategories.map { it.name },
-            merchantLastAccount = state.merchantLastAccount,
-            onDismiss = { showPending = false }
-        )
-    }
-
     editingAccount?.let { account ->
         EditAccountSheet(
             account = account,

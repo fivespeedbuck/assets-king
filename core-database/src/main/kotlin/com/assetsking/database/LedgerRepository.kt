@@ -17,9 +17,11 @@ import com.assetsking.model.Money
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.model.WindfallStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -33,6 +35,7 @@ data class LearnedRule(
 )
 
 class LedgerRepository(
+    private val context: android.content.Context,
     private val database: AssetsKingDatabase,
     private val prefs: SharedPreferences
 ) {
@@ -101,6 +104,93 @@ class LedgerRepository(
         _freeSpendingCents.value = cents
         prefs.edit().putLong("free_spending_cents", cents).apply()
     }
+
+    // ── 备份 / 恢复（REQ 数据备份与恢复 §1-9）──
+
+    fun backupPin(): String = prefs.getString("backup_pin", "").orEmpty()
+
+    fun setBackupPin(pin: String) {
+        prefs.edit().putString("backup_pin", pin).apply()
+    }
+
+    /** 立即备份（手动或自动）。密码未设返回 false。自动备份保留最近 13 份，手动永不删除。 */
+    suspend fun backupNow(manual: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val pin = backupPin()
+        if (pin.length != 6) return@withContext false
+        runCatching {
+            val dbFile = context.getDatabasePath("assets-king.db")
+            // WAL 先 checkpoint，尽量让主库文件自包含
+            runCatching { database.openHelper.writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)") }
+            val dir = java.io.File(context.filesDir, "backups/" + if (manual) "manual" else "auto")
+            dir.mkdirs()
+            val stamp = System.currentTimeMillis()
+            val prefix = if (manual) "manual" else "auto"
+            fun enc(src: java.io.File, ext: String) {
+                if (!src.exists()) return
+                val data = src.readBytes()
+                val out = java.io.File(dir, "${prefix}_${stamp}$ext")
+                out.writeBytes(com.assetsking.ledger.PinCipher.encrypt(data, pin))
+            }
+            enc(dbFile, ".db.enc")
+            enc(java.io.File(dbFile.path + "-wal"), ".wal.enc")
+            enc(java.io.File(dbFile.path + "-shm"), ".shm.enc")
+            val prefsJson = JSONObject().apply {
+                prefs.all.forEach { (k, v) -> put(k, v) }
+            }.toString()
+            java.io.File(dir, "${prefix}_${stamp}.prefs.enc")
+                .writeBytes(com.assetsking.ledger.PinCipher.encrypt(prefsJson.toByteArray(Charsets.UTF_8), pin))
+            if (!manual) pruneAutoBackups(dir)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun pruneAutoBackups(dir: java.io.File) {
+        // 自动备份保留最近 13 份（约三个月，REQ 备份§3）；手动备份永不自动删除
+        dir.listFiles { f -> f.name.startsWith("auto_") && f.name.endsWith(".db.enc") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(13)
+            ?.forEach { stale ->
+                val stamp = stale.name.removePrefix("auto_").removeSuffix(".db.enc")
+                listOf(".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
+                    java.io.File(dir, "auto_$stamp$ext").delete()
+                }
+            }
+    }
+
+    /** 恢复：先自动备份当前数据（REQ §5），再整体替换，完成后重启进程生效。 */
+    suspend fun restoreFromPicked(uri: android.net.Uri, pin: String): Boolean =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val stamp = uri.lastPathSegment?.substringAfter("_")?.substringBefore(".") ?: "restore"
+                val dir = java.io.File(context.filesDir, "backups/manual")
+                val content = context.contentResolver.openInputStream(uri)?.readBytes() ?: return@runCatching false
+                val dbBytes = com.assetsking.ledger.PinCipher.decrypt(content, pin)
+                backupNow(manual = true)
+                context.getDatabasePath("assets-king.db").writeBytes(dbBytes)
+                // 偏好设置同步恢复：同名手动备份的 prefs 文件（若存在）
+                val prefsFile = java.io.File(dir, "manual_$stamp.prefs.enc")
+                if (prefsFile.exists()) {
+                    val json = String(
+                        com.assetsking.ledger.PinCipher.decrypt(prefsFile.readBytes(), pin),
+                        Charsets.UTF_8
+                    )
+                    val obj = JSONObject(json)
+                    prefs.edit().clear().apply()
+                    val editor = prefs.edit()
+                    obj.keys().forEach { k ->
+                        when (val v = obj.get(k)) {
+                            is String -> editor.putString(k, v)
+                            is Boolean -> editor.putBoolean(k, v)
+                            is Int -> editor.putInt(k, v)
+                            is Long -> editor.putLong(k, v)
+                            is Double -> editor.putLong(k, v.toLong())
+                        }
+                    }
+                    editor.apply()
+                }
+                true
+            }.getOrDefault(false)
+        }
 
     // ── 首页可配置模块（REQ 首页可配置模块 §1-10）：启用集合存 prefs，默认 本月预算+待报销+周期扣款 ──
 
