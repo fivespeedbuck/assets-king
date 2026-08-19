@@ -248,6 +248,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             merchantLastAccount = state.merchantLastAccount,
             viewModel = model,
             lastReceivedAt = lastReceivedAt,
+            listenerStatus = listenerStatus,
             onOpenEditor = { item ->
                 editorPendingItem = item
                 showEditor = true

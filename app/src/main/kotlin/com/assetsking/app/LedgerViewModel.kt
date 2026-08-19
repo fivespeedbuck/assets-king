@@ -420,6 +420,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.mergeMerchants(targetName, sourceNames) }
     }
 
+    fun confirmTransferPair(outId: String, inId: String, fromAccountId: String, toAccountId: String, amountCents: Long, note: String?) {
+        viewModelScope.launch { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
+    }
+
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }

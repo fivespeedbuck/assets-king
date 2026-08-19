@@ -331,6 +331,24 @@ class LedgerRepository(
         database.rawNotificationDao().updateStatus(id, status)
     }
 
+    /** 同额转出+转入两条通知合并确认「账户转账」（REQ 待确认交易类型§4）：记转账 + 两条通知标 IGNORED（去重指纹保留，补扫不复活）。 */
+    suspend fun confirmTransferFromNotifications(
+        outNotificationId: String,
+        inNotificationId: String,
+        fromAccountId: String,
+        toAccountId: String,
+        amountCents: Long,
+        note: String?
+    ) {
+        val postedAt = database.rawNotificationDao().findById(outNotificationId)?.postedAt
+            ?: System.currentTimeMillis()
+        addTransfer(fromAccountId, toAccountId, amountCents, note, postedAt)
+        listOf(outNotificationId, inNotificationId).forEach { id ->
+            database.rawNotificationDao().updateProcessingNote(id, "merged-transfer")
+            database.rawNotificationDao().updateStatus(id, "IGNORED")
+        }
+    }
+
     suspend fun updateNotificationNote(id: String, note: String) {
         database.rawNotificationDao().updateProcessingNote(id, note)
     }

@@ -55,6 +55,7 @@ import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.usecase.AccountInference
+import com.assetsking.usecase.TransferPairMerge
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -94,6 +95,7 @@ fun PendingBoxScreen(
     merchantLastAccount: Map<String, String>,
     viewModel: LedgerViewModel,
     lastReceivedAt: Long,
+    listenerStatus: ListenerStatus,
     onOpenEditor: (PendingItem) -> Unit,
     onBack: () -> Unit
 ) {
@@ -103,6 +105,15 @@ fun PendingBoxScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var deleteTarget by remember { mutableStateOf<PendingItem?>(null) }
+    // 同额转出+转入自动合并（REQ 待确认交易类型§4）；「分开处理」后恢复独立卡片
+    val transferPairs = remember(sorted) {
+        TransferPairMerge.findPairs(sorted.map {
+            TransferPairMerge.Leg(it.notification.id, it.parsed.amountCents ?: 0L, it.parsed.isExpense == true, it.notification.postedAt)
+        }).map { p ->
+            sorted.first { it.notification.id == p.out.id } to sorted.first { it.notification.id == p.inLeg.id }
+        }
+    }
+    var unmerged by remember(sorted) { mutableStateOf(setOf<String>()) }
 
     Scaffold(
         topBar = {
@@ -134,28 +145,64 @@ fun PendingBoxScreen(
         },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
-        if (sorted.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("🏦", style = MaterialTheme.typography.headlineLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("待确认已清空", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(4.dp))
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            // 监听中断红色状态条（REQ 监听§7）：首页金库卡之外的待确认箱侧警示
+            if (listenerStatus != ListenerStatus.OK) {
+                Row(
+                    Modifier.fillMaxWidth().background(BoxRed).padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (listenerStatus == ListenerStatus.DISABLED) "自动记账已中断：通知使用权未开启，新账目不会进入此箱" else "入库暂时中断：监听掉线，正在自动恢复",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
-        } else {
+            if (sorted.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("🏦", style = MaterialTheme.typography.headlineLarge)
+                        Spacer(Modifier.height(8.dp))
+                        Text("待确认已清空", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
             LazyColumn(
-                Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 var lastDay: String? = null
+                val pairIds = transferPairs.flatMap { listOf(it.first.notification.id, it.second.notification.id) }.toSet()
+                val renderedMerged = mutableSetOf<String>()
                 sorted.forEach { item ->
+                    val pair = transferPairs.firstOrNull { it.first.notification.id == item.notification.id }
+                    val merged = item.notification.id in pairIds && item.notification.id !in unmerged
+                    if (merged) {
+                        // 转入腿不在自己的位置渲染（由转出腿的合并卡代表），也不留日期分隔
+                        if (pair == null) return@forEach
+                        if (!renderedMerged.add(pair.first.notification.id)) return@forEach
+                        item(key = "transferpair-${pair.first.notification.id}") {
+                            TransferPairCard(
+                                outItem = pair.first,
+                                inItem = pair.second,
+                                accounts = accounts,
+                                merchantLastAccount = merchantLastAccount,
+                                viewModel = viewModel,
+                                onConfirmed = { scope.launch { snackbar.showSnackbar("已记转账") } },
+                                onSplit = { unmerged = unmerged + pair.first.notification.id + pair.second.notification.id }
+                            )
+                        }
+                        return@forEach
+                    }
                     val day = dayLabel(item.notification.postedAt)
                     if (day != lastDay) {
                         lastDay = day
@@ -219,6 +266,7 @@ fun PendingBoxScreen(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -345,14 +393,7 @@ private fun confirmItem(
         parsed.isExpense == false -> TransactionType.INCOME
         else -> TransactionType.EXPENSE
     }
-    val accountId = AccountInference.infer(
-        bankMatchedAccountId = parsed.bankHint?.let { hint ->
-            accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }?.id
-        },
-        merchantHistoryAccountId = parsed.merchant?.let { merchantLastAccount[it] },
-        sourcePackage = item.notification.packageName,
-        candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
-    ) ?: accounts.firstOrNull()?.id ?: return
+    val accountId = inferAccountId(item, accounts, merchantLastAccount) ?: accounts.firstOrNull()?.id ?: return
     viewModel.confirmNotification(
         notificationId = item.notification.id,
         accountId = accountId,
@@ -365,6 +406,59 @@ private fun confirmItem(
         bankCardTail = parsed.cardTail,
         channel = AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)
     )
+}
+
+private fun inferAccountId(item: PendingItem, accounts: List<AccountEntity>, merchantLastAccount: Map<String, String>): String? =
+    AccountInference.infer(
+        bankMatchedAccountId = item.parsed.bankHint?.let { hint ->
+            accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }?.id
+        },
+        merchantHistoryAccountId = item.parsed.merchant?.let { merchantLastAccount[it] },
+        sourcePackage = item.notification.packageName,
+        candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
+    )
+
+/** 同额转出+转入合并卡（REQ 待确认交易类型§4）：确认直接记账户转账，可「分开处理」恢复独立卡片 */
+@Composable
+private fun TransferPairCard(
+    outItem: PendingItem,
+    inItem: PendingItem,
+    accounts: List<AccountEntity>,
+    merchantLastAccount: Map<String, String>,
+    viewModel: LedgerViewModel,
+    onConfirmed: () -> Unit,
+    onSplit: () -> Unit
+) {
+    val amount = outItem.parsed.amountCents ?: 0L
+    val fromId = inferAccountId(outItem, accounts, merchantLastAccount).orEmpty()
+    val toId = inferAccountId(inItem, accounts, merchantLastAccount).orEmpty()
+    GlassCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("账户转账", Modifier.weight(1f), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(formatMoney(amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineSmall, color = BoxGray)
+            }
+            Text(
+                "${outItem.notification.sourceLabel ?: outItem.notification.packageName} 转出 → ${inItem.notification.sourceLabel ?: inItem.notification.packageName} 转入",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text("${formatTime(outItem.notification.postedAt)} · 同额反向自动合并", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = fromId.isNotBlank() && toId.isNotBlank() && amount > 0,
+                    onClick = {
+                        viewModel.confirmTransferPair(outItem.notification.id, inItem.notification.id, fromId, toId, amount, "账户转账（通知合并）")
+                        onConfirmed()
+                    }
+                ) { Text("确认转账") }
+                TextButton(onClick = onSplit) { Text("分开处理") }
+            }
+        }
+    }
 }
 
 /** 今天 / 昨天 / M月d日 的日期分隔（REQ 待确认箱§9） */
