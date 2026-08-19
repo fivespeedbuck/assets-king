@@ -43,8 +43,6 @@ import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.WindfallEntity
-import com.assetsking.ledger.DetectedRecurring
-import com.assetsking.ledger.NecessaryLivingSuggestion
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.ChipRow
@@ -76,18 +74,11 @@ fun SettingsScreen(
     onAddCustomCategory: (String) -> Unit,
     onDeleteCustomCategory: (String) -> Unit,
     monthlyIncomeCents: Long = 0,
-    necessaryLivingCents: Long = 0,
     onSetMonthlyIncome: (Long) -> Unit = {},
-    onSetNecessaryLiving: (Long) -> Unit = {},
     listenerStatus: ListenerStatus = ListenerStatus.OK,
     notificationSources: Map<String, String> = emptyMap(),
     notificationWhitelist: Set<String> = emptySet(),
     onSetNotificationWhitelist: (Set<String>) -> Unit = {},
-    necessaryLivingSuggestion: NecessaryLivingSuggestion? = null,
-    detectedRecurring: List<DetectedRecurring> = emptyList(),
-    uncategorized: Pair<Int, Long> = 0 to 0L,
-    onConfirmDetectedRecurring: (DetectedRecurring) -> Unit = {},
-    onRefreshSpendPatterns: () -> Unit = {},
     windfalls: List<WindfallEntity> = emptyList(),
     currentTotalDebtCents: Long = 0,
     onSaveWindfall: (WindfallEntity) -> Unit = {},

@@ -14,7 +14,6 @@ import com.assetsking.usecase.ProcessPendingUseCase
 import com.assetsking.usecase.RecordTransactionUseCase
 import com.assetsking.usecase.RecordTransferUseCase
 import com.assetsking.usecase.SeedAccountsUseCase
-import com.assetsking.usecase.SpendPatternsUseCase
 import com.assetsking.usecase.UpdateCategoryUseCase
 import java.util.concurrent.TimeUnit
 
@@ -47,5 +46,4 @@ class AssetsKingApplication : Application() {
     val updateCategory by lazy { UpdateCategoryUseCase(repository) }
     val getV5Metrics by lazy { GetV5MetricsUseCase(repository) }
     val processPending by lazy { ProcessPendingUseCase(repository) }
-    val spendPatterns by lazy { SpendPatternsUseCase(repository) }
 }

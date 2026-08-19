@@ -1320,13 +1320,8 @@ class LedgerRepository(
         prefs.edit().putLong("v5_monthly_income_cents", cents).apply()
     }
 
-    private val _necessaryLivingCents = MutableStateFlow(prefs.getLong("v5_necessary_living_cents", 0L))
-    val necessaryLivingCents: Flow<Long> = _necessaryLivingCents
-
-    fun setNecessaryLivingCents(cents: Long) {
-        _necessaryLivingCents.value = cents
-        prefs.edit().putLong("v5_necessary_living_cents", cents).apply()
-    }
+    // 必要生活 = 预算合计（GetV5MetricsUseCase）；旧手填值只作没设预算时的回退，不再提供编辑入口（REQ 旧功能清理§3）
+    val necessaryLivingCents: Flow<Long> = MutableStateFlow(prefs.getLong("v5_necessary_living_cents", 0L))
 
     // ── 非必要消费分类（决定"自由消费"要扣哪些已花支出）──
 

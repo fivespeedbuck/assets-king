@@ -45,13 +45,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
-    val necessaryLivingCents by model.necessaryLivingCents.collectAsStateWithLifecycle(initialValue = 0L)
     val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
-    val necessaryLivingSuggestion by model.necessaryLivingSuggestion.collectAsStateWithLifecycle()
-    val detectedRecurring by model.detectedRecurring.collectAsStateWithLifecycle()
-    val uncategorized by model.uncategorized.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
     var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
@@ -167,18 +163,11 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     onAddCustomCategory = { model.addCustomCategory(it) },
                     onDeleteCustomCategory = { model.deleteCustomCategory(it) },
                     monthlyIncomeCents = monthlyIncomeCents,
-                    necessaryLivingCents = necessaryLivingCents,
                     onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
-                    onSetNecessaryLiving = { model.setNecessaryLivingCents(it) },
                     listenerStatus = listenerStatus,
                     notificationSources = notificationSources,
                     notificationWhitelist = notificationWhitelist,
                     onSetNotificationWhitelist = { model.setNotificationWhitelist(it) },
-                    necessaryLivingSuggestion = necessaryLivingSuggestion,
-                    detectedRecurring = detectedRecurring,
-                    uncategorized = uncategorized,
-                    onConfirmDetectedRecurring = { model.confirmDetectedRecurring(it) },
-                    onRefreshSpendPatterns = { model.refreshSpendPatterns() },
                     windfalls = windfalls,
                     currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
                     onSaveWindfall = { model.saveWindfall(it) },
