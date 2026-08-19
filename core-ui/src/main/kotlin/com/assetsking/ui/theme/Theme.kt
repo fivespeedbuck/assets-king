@@ -25,9 +25,11 @@ enum class AppTheme(val key: String, val label: String) {
     }
 }
 
-private fun lightScheme(primary: Color) = lightColorScheme(
+private fun lightScheme(primary: Color, primaryContainer: Color, onPrimaryContainer: Color) = lightColorScheme(
     primary = primary,
     onPrimary = Color.White,
+    primaryContainer = primaryContainer,
+    onPrimaryContainer = onPrimaryContainer,
     background = SurfaceLight,
     surface = SurfaceLight,
     onBackground = TextPrimaryLight,
@@ -55,10 +57,10 @@ fun AssetsKingTheme(
 ) {
     MaterialTheme(
         colorScheme = when (theme) {
-            AppTheme.LIGHT_GREEN -> lightScheme(ThemePrimaryGreen)
-            AppTheme.SKY_BLUE -> lightScheme(ThemePrimaryBlue)
-            AppTheme.VIOLET -> lightScheme(ThemePrimaryViolet)
-            AppTheme.WARM -> lightScheme(ThemePrimaryWarm)
+            AppTheme.LIGHT_GREEN -> lightScheme(ThemePrimaryGreen, ThemePrimaryGreenSoft, ThemePrimaryGreenSoftText)
+            AppTheme.SKY_BLUE -> lightScheme(ThemePrimaryBlue, ThemePrimaryBlueSoft, ThemePrimaryBlueSoftText)
+            AppTheme.VIOLET -> lightScheme(ThemePrimaryViolet, ThemePrimaryVioletSoft, ThemePrimaryVioletSoftText)
+            AppTheme.WARM -> lightScheme(ThemePrimaryWarm, ThemePrimaryWarmSoft, ThemePrimaryWarmSoftText)
             AppTheme.LONG_NEST -> LongNestScheme
         },
         typography = AssetsKingTypography,

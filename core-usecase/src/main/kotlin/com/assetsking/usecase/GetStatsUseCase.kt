@@ -91,8 +91,11 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
             val monthLabel = fmt.format(Date(start))
             val txs = repository.transactionsInRange(start, end)
             // 支出 = 支出流水 − 已关联退款 − 已报销覆盖（退款不计收入 REQ 收入§5；报销到账冲减 REQ 报销§5）
+            // 审核 BUG-7 修复：退款冲减需校验原消费在本月窗口内（与上方 categorySlices 口径一致），
+            // 否则跨月退款会把本月支出冲成虚低，导致环形图与趋势图数字不一致。
+            val txIds = txs.mapTo(HashSet()) { it.id }
             val refundOffset = txs
-                .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null }
+                .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null && it.refundOfId in txIds }
                 .sumOf { it.amountCents }
             val reimbursementOffset = txs
                 .filter { it.type == TransactionType.EXPENSE.name }

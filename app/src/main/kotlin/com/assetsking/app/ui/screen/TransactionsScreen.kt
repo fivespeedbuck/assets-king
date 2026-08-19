@@ -173,7 +173,9 @@ fun TransactionsScreen(
     }
 
     val rangeTxs = state.transactions.filter { it.occurredAt in rangeStart..rangeEnd }
-    val refundOffset = rangeTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+    // 审核 BUG-3 修复：退款冲减需校验原消费在本时间范围内，否则跨月退款把本范围支出冲成虚低。
+    val rangeTxIds = rangeTxs.mapTo(HashSet()) { it.id }
+    val refundOffset = rangeTxs.filter { it.type == "REFUND" && it.refundOfId != null && it.refundOfId in rangeTxIds }.sumOf { it.amountCents }
     val reimbOffset = rangeTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
     val monthIncome = rangeTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
     val monthExpense = (rangeTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)

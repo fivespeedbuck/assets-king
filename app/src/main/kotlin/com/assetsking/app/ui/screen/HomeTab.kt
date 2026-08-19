@@ -57,6 +57,7 @@ import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionType
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.ui.component.GlassCard
+import com.assetsking.ui.format.BigMoney
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.usecase.GetStatsUseCase
@@ -109,7 +110,9 @@ fun HomeTab(
     val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
     val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
     val monthIncome = monthTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
-    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+    // 审核 BUG-3 修复：退款冲减需校验原消费在本月内，否则跨月退款把本月支出冲成虚低。
+    val monthTxIds = monthTxs.mapTo(HashSet()) { it.id }
+    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null && it.refundOfId in monthTxIds }.sumOf { it.amountCents }
     val reimbOffset = monthTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
     val monthExpense = (monthTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)
     val monthBalance = monthIncome - monthExpense
@@ -147,11 +150,14 @@ fun HomeTab(
                         // 总资产 / 总欠款 左右并列
                         Column(Modifier.weight(1f).clickable { showAssetAccounts = true }) {
                             Text("总资产", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(money(state.v5?.availableCashCents ?: 0L), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            // 大金额整数突出小数弱化（REQ 首页UI§15）；隐私模式固定 ••••（§9）
+                            if (privacy) Text("••••", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            else BigMoney(state.v5?.availableCashCents ?: 0L, color = MaterialTheme.colorScheme.primary)
                         }
                         Column(Modifier.weight(1f).clickable { showDebtAccounts = true }, horizontalAlignment = Alignment.End) {
                             Text("总欠款", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(money(state.v5?.totalDebtCents ?: 0L), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = HomeRed)
+                            if (privacy) Text("••••", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = HomeRed)
+                            else BigMoney(state.v5?.totalDebtCents ?: 0L, color = HomeRed)
                         }
                         // 隐私开关（REQ 首页UI§9）
                         TextButton(onClick = {
@@ -350,8 +356,10 @@ private fun HomeModuleCard(
                     Text("${due.size} 笔 · 待扣 ${money(due.sumOf { it.amountCents })}", style = MaterialTheme.typography.bodyMedium)
                 }
                 "week" -> {
+                    // 审核 BUG-3 修复：退款冲减需校验原消费在近 7 日内。
+                    val weekTxIds = weekTxs.mapTo(HashSet()) { it.id }
                     val spend = (weekTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents }
-                        - weekTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+                        - weekTxs.filter { it.type == "REFUND" && it.refundOfId != null && it.refundOfId in weekTxIds }.sumOf { it.amountCents }
                         - weekTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }).coerceAtLeast(0L)
                     Text("近 7 日支出", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Text(money(spend), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = HomeRed)
@@ -469,6 +477,8 @@ private fun VaultStatusCard(
     // 重连补扫中（服务 onListenerConnected 里跑 SmsRescan 期间）
     val rescanning by AssetsNotificationListenerService.rescanning.collectAsStateWithLifecycle()
     val smsGranted = rememberSmsGranted()
+    // 金库详情弹窗（审核 J-1 修复：入库状态点击区原为空实现，REQ 首页UI§19 要求可进入金库详情）
+    var showDetail by remember { mutableStateOf(false) }
 
     // REQ 监听§15/§21：通知使用权缺失红「自动记账已中断」；仅短信缺失橙「短信补扫未开启」；
     // 断开红「入库暂时中断」；重连补扫中「恢复中」
@@ -478,6 +488,13 @@ private fun VaultStatusCard(
         rescanning -> "恢复中 · 补扫中" to MaterialTheme.colorScheme.primary
         !smsGranted -> "短信补扫未开启" to HomeOrange
         else -> "金库正常" to MaterialTheme.colorScheme.primary
+    }
+    // 金库警示背景（REQ 首页UI§22）：恢复中/权限缺失/漏收用浅橙/浅红警示背景，正常不加深底色
+    val warnBg = when {
+        listenerStatus == ListenerStatus.DISABLED || listenerStatus == ListenerStatus.DISCONNECTED ->
+            HomeRed.copy(alpha = 0.12f)
+        rescanning || !smsGranted -> HomeOrange.copy(alpha = 0.16f)
+        else -> Color.Transparent
     }
     // 漏收窗口（REQ 监听§21）：掉线期间的账目靠短信兜底补收，文案随权限状态变化
     val gapHint = when {
@@ -491,14 +508,20 @@ private fun VaultStatusCard(
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("金库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Text(statusLabel, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = statusColor)
+                Text(
+                    statusLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = statusColor,
+                    modifier = Modifier.background(warnBg, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp)
+                )
             }
             Spacer(Modifier.height(4.dp))
             Text(
                 if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().clickable { }
+                modifier = Modifier.fillMaxWidth().clickable { showDetail = true }
             )
             gapHint?.let {
                 Text(
@@ -534,5 +557,42 @@ private fun VaultStatusCard(
                 }
             }
         }
+    }
+
+    // 金库详情弹窗（REQ 首页UI§19「入库状态进入金库详情」）
+    if (showDetail) {
+        AlertDialog(
+            onDismissRequest = { showDetail = false },
+            title = { Text("金库状态", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("监听状态：$statusLabel", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (lastReceivedAt > 0) "最近入库：${formatTime(lastReceivedAt)}" else "最近入库：等待第一笔账目",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        if (smsGranted) "短信兜底：已开启" else "短信兜底：未开启",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    gapHint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (smsGranted) HomeOrange else HomeRed) }
+                    Text(
+                        "银行短信和支付通知先入库，你确认后才正式记账。监听中断期间的账目可靠短信兜底补收。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                if (listenerStatus != ListenerStatus.OK) {
+                    TextButton(onClick = { openListenerSettings(context); showDetail = false }) {
+                        Text(if (listenerStatus == ListenerStatus.DISABLED) "去开启" else "去重绑")
+                    }
+                } else {
+                    TextButton(onClick = { showDetail = false }) { Text("知道了") }
+                }
+            },
+            dismissButton = {}
+        )
     }
 }

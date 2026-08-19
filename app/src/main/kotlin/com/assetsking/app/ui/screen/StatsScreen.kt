@@ -183,20 +183,32 @@ fun StatsScreen(
                             val parent = categories.firstOrNull { it.id == parentId }
                             Triple(parent?.name ?: "其他", total, catColor(i))
                         }
-                        // 双层环（REQ 统计§14）：内圈一级占比、外圈必要/非必要/默认构成
+                        // 双层环（REQ 统计§14）：内圈一级占比、外圈显示各一级分类内部的必要/非必要构成
+                        // 审核 J-2 修复：外圈原只按全局必要/非必要/默认三段，与「各一级分类内部构成」口径不符。
+                        // 改为每个一级分类在外圈拆成必要(实色)/非必要(半透明)两段，顺序与内圈一致。
                         val defaultSpent = expenses.filter { it.necessity == null }.sumOf { netOf(it) }
+                        val outerSlices = topLevelTotals.mapIndexed { i, (parentId, _) ->
+                            val color = catColor(i)
+                            val sub = expenses.filter { tx ->
+                                (categories.firstOrNull { it.name == tx.category }?.parentId
+                                    ?: categories.firstOrNull { it.id == tx.category }?.id
+                                    ?: "other") == parentId
+                            }
+                            val nec = sub.filter { it.necessity == true }.sumOf { netOf(it) }
+                            val opt = sub.filter { it.necessity != true }.sumOf { netOf(it) } // 非必要 + 默认
+                            listOfNotNull(
+                                if (nec > 0) nec to color else null,
+                                if (opt > 0) opt to color.copy(alpha = 0.4f) else null
+                            )
+                        }.flatten()
                         DonutChart(
                             totalCents = monthExpense,
                             slices = slices.map { (_, total, color) -> total to color },
-                            outerSlices = listOf(
-                                necessarySpent to StatsGreen,
-                                optionalSpent to StatsRed,
-                                defaultSpent to MaterialTheme.colorScheme.surfaceVariant
-                            ).filter { it.first > 0 },
+                            outerSlices = outerSlices,
                             modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
                         )
                         Text(
-                            "外圈：必要 ${formatMoney(necessarySpent)} · 非必要 ${formatMoney(optionalSpent)} · 默认 ${formatMoney(defaultSpent)}",
+                            "外圈：每个分类实色=必要 · 浅色=非必要｜合计 必要 ${formatMoney(necessarySpent)} · 非必要 ${formatMoney(optionalSpent)} · 默认 ${formatMoney(defaultSpent)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,

@@ -48,6 +48,8 @@ fun ReimbursementScreen(
     val monthReimbursed = reimbursableTxs.filter { it.occurredAt in monthStart..monthEnd }.sumOf { it.reimbursedCents }
     val pending = reimbursableTxs.filter { it.isReimbursable && it.reimbursedCents < it.amountCents }
         .sortedByDescending { it.occurredAt }
+    // 审核 J-4 修复：补「待报销总额」（REQ 报销§2 要求显示本月待报销金额）。
+    val pendingTotal = pending.sumOf { (it.amountCents - it.reimbursedCents).coerceAtLeast(0L) }
 
     Scaffold(
         topBar = {
@@ -61,10 +63,15 @@ fun ReimbursementScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             GlassCard {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                    Text("本月已报销", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(formatMoney(monthReimbursed), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = ReimbGreen)
-                    Text("报销到账从消费/分类预算/自由开销冲减，不计入普通收入", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("本月已报销", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatMoney(monthReimbursed), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = ReimbGreen)
+                    }
+                    Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                        Text("待报销总额", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatMoney(pendingTotal), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = ReimbOrange)
+                    }
                 }
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {

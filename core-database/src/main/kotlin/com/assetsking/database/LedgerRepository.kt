@@ -54,14 +54,29 @@ class LedgerRepository(
     private val categorizer = RuleBasedCategorizer()
 
     suspend fun seedKnownAccounts() {
-        database.accountDao().insertAll(
-            listOf(
-                AccountEntity("cmb", "招商银行", AccountType.ASSET.name, 0),
-                AccountEntity("nbcb", "宁波银行", AccountType.ASSET.name, 0),
-                AccountEntity("cgb", "广发信用卡", AccountType.CREDIT.name, 0),
-                AccountEntity("huabei", "花呗", AccountType.CREDIT.name, 0)
-            )
+        val seeds = listOf(
+            AccountEntity("cmb", "招商银行", AccountType.ASSET.name, 0),
+            AccountEntity("nbcb", "宁波银行", AccountType.ASSET.name, 0),
+            AccountEntity("cgb", "广发信用卡", AccountType.CREDIT.name, 0),
+            AccountEntity("huabei", "花呗", AccountType.CREDIT.name, 0)
         )
+        database.accountDao().insertAll(seeds)
+        // 为尚无检查点的账户补 opening 检查点（审核 BUG-1 修复）：种子账户用 insertAll 直插、
+        // 不建检查点会导致 recomputeBalance 因 latestFor()==null 直接 return，余额永不更新。
+        // 仅在该账户没有任何检查点时补（latestFor 为 null），不覆盖已有银行/手动检查点。
+        seeds.forEach { acc ->
+            if (database.balanceCheckpointDao().latestFor(acc.id) == null) {
+                database.balanceCheckpointDao().upsert(
+                    BalanceCheckpointEntity(
+                        id = "opening_${acc.id}",
+                        accountId = acc.id,
+                        balanceCents = acc.balanceCents,
+                        checkedAt = Long.MIN_VALUE,
+                        source = "OPENING"
+                    )
+                )
+            }
+        }
     }
 
     fun categorize(merchant: String?, note: String? = null): TransactionCategory =
@@ -269,7 +284,14 @@ class LedgerRepository(
                 val content = context.contentResolver.openInputStream(uri)?.readBytes() ?: return@runCatching false
                 val dbBytes = com.assetsking.ledger.PinCipher.decrypt(content, pin)
                 backupNow(manual = true)
-                context.getDatabasePath("assets-king.db").writeBytes(dbBytes)
+                // 审核 BUG-2 修复：恢复前关闭数据库连接并删除 -wal/-shm。
+                // 否则当前进程的 WAL 里未 checkpoint 的数据会与覆盖后的主库混用，
+                // 导致数据损坏或「恢复到旧数据」。关闭后本实例不可再用，调用方需重启进程。
+                val dbFile = context.getDatabasePath("assets-king.db")
+                runCatching { database.openHelper.close() }
+                java.io.File(dbFile.path + "-wal").delete()
+                java.io.File(dbFile.path + "-shm").delete()
+                dbFile.writeBytes(dbBytes)
                 // 偏好设置同步恢复：同名手动备份的 prefs 文件（若存在）
                 val prefsFile = java.io.File(dir, "manual_$stamp.prefs.enc")
                 if (prefsFile.exists()) {
@@ -1266,7 +1288,17 @@ class LedgerRepository(
             )
         }
         val unpaidSum = insts.filter { it.status != InstallmentStatus.PAID }.sumOf { it.principal.cents }
-        database.loanPlanDao().upsert(plan.copy(installmentsJson = installmentsToJson(insts), remainingPrincipalCents = unpaidSum))
+        // 审核 BUG-4 修复：编辑期次 = 用户以最新期次计划为准，剩余本金直接取未还期次本金和；
+        // 同时把 earlyRepaidCents 归零——否则部分提前还款（addLoanPrepayment 只加 earlyRepaidCents、
+        // 不重排期次）后，这里用旧期次的 unpaidSum 覆盖会把已提前还掉的本金重新加回剩余本金，
+        // 导致总负债虚高。编辑期次即视为新计划已体现提前还款，旧 earlyRepaidCents 不再适用。
+        database.loanPlanDao().upsert(
+            plan.copy(
+                installmentsJson = installmentsToJson(insts),
+                remainingPrincipalCents = unpaidSum,
+                earlyRepaidCents = 0L
+            )
+        )
     }
 
     // ── V5 借款到账 / 贷款还款（铁律：借款不是收入，还款不是消费）──

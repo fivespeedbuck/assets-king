@@ -126,7 +126,8 @@ fun TransactionEditorScreen(
             }
         )
     }
-    var incomeSub by remember { mutableStateOf(IncomeSub.INCOME) }
+    // 审核 BUG-6 修复：退款通知预填「退款」子类型（原固定 INCOME，用户不改就把退款记成收入）。
+    var incomeSub by remember { mutableStateOf(if (parsed?.isRefund == true) IncomeSub.REFUND else IncomeSub.INCOME) }
     var repaySub by remember { mutableStateOf(RepaySub.CREDIT_CARD) }
     var amountExpr by remember { mutableStateOf(parsed?.amountCents?.let { "%.2f".format(it / 100.0) } ?: "") }
     var occurredAt by remember { mutableStateOf(pendingItem?.notification?.postedAt ?: System.currentTimeMillis()) }

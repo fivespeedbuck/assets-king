@@ -62,14 +62,17 @@ fun BillsScreen(
     ) {
         item {
             // 本月已扣/待扣汇总（REQ 导航§3）
+            // 审核 J-3 修复：按自然月统计（原按 nextRunAt±15 天窗口，月初/月末会跨月，与「本月」口径不符）。
+            val zone0 = ZoneId.systemDefault()
+            val monthStart0 = YearMonth.now().atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli()
+            val monthEnd0 = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli() - 1
             val claimedTxs = transactions.filter { tx ->
-                sorted.any { rule ->
-                    tx.recurringRuleId == rule.id &&
-                        kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000
-                }
+                tx.occurredAt in monthStart0..monthEnd0 &&
+                    tx.recurringRuleId != null && sorted.any { it.id == tx.recurringRuleId }
             }
             val pendingSum = sorted.filter { rule ->
-                transactions.none { tx -> tx.recurringRuleId == rule.id && kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000 }
+                rule.nextRunAt in monthStart0..monthEnd0 &&
+                    transactions.none { tx -> tx.recurringRuleId == rule.id && tx.occurredAt in monthStart0..monthEnd0 }
             }.sumOf { it.amountCents }
             GlassCard {
                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {

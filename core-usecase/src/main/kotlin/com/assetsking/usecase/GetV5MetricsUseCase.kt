@@ -141,9 +141,13 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
                 V5AccountInput(it.id, it.type, it.balanceCents, it.statementOriginalDueCents, it.pendingCents, it.statementDay, it.dueDay)
             },
             plans = base.plans.map { repository.v5PlanInput(it) },
-            cardInstallments = base.cardInstallments.map {
-                V5CardInstallmentInput(it.cardAccountId, it.remainingPrincipalCents, it.monthlyPaymentCents, it.periodsRemaining)
-            },
+            // 审核 BUG-5 修复：过滤已归档卡账户的分期，与上方 accounts 的 !archived 口径一致，
+            // 否则已归档卡的分期仍计入 cardInstallmentRemainingCents（展示口径不一致）。
+            cardInstallments = base.cardInstallments
+                .filter { ci -> base.accounts.none { it.id == ci.cardAccountId && it.archived } }
+                .map {
+                    V5CardInstallmentInput(it.cardAccountId, it.remainingPrincipalCents, it.monthlyPaymentCents, it.periodsRemaining)
+                },
             windfalls = cfg.windfalls.map {
                 V5WindfallInput(
                     expectedAmountCents = it.expectedAmountCents,

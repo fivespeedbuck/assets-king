@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -85,6 +86,14 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     NavigationBarItem(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
+                        // 贴底扁平导航（REQ 视觉§8）：当前项主题色，其余中性深灰，去选中胶囊底座
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            indicatorColor = Color.Transparent
+                        ),
                         // 线性图标+中文，不用 Emoji（REQ 视觉§4）
                         icon = {
                             Icon(

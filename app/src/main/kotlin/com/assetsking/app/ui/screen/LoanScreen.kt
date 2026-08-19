@@ -11,12 +11,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -337,7 +342,12 @@ fun LoanScreen(
                     // 手风琴原地展开，一次一笔（REQ 贷款页§14）
                     val expanded = expandedPlanId == plan.id
                     TextButton(onClick = { expandedPlanId = if (expanded) null else plan.id }) {
-                        Text(if (expanded) "收起 ▲" else "展开 ▼", style = MaterialTheme.typography.labelSmall)
+                        Text(if (expanded) "收起" else "展开", style = MaterialTheme.typography.labelSmall)
+                        Icon(
+                            if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                     if (expanded && installments.isNotEmpty()) {
                         Column(Modifier.fillMaxWidth().padding(start = 8.dp)) {
@@ -420,7 +430,12 @@ fun LoanScreen(
             if (settledPlans.isNotEmpty()) {
                 item {
                     TextButton(onClick = { showSettled = !showSettled }) {
-                        Text("已结清 ${settledPlans.size} 笔 ${if (showSettled) "▲" else "▼"}", style = MaterialTheme.typography.labelMedium)
+                        Text("已结清 ${settledPlans.size} 笔", style = MaterialTheme.typography.labelMedium)
+                        Icon(
+                            if (showSettled) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
                 if (showSettled) {

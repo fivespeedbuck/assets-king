@@ -21,7 +21,8 @@ import com.assetsking.ui.theme.GlassCardDark
 import com.assetsking.ui.theme.GlassCardLight
 
 /**
- * 毛玻璃风格卡片。浅色模式半透白、深色模式半透黑，带细边框高光。
+ * 实体卡片（REQ 主题§2 / 首页UI§10-11）：浅色模式不透明白底 + 细灰边框 + 大圆角，
+ * 删除毛玻璃/半透明叠层/背景模糊，基本不依赖阴影。全 App 卡片共用此组件。
  * 内容区有默认 20dp padding，可通过 [contentPadding] 覆盖。
  */
 @Composable
@@ -38,7 +39,7 @@ fun GlassCard(
         modifier = modifier
             .clip(CardShape)
             .background(glassBg)
-            .border(0.5.dp, borderColor, CardShape)
+            .border(1.dp, borderColor, CardShape)
             .then(contentPadding)
     ) {
         Column { content() }

@@ -398,6 +398,9 @@ private fun confirmItem(
     val parsed = item.parsed
     val amount = parsed.amountCents ?: return
     val type = when {
+        // 审核 BUG-6 修复：优先识别退款（isRefund），否则退款被记成 INCOME，
+        // 虚增收入且不冲减原消费（REQ 退款§8/收入§5）。
+        parsed.isRefund -> TransactionType.REFUND
         parsed.isExpense == false -> TransactionType.INCOME
         else -> TransactionType.EXPENSE
     }
