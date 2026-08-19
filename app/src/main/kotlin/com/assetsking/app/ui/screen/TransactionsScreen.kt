@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
@@ -27,6 +29,9 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +40,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +58,7 @@ import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
+import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.IconLibrary
@@ -94,11 +101,12 @@ private fun amountPrefixOf(type: String): String = when (type) {
  * 流水页（REQ 流水列表与详情 §1-22）：月度摘要卡、连续列表倒序、月历净变化、
  * 搜索与多条件筛选、长按多选批量操作、点击编辑。
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TransactionsScreen(
     state: LedgerUiState,
     categories: List<CategoryEntity>,
+    merchants: List<MerchantEntity>,
     model: LedgerViewModel,
     onOpenEditor: () -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit,
@@ -119,6 +127,17 @@ fun TransactionsScreen(
     var bulkDelete by remember { mutableStateOf(false) }
     var editingTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
+    // 双视图（REQ 流水商户库分类库入口 §1）：流水记录 / 商户与分类库
+    var viewMode by remember { mutableStateOf("list") }
+    // 时间范围（REQ 流水§1）：MONTH=按月 / LAST3=近三月 / CUSTOM=自定义起止
+    var rangeMode by remember { mutableStateOf("MONTH") }
+    var customStart by remember { mutableStateOf<LocalDate?>(null) }
+    var customEnd by remember { mutableStateOf<LocalDate?>(null) }
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showEndPicker by remember { mutableStateOf(false) }
+    // 月历点击当日（REQ 流水§18）：选中后列表只看当日
+    var dayFilter by remember { mutableStateOf<LocalDate?>(null) }
+
     // 筛选条件（REQ 流水§11 多条件组合）
     var fTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var fCategory by remember { mutableStateOf<String?>(null) }
@@ -131,32 +150,46 @@ fun TransactionsScreen(
     androidx.compose.runtime.LaunchedEffect(initialFilterMonth, initialFilterCategory) {
         if (initialFilterMonth != null) {
             month = initialFilterMonth
+            rangeMode = "MONTH"
+            dayFilter = null
             fCategory = initialFilterCategory
         }
         onDrillConsumed()
     }
 
     val zone = ZoneId.systemDefault()
-    val monthStart = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
-    val monthEnd = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+    val (rangeStart, rangeEnd) = when (rangeMode) {
+        "CUSTOM" -> {
+            val s = customStart ?: month.atDay(1)
+            val e = customEnd ?: month.atEndOfMonth()
+            s.atStartOfDay(zone).toInstant().toEpochMilli() to e.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+        }
+        "LAST3" -> {
+            month.minusMonths(2).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() to
+                month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+        }
+        else -> month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() to
+            month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+    }
 
-    val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
-    val refundOffset = monthTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
-    val reimbOffset = monthTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
-    val monthIncome = monthTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
-    val monthExpense = (monthTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)
+    val rangeTxs = state.transactions.filter { it.occurredAt in rangeStart..rangeEnd }
+    val refundOffset = rangeTxs.filter { it.type == "REFUND" && it.refundOfId != null }.sumOf { it.amountCents }
+    val reimbOffset = rangeTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
+    val monthIncome = rangeTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
+    val monthExpense = (rangeTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)
 
     // 筛选 + 搜索（REQ 流水§11-12）
     val accountNameOf = { id: String -> state.accounts.firstOrNull { it.id == id }?.name ?: "" }
     val minCents = fMinCents.toDoubleOrNull()?.times(100)?.toLong()
     val maxCents = fMaxCents.toDoubleOrNull()?.times(100)?.toLong()
-    val filtered = monthTxs.filter { tx ->
+    val filtered = rangeTxs.filter { tx ->
         (fTypes.isEmpty() || tx.type in fTypes) &&
             (fCategory == null || tx.category == fCategory) &&
             (fNecessity == null || tx.necessity == fNecessity) &&
             (fChannel == null || tx.channel == fChannel) &&
             (minCents == null || tx.amountCents >= minCents) &&
             (maxCents == null || tx.amountCents <= maxCents) &&
+            (dayFilter == null || Instant.ofEpochMilli(tx.occurredAt).atZone(zone).toLocalDate() == dayFilter) &&
             (searchQuery.isBlank() ||
                 (tx.merchant?.contains(searchQuery) == true) ||
                 (tx.note?.contains(searchQuery) == true) ||
@@ -165,6 +198,36 @@ fun TransactionsScreen(
     }.sortedByDescending { it.occurredAt }
 
     Column(Modifier.fillMaxSize()) {
+        // ── 双视图切换（REQ 流水商户库分类库入口 §1）──
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = viewMode == "list", onClick = { viewMode = "list" }, label = { Text("流水记录") })
+            FilterChip(selected = viewMode == "library", onClick = { viewMode = "library" }, label = { Text("商户与分类库") })
+        }
+        if (viewMode == "library") {
+            MerchantCategoryLibrary(
+                merchants = merchants,
+                categories = categories,
+                viewModel = model
+            )
+            return@Column
+        }
+        // ── 时间范围快速切换（REQ 流水§1）──
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = rangeMode == "MONTH" && month == YearMonth.now(), onClick = { rangeMode = "MONTH"; month = YearMonth.now(); dayFilter = null }, label = { Text("本月") })
+            FilterChip(selected = rangeMode == "MONTH" && month == YearMonth.now().minusMonths(1), onClick = { rangeMode = "MONTH"; month = YearMonth.now().minusMonths(1); dayFilter = null }, label = { Text("上月") })
+            FilterChip(selected = rangeMode == "LAST3", onClick = { rangeMode = "LAST3"; dayFilter = null }, label = { Text("近三月") })
+            FilterChip(selected = rangeMode == "CUSTOM", onClick = { rangeMode = "CUSTOM"; dayFilter = null }, label = { Text("自定义") })
+            if (dayFilter != null) {
+                FilterChip(selected = true, onClick = { dayFilter = null }, label = { Text("当日 ${dayFilter!!.monthValue}月${dayFilter!!.dayOfMonth}日 ✕") })
+            }
+        }
+        if (rangeMode == "CUSTOM") {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { showStartPicker = true }) { Text("起 ${customStart ?: month.atDay(1)}", style = MaterialTheme.typography.labelMedium) }
+                Text("至", style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = { showEndPicker = true }) { Text("止 ${customEnd ?: month.atEndOfMonth()}", style = MaterialTheme.typography.labelMedium) }
+            }
+        }
         // ── 月度摘要卡（REQ 流水§16/§19）──
         Row(
             Modifier.fillMaxWidth().padding(16.dp, 12.dp),
@@ -222,8 +285,11 @@ fun TransactionsScreen(
         }
 
         if (calendarMode) {
-            // ── 月历视图（REQ 流水§17-18）──
-            CalendarView(month, monthTxs)
+            // ── 月历视图（REQ 流水§17-18）：点当日进当日流水 ──
+            CalendarView(month, rangeTxs.filter { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate().let { d -> d.year == month.year && d.monthValue == month.monthValue } }) { day ->
+                dayFilter = month.atDay(day)
+                calendarMode = false
+            }
         } else {
             // ── 连续列表（REQ 流水§1-3/§15/§21）──
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -270,6 +336,32 @@ fun TransactionsScreen(
 
     if (showMonthPicker) {
         MonthPickerDialog(initial = month, onPick = { month = it; showMonthPicker = false }, onDismiss = { showMonthPicker = false })
+    }
+    if (showStartPicker) {
+        val st = rememberDatePickerState(initialSelectedDateMillis = (customStart ?: month.atDay(1)).atStartOfDay(zone).toInstant().toEpochMilli())
+        DatePickerDialog(
+            onDismissRequest = { showStartPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    st.selectedDateMillis?.let { customStart = Instant.ofEpochMilli(it).atZone(zone).toLocalDate() }
+                    showStartPicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showStartPicker = false }) { Text("取消") } }
+        ) { DatePicker(state = st) }
+    }
+    if (showEndPicker) {
+        val st = rememberDatePickerState(initialSelectedDateMillis = (customEnd ?: month.atEndOfMonth()).atStartOfDay(zone).toInstant().toEpochMilli())
+        DatePickerDialog(
+            onDismissRequest = { showEndPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    st.selectedDateMillis?.let { customEnd = Instant.ofEpochMilli(it).atZone(zone).toLocalDate() }
+                    showEndPicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showEndPicker = false }) { Text("取消") } }
+        ) { DatePicker(state = st) }
     }
     if (showFilter) {
         FilterDialog(
@@ -393,9 +485,9 @@ private fun TransactionListRow(
     }
 }
 
-/** 月历：每日「收入−支出」净变化（REQ 流水§18）。 */
+/** 月历：每日「收入−支出」净变化（REQ 流水§18）；点当日进当日流水。 */
 @Composable
-private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>) {
+private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>, onDayClick: (Int) -> Unit) {
     val zone = ZoneId.systemDefault()
     fun at(day: Int): Long = month.atDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
     val daysInMonth = month.lengthOfMonth()
@@ -418,7 +510,10 @@ private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>) {
             Row(Modifier.fillMaxWidth()) {
                 repeat(7) { dow ->
                     val day = week * 7 + dow - firstDay + 1
-                    Box(Modifier.weight(1f).height(56.dp).padding(2.dp)) {
+                    Box(
+                        Modifier.weight(1f).height(56.dp).padding(2.dp)
+                            .clickable(enabled = day in 1..daysInMonth) { if (day in 1..daysInMonth) onDayClick(day) }
+                    ) {
                         if (day in 1..daysInMonth) {
                             val net = netByDay[day]
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -546,7 +641,7 @@ private fun BulkCategoryDialog(categories: List<CategoryEntity>, onPick: (String
         title = { Text("批量改分类") },
         text = {
             Column {
-                categories.filter { it.parentId != null && !it.isArchived }.groupBy { it.parentId }.forEach { (parentId, children) ->
+                categories.filter { it.parentId != null && !it.isArchived && it.kind == "EXPENSE" }.groupBy { it.parentId }.forEach { (parentId, children) ->
                     val parent = categories.firstOrNull { it.id == parentId }
                     Text(parent?.name ?: "其他", fontWeight = FontWeight.Bold)
                     Row {
@@ -560,4 +655,123 @@ private fun BulkCategoryDialog(categories: List<CategoryEntity>, onPick: (String
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+/** 双视图第二页：商户与分类库集中管理（REQ 流水商户库分类库入口 §2-3）。 */
+@Composable
+private fun MerchantCategoryLibrary(
+    merchants: List<MerchantEntity>,
+    categories: List<CategoryEntity>,
+    viewModel: LedgerViewModel
+) {
+    var merchantSearch by remember { mutableStateOf("") }
+    var mergeSource by remember { mutableStateOf<MerchantEntity?>(null) }
+    var showCategoryManage by remember { mutableStateOf(false) }
+    var showIncomeCategoryManage by remember { mutableStateOf(false) }
+    var newCategoryParentId by remember { mutableStateOf<String?>(null) }
+    var showNewCategory by remember { mutableStateOf(false) }
+    var newCategoryKind by remember { mutableStateOf("EXPENSE") }
+
+    fun aliasesOf(json: String): List<String> = runCatching {
+        org.json.JSONArray(json).let { arr -> (0 until arr.length()).map { arr.getString(it) } }
+    }.getOrDefault(emptyList())
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Text("交易对象库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text("标准商户/收入来源 + 原名别名 + 学习规则", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedTextField(
+            merchantSearch, { merchantSearch = it },
+            label = { Text("搜索商户/别名") },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            singleLine = true
+        )
+        val shown = merchants.filter { m ->
+            merchantSearch.isBlank() || m.id.contains(merchantSearch) || m.aliasesJson.contains(merchantSearch)
+        }
+        if (shown.isEmpty()) Text("暂无商户", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        shown.forEach { m ->
+            val aliases = aliasesOf(m.aliasesJson)
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(m.id, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOfNotNull(
+                            m.learnedType?.let { typeLabel(it) },
+                            m.learnedAccountId?.let { id -> "账户" },
+                            m.learnedCategory?.takeIf { it.isNotBlank() },
+                            if (aliases.isNotEmpty()) "别名 ${aliases.joinToString("、")}" else null
+                        ).joinToString(" · ").ifBlank { "未学习规则" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                TextButton(onClick = { mergeSource = m }) { Text("合并", style = MaterialTheme.typography.labelSmall) }
+            }
+        }
+        HorizontalDivider(Modifier.padding(vertical = 10.dp))
+        Text("分类库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Row {
+            TextButton(onClick = { showCategoryManage = true }) { Text("管理消费分类") }
+            TextButton(onClick = { showIncomeCategoryManage = true }) { Text("管理收入分类") }
+        }
+    }
+
+    // 合并对象（REQ 商户库§8）：选目标，原名进别名、流水与学习规则迁移
+    mergeSource?.let { source ->
+        val targets = merchants.filter { it.id != source.id }
+        AlertDialog(
+            onDismissRequest = { mergeSource = null },
+            title = { Text("把「${source.id}」合并到") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (targets.isEmpty()) Text("没有其他商户", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    targets.forEach { t ->
+                        Row(Modifier.fillMaxWidth().clickable {
+                            viewModel.mergeMerchants(t.id, listOf(source.id))
+                            mergeSource = null
+                        }.padding(8.dp)) { Text(t.id) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { mergeSource = null }) { Text("取消") } }
+        )
+    }
+
+    if (showCategoryManage) {
+        CategoryManageDialog(
+            categories = categories,
+            catKind = "EXPENSE",
+            onDismiss = { showCategoryManage = false },
+            onAddChild = { parentId -> newCategoryParentId = parentId; newCategoryKind = "EXPENSE"; showNewCategory = true; showCategoryManage = false },
+            viewModel = viewModel
+        )
+    }
+    if (showIncomeCategoryManage) {
+        CategoryManageDialog(
+            categories = categories,
+            catKind = "INCOME",
+            onDismiss = { showIncomeCategoryManage = false },
+            onAddChild = { parentId -> newCategoryParentId = parentId; newCategoryKind = "INCOME"; showNewCategory = true; showIncomeCategoryManage = false },
+            viewModel = viewModel
+        )
+    }
+    if (showNewCategory) {
+        val parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == newCategoryKind }
+        NewCategoryDialog(
+            parentId = newCategoryParentId,
+            parents = parents,
+            catKind = newCategoryKind,
+            onDismiss = { showNewCategory = false },
+            onCreate = { name, shortName, parentId, iconKey, defaultNecessary ->
+                viewModel.addCategoryEntity(name, shortName, parentId, iconKey, defaultNecessary, newCategoryKind)
+                showNewCategory = false
+            }
+        )
+    }
 }

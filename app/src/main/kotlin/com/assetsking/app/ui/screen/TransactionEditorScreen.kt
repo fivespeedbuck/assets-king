@@ -783,7 +783,7 @@ private fun BalancePreviewInEditor(
 // ── 分类管理（REQ 编辑器§20-23）──
 
 @Composable
-private fun CategoryManageDialog(
+internal fun CategoryManageDialog(
     categories: List<CategoryEntity>,
     catKind: String,
     onDismiss: () -> Unit,
@@ -793,6 +793,7 @@ private fun CategoryManageDialog(
     var renameTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var mergeSource by remember { mutableStateOf<CategoryEntity?>(null) }
     var mergeTarget by remember { mutableStateOf<CategoryEntity?>(null) }
+    var moveTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     val kindCats = categories.filter { it.kind == catKind }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -819,6 +820,7 @@ private fun CategoryManageDialog(
                         Row {
                             TextButton(onClick = { renameTarget = child }) { Text("改名") }
                             TextButton(onClick = { mergeSource = child }) { Text("合并") }
+                            TextButton(onClick = { moveTarget = child }) { Text("归属") }
                             TextButton(onClick = { viewModel.archiveOrDeleteCategory(child.id) }) { Text(if (child.isArchived) "恢复" else "归档") }
                         }
                     }
@@ -833,6 +835,27 @@ private fun CategoryManageDialog(
             viewModel.updateCategoryEntity(target.id, name, shortName, null)
             renameTarget = null
         }
+    }
+    // 调整归属（REQ 流水商户库入口 §2）：二级分类移到其他一级之下
+    moveTarget?.let { child ->
+        val candidates = kindCats.filter { it.parentId == null && it.id != child.parentId && !it.isArchived }
+        AlertDialog(
+            onDismissRequest = { moveTarget = null },
+            title = { Text("把「${child.name}」移动到") },
+            text = {
+                Column {
+                    if (candidates.isEmpty()) Text("没有可移动的一级分类", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    candidates.forEach { p ->
+                        Row(Modifier.fillMaxWidth().clickable {
+                            viewModel.updateCategoryEntity(child.id, null, null, p.id)
+                            moveTarget = null
+                        }.padding(8.dp)) { Text(p.name) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { moveTarget = null }) { Text("取消") } }
+        )
     }
     mergeSource?.let { source ->
         val targets = kindCats.filter { it.id != source.id && it.parentId == source.parentId }
@@ -875,7 +898,7 @@ private fun RenameCategoryDialog(target: CategoryEntity, onDismiss: () -> Unit, 
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun NewCategoryDialog(
+internal fun NewCategoryDialog(
     parentId: String?,
     parents: List<CategoryEntity>,
     catKind: String,

@@ -128,6 +128,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 TransactionsScreen(
                     state = state,
                     categories = categories,
+                    merchants = merchants,
                     model = model,
                     onOpenEditor = {
                         editorPendingItem = null

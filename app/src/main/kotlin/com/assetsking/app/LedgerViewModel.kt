@@ -416,6 +416,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.reorderCategories(orderedIds) }
     }
 
+    fun mergeMerchants(targetName: String, sourceNames: List<String>) {
+        viewModelScope.launch { repository.mergeMerchants(targetName, sourceNames) }
+    }
+
     fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
