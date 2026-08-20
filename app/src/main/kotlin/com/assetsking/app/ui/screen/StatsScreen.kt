@@ -46,9 +46,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.assetsking.app.LedgerUiState
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
@@ -172,19 +176,70 @@ fun StatsScreen(
                             categories.firstOrNull { c -> c.name == it.category }?.parentId == drill.id && it.necessity == true
                         }.sumOf { netOf(it) }
                         val optional = (total - necessary).coerceAtLeast(0L)
+                        val drillIndex = topLevelTotals.indexOfFirst { it.key == drill.id }.coerceAtLeast(0)
+                        val drillColor = catColor(drillIndex)
+                        val drillOptionalColor = drillColor.copy(alpha = 0.55f)
                         DonutChart(
                             totalCents = total,
-                            slices = listOf(necessary to StatsGreen, optional to StatsRed),
-                            modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
+                            slices = listOf(necessary to drillColor, optional to drillOptionalColor),
+                            modifier = Modifier.size(164.dp).align(Alignment.CenterHorizontally)
                         )
-                        Text("必要 ${formatMoney(necessary)} · 非必要 ${formatMoney(optional)}", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-                        Spacer(Modifier.height(6.dp))
-                        children.forEach { child ->
-                            val childTotal = expenses.filter { it.category == child.name }.sumOf { netOf(it) }
-                            if (childTotal > 0) {
-                                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(child.name)
-                                    Text(formatMoney(childTotal))
+                        Spacer(Modifier.height(14.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth(0.68f)
+                                .align(Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val necessaryColor = if (necessary > 0L) StatsGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                            val optionalColor = if (optional > 0L) StatsRed else MaterialTheme.colorScheme.onSurfaceVariant
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("必要", color = necessaryColor, style = MaterialTheme.typography.bodyMedium)
+                                Text(formatMoney(necessary), color = necessaryColor, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Text("·", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("非必要", color = optionalColor, style = MaterialTheme.typography.bodyMedium)
+                                Text(formatMoney(optional), color = optionalColor, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                        Spacer(Modifier.height(7.dp))
+                        Column(Modifier.fillMaxWidth(0.84f).align(Alignment.CenterHorizontally)) {
+                            children.forEach { child ->
+                                val childExpenses = expenses.filter { it.category == child.name }
+                                val childNecessary = childExpenses.filter { it.necessity == true }.sumOf { netOf(it) }
+                                val childOptional = childExpenses.filter { it.necessity != true }.sumOf { netOf(it) }
+                                val childTotal = childNecessary + childOptional
+                                if (childTotal > 0) {
+                                    val childTextColor = when {
+                                        childOptional == 0L -> StatsGreen
+                                        childNecessary == 0L -> StatsRed
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    }
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(Modifier.size(7.dp).background(drillColor, CircleShape))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            child.name,
+                                            color = childTextColor,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (childNecessary > 0L && childOptional > 0L) {
+                                            Text(formatMoney(childNecessary), color = StatsGreen, style = MaterialTheme.typography.labelSmall)
+                                            Text(" / ", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                                            Text(formatMoney(childOptional), color = StatsRed, style = MaterialTheme.typography.labelSmall)
+                                        } else {
+                                            Text(
+                                                formatMoney(childTotal),
+                                                color = if (childNecessary > 0L) StatsGreen else StatsRed,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -227,7 +282,12 @@ fun StatsScreen(
                             totalCents = monthExpense,
                             slices = slices.map { (_, total, color) -> total to color },
                             outerSlices = outerSlices,
-                            modifier = Modifier.size(214.dp).align(Alignment.CenterHorizontally)
+                            sliceLabels = slices.map { it.first },
+                            onSliceClick = { index ->
+                                val parentId = topLevelTotals.getOrNull(index)?.key ?: return@DonutChart
+                                categories.firstOrNull { it.id == parentId }?.let { drillCategory = it }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(184.dp)
                         )
                         CompositionLegend()
                         Spacer(Modifier.height(7.dp))
@@ -235,6 +295,7 @@ fun StatsScreen(
                         // 报销单独显示（REQ 报销§5）：本月报销到账已从消费/预算冲减，不计普通收入
                         val monthReimbursed = monthTxs.filter { it.type == "REIMBURSEMENT" }.sumOf { it.amountCents }
                         if (monthReimbursed > 0) {
+                            Spacer(Modifier.height(8.dp))
                             Text(
                                 "本月报销到账 ${formatMoney(monthReimbursed)}（已从消费冲减）",
                                 style = MaterialTheme.typography.labelSmall,
@@ -489,10 +550,48 @@ private fun DonutChart(
     totalCents: Long,
     slices: List<Pair<Long, Color>>,
     modifier: Modifier = Modifier,
-    outerSlices: List<Pair<Long, Color>> = emptyList()
+    outerSlices: List<Pair<Long, Color>> = emptyList(),
+    sliceLabels: List<String> = emptyList(),
+    onSliceClick: ((Int) -> Unit)? = null
 ) {
     val ringTrackColor = MaterialTheme.colorScheme.surfaceVariant
-    Box(modifier, contentAlignment = Alignment.Center) {
+    val calloutColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val textMeasurer = rememberTextMeasurer()
+    val calloutStyle = TextStyle(color = calloutColor, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+    val callouts = if (totalCents > 0L) {
+        slices.indices
+            .filter { index -> slices[index].first.toDouble() / totalCents.toDouble() >= 0.05 && sliceLabels.getOrNull(index) != null }
+            .sortedByDescending { slices[it].first }
+            .take(4)
+            .sorted()
+            .mapNotNull { index ->
+                sliceLabels.getOrNull(index)?.let { label -> index to textMeasurer.measure(label, style = calloutStyle) }
+            }
+    } else emptyList()
+    val interactiveModifier = if (onSliceClick != null && totalCents > 0) {
+        modifier.pointerInput(slices, totalCents) {
+            detectTapGestures { tap ->
+                val centerX = size.width / 2f
+                val centerY = size.height / 2f
+                val dx = tap.x - centerX
+                val dy = tap.y - centerY
+                val radius = kotlin.math.sqrt(dx * dx + dy * dy)
+                val dim = minOf(size.width, size.height).toFloat()
+                if (radius !in dim * 0.27f..dim * 0.5f) return@detectTapGestures
+                val angle = ((Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())) + 90.0 + 360.0) % 360.0).toFloat()
+                var start = 0f
+                slices.forEachIndexed { index, (cents, _) ->
+                    val sweep = cents * 360f / totalCents
+                    if (angle >= start && angle < start + sweep) {
+                        onSliceClick(index)
+                        return@detectTapGestures
+                    }
+                    start += sweep
+                }
+            }
+        }
+    } else modifier
+    Box(interactiveModifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val dim = size.minDimension
             fun ring(radius: Float, strokeW: Float, segs: List<Pair<Long, Color>>) {
@@ -525,6 +624,56 @@ private fun DonutChart(
                 ring(dim / 2f * 0.72f, dim * 0.12f, slices)        // 内圈：一级占比
             } else {
                 ring(dim / 2f * 0.85f, dim * 0.14f, slices)
+            }
+            if (callouts.isNotEmpty() && totalCents > 0) {
+                class CalloutGeometry(
+                    val index: Int,
+                    val layout: androidx.compose.ui.text.TextLayoutResult,
+                    val start: Offset,
+                    val bend: Offset,
+                    val right: Boolean,
+                    var lineY: Float
+                )
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val geometries = callouts.map { (index, layout) ->
+                    val before = slices.take(index).sumOf { it.first }
+                    val middleAngle = before * 360f / totalCents + slices[index].first * 180f / totalCents - 90f
+                    val radians = Math.toRadians(middleAngle.toDouble())
+                    val cos = kotlin.math.cos(radians).toFloat()
+                    val sin = kotlin.math.sin(radians).toFloat()
+                    val start = Offset(center.x + cos * dim * 0.46f, center.y + sin * dim * 0.46f)
+                    val bend = Offset(center.x + cos * dim * 0.54f, center.y + sin * dim * 0.54f)
+                    CalloutGeometry(index, layout, start, bend, cos >= 0f, bend.y)
+                }
+                listOf(false, true).forEach { rightSide ->
+                    val side = geometries.filter { it.right == rightSide }.sortedBy { it.lineY }
+                    val gap = 18.dp.toPx()
+                    var cursor = 8.dp.toPx()
+                    side.forEach { item ->
+                        item.lineY = maxOf(item.lineY, cursor).coerceAtMost(size.height - 8.dp.toPx())
+                        cursor = item.lineY + gap
+                    }
+                    val overflow = (side.lastOrNull()?.lineY ?: 0f) - (size.height - 8.dp.toPx())
+                    if (overflow > 0f) side.forEach { it.lineY -= overflow }
+                }
+                geometries.forEach { item ->
+                    val edgePadding = 8.dp.toPx()
+                    val labelGap = 5.dp.toPx()
+                    val labelX = if (item.right) size.width - edgePadding - item.layout.size.width else edgePadding
+                    val lineEndX = if (item.right) labelX - labelGap else labelX + item.layout.size.width + labelGap
+                    val end = Offset(lineEndX, item.lineY)
+                    drawLine(calloutColor, item.start, item.bend, strokeWidth = 1.dp.toPx())
+                    drawLine(calloutColor, item.bend, end, strokeWidth = 1.dp.toPx())
+                    drawText(
+                        textMeasurer = textMeasurer,
+                        text = sliceLabels[item.index],
+                        topLeft = Offset(
+                            labelX,
+                            (item.lineY - item.layout.size.height / 2f).coerceIn(0f, size.height - item.layout.size.height)
+                        ),
+                        style = calloutStyle
+                    )
+                }
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -582,12 +731,12 @@ private fun TrendChart(
                 val inH = chartH * (bar.incomeCents.toFloat() / max)
                 val exH = chartH * (bar.expenseCents.toFloat() / max)
                 drawRect(
-                    StatsGreen,
+                    color = StatsGreen,
                     topLeft = Offset(cx - barW - 1.dp.toPx(), chartH - inH),
                     size = Size(barW, inH)
                 )
                 drawRect(
-                    StatsRed,
+                    color = StatsRed,
                     topLeft = Offset(cx + 1.dp.toPx(), chartH - exH),
                     size = Size(barW, exH)
                 )

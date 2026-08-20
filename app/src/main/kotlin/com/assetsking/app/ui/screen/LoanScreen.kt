@@ -29,7 +29,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +53,7 @@ import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.theme.ExpenseRed
 import com.assetsking.ui.theme.IncomeGreen
 import org.json.JSONArray
 import org.json.JSONObject
@@ -107,8 +107,7 @@ fun LoanScreen(
     onPrepay: (String, String, Long, String?) -> Unit = { _, _, _, _ -> },
     onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> },
     onUpdateInstallment: (String, Int, Long?, Long?, Long?, String?) -> Unit = { _, _, _, _, _, _ -> },
-    transactions: List<com.assetsking.database.TransactionEntity> = emptyList(),
-    addPulse: Int = 0
+    transactions: List<com.assetsking.database.TransactionEntity> = emptyList()
 ) {
     var showSheet by remember { mutableStateOf(false) }
     var editingPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
@@ -121,11 +120,6 @@ fun LoanScreen(
     var fullPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var editingInstallment by remember { mutableStateOf<Pair<LoanPlanEntity, LoanInstallment>?>(null) }
     var deleteConfirm by remember { mutableStateOf<LoanPlanEntity?>(null) }
-
-    // 右下角悬浮＋（REQ 贷款页§16）触发新增
-    LaunchedEffect(addPulse) {
-        if (addPulse > 0) { editingPlan = null; showSheet = true }
-    }
 
     // 扣款日汇总：哪天扣多少（信用卡按本期待还，贷款按计划）
     data class DueItem(val label: String, val day: Int, val amount: Long)
@@ -198,18 +192,18 @@ fun LoanScreen(
                 if (v5 != null) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("当前总负债", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(formatMoney(v5.totalDebtCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error)
+                        Text(formatMoney(v5.totalDebtCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("本月必须还款", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(formatMoney(v5.mustRepayCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        Text(formatMoney(v5.mustRepayCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = ExpenseRed)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("本月净降债", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
                             if (v5.netDebtReductionCents >= 0) "+${formatMoney(v5.netDebtReductionCents)}" else formatMoney(v5.netDebtReductionCents),
                             fontWeight = FontWeight.Bold,
-                            color = if (v5.netDebtReductionCents > 0) IncomeGreen else MaterialTheme.colorScheme.error
+                            color = if (v5.netDebtReductionCents >= 0) IncomeGreen else ExpenseRed
                         )
                     }
                     // 剩余本金/剩余利息/本月已还（REQ 贷款页§10）
@@ -317,8 +311,8 @@ fun LoanScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 新增入口 = 右下角悬浮＋（REQ 贷款页§16），这里只留标题
                 Text("贷款计划", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Button(onClick = { editingPlan = null; showSheet = true }) { Text("＋ 添加") }
             }
         }
         if (plans.isEmpty()) {

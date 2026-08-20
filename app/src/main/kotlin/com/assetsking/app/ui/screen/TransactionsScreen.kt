@@ -286,7 +286,7 @@ fun TransactionsScreen(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("流水记录", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("流水记录", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             IconButton(onClick = { showSearch = !showSearch }) {
                 Icon(Icons.Filled.Search, contentDescription = "搜索", tint = if (showSearch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -512,10 +512,8 @@ private fun TransactionListRow(
     onClick: () -> Unit
 ) {
     val metadata = listOfNotNull(
-        typeLabel(tx.type),
         tx.category.ifEmpty { null },
-        if (tx.channel != null) "${tx.channel} · $accountName" else accountName.ifEmpty { null },
-        if (tx.necessity == true) "必要" else if (tx.necessity == false) "非必要" else null
+        if (tx.channel != null) "${tx.channel} · $accountName" else accountName.ifEmpty { null }
     ).joinToString(" · ")
     Row(
         modifier

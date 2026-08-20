@@ -83,8 +83,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     // 统计页下钻流水（REQ 统计§3/§7/§20）：月份+分类带进流水页筛选，消费一次后清空
     var txDrillMonth by remember { mutableStateOf<java.time.YearMonth?>(null) }
     var txDrillCategory by remember { mutableStateOf<String?>(null) }
-    // 贷款页悬浮＋脉冲（REQ 贷款页§16）
-    var loanAddPulse by remember { mutableStateOf(0) }
     val listenerStatus = rememberListenerStatus()
     val navSurface = MaterialTheme.colorScheme.surfaceContainer
     val navOutline = MaterialTheme.colorScheme.outlineVariant
@@ -151,16 +149,12 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             }
         },
         floatingActionButton = {
-            // 手动记账入口在流水页（REQ 流水§6），不占首页；贷款新增用贷款页右下角悬浮＋（REQ 贷款页§16）
-            if (selectedTab == 2 || selectedTab == 3) {
+            // 手动记账入口仅在流水页；贷款新增收进该页标题行，避免 FAB 遮挡长列表。
+            if (selectedTab == 2) {
                 FloatingActionButton(
                     onClick = {
-                        if (selectedTab == 2) {
-                            editorPendingItem = null
-                            showEditor = true
-                        } else {
-                            loanAddPulse++
-                        }
+                        editorPendingItem = null
+                        showEditor = true
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
@@ -237,8 +231,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     },
                     onUpdateInstallment = { planId, number, p, i, f, st ->
                         model.updateLoanInstallment(planId, number, p, i, f, st)
-                    },
-                    addPulse = loanAddPulse
+                    }
                 )
             }
             4 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {

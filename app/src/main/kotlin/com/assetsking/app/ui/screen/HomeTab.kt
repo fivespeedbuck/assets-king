@@ -165,7 +165,7 @@ fun HomeTab(
             ) {
                 Text(
                     "总览",
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(

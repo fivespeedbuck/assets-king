@@ -418,14 +418,15 @@ private fun PendingBoxCard(
     val isRescanned = item.notification.sourceLabel?.startsWith("短信补回") == true
 
     GlassCard(
-        Modifier.fillMaxWidth().combinedClickable(
-            onClick = {
-                if (multiSelect && complete) onToggleSelect() else onOpenEditor()
-            },
-            onLongClick = onEnterMultiSelect
-        )
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+                onClick = {
+                    if (multiSelect && complete) onToggleSelect() else onOpenEditor()
+                },
+                onLongClick = onEnterMultiSelect
+            ),
+        contentPadding = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
-        Column(Modifier.padding(12.dp)) {
+        Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (multiSelect) {
                     Checkbox(checked = checked, onCheckedChange = { onToggleSelect() }, enabled = complete)
