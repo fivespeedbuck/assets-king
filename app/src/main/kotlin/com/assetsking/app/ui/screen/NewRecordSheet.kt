@@ -318,11 +318,29 @@ private fun RecordTab(
 private fun centsStr(cents: Long): String = "%.2f".format(cents / 100.0)
 
 @Composable
+fun AddAccountSheet(
+    initialType: AccountType,
+    onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Sheet(title = "新建账户", onDismiss = onDismiss) {
+        AddAccountTab(
+            onAddAccount = { name, type, balance, tail, stmtDay, dueDay, limit ->
+                onAddAccount(name, type, balance, tail, stmtDay, dueDay, limit)
+                onDismiss()
+            },
+            initialType = initialType
+        )
+    }
+}
+
+@Composable
 private fun AddAccountTab(
+    initialType: AccountType = AccountType.ASSET,
     onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var type by remember { mutableStateOf(AccountType.ASSET) }
+    var type by remember(initialType) { mutableStateOf(initialType) }
     var balance by remember { mutableStateOf("") }
     var cardNumber by remember { mutableStateOf("") }
     var statementDay by remember { mutableStateOf("") }
@@ -347,10 +365,10 @@ private fun AddAccountTab(
     FormField(value = name, onValueChange = { name = it }, label = "账户名称")
 
     Spacer(Modifier.height(8.dp))
-    FormField(value = balance, onValueChange = { balance = it.filter { c -> c.isDigit() || c == '.' } }, label = "当前余额（可选，可为 0）", isAmount = true)
+    FormField(value = balance, onValueChange = { balance = it.filter { c -> c.isDigit() || c == '.' } }, label = "启用日余额/欠款（必填，可为 0）", isAmount = true)
 
     Spacer(Modifier.height(8.dp))
-    FormField(value = cardNumber, onValueChange = { cardNumber = it.filter { c -> c.isDigit() } }, label = "卡号末四位（可选）")
+    FormField(value = cardNumber, onValueChange = { cardNumber = it.filter(Char::isDigit).take(4) }, label = "卡号末四位（可选）")
 
     if (type == AccountType.CREDIT) {
         Spacer(Modifier.height(8.dp))
@@ -364,7 +382,7 @@ private fun AddAccountTab(
     Spacer(Modifier.height(12.dp))
     Button(
         onClick = {
-            val openingBalance = balance.ifBlank { "0" }
+            val openingBalance = balance
             val stmtDay = statementDay.toIntOrNull()
             val due = dueDay.toIntOrNull()
             val limit = runCatching {
@@ -372,7 +390,7 @@ private fun AddAccountTab(
             }.getOrNull() ?: 0L
             onAddAccount(name, type, openingBalance, cardNumber.ifBlank { null }, stmtDay, due, limit)
         },
-        enabled = name.isNotBlank(),
+        enabled = name.isNotBlank() && balance.toDoubleOrNull() != null,
         modifier = Modifier.fillMaxWidth()
     ) { Text("添加账户") }
 }

@@ -200,6 +200,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.deleteAccount(accountId) }
     }
 
+    fun archiveAccount(accountId: String) {
+        viewModelScope.launch { repository.archiveAccount(accountId) }
+    }
+
     fun updateTransactionCategory(id: String, category: TransactionCategory) {
         viewModelScope.launch { updateCategory(id, category) }
     }

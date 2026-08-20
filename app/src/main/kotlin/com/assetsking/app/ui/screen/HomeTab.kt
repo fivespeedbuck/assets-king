@@ -30,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -106,7 +108,8 @@ fun HomeTab(
     onGotoLoans: () -> Unit,
     onGotoBills: () -> Unit,
     onGotoReimbursement: () -> Unit,
-    onEditAccount: (AccountEntity?) -> Unit
+    onEditAccount: (AccountEntity?) -> Unit,
+    onAddAccount: (AccountType) -> Unit
 ) {
     var showModuleLibrary by remember { mutableStateOf(false) }
     var showAssetAccounts by remember { mutableStateOf(false) }
@@ -371,6 +374,7 @@ fun HomeTab(
             title = "资产账户",
             accounts = state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived },
             onEdit = { showAssetAccounts = false; onEditAccount(it) },
+            onAdd = { showAssetAccounts = false; onAddAccount(AccountType.ASSET) },
             onDismiss = { showAssetAccounts = false }
         )
     }
@@ -379,6 +383,7 @@ fun HomeTab(
             title = "欠款账户",
             accounts = state.accounts.filter { it.type != AccountType.ASSET.name && !it.archived },
             onEdit = { showDebtAccounts = false; onEditAccount(it) },
+            onAdd = { showDebtAccounts = false; onAddAccount(AccountType.CREDIT) },
             onDismiss = { showDebtAccounts = false }
         )
     }
@@ -518,6 +523,7 @@ private fun AccountListDialog(
     title: String,
     accounts: List<AccountEntity>,
     onEdit: (AccountEntity) -> Unit,
+    onAdd: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -525,19 +531,36 @@ private fun AccountListDialog(
         title = { Text(title) },
         text = {
             Column {
+                if (accounts.isEmpty()) {
+                    Text(
+                        "暂无账户",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 accounts.forEach { a ->
                     Row(
                         Modifier.fillMaxWidth().clickable { onEdit(a) }.padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(a.name)
-                        Text(formatMoney(if (a.type == AccountType.ASSET.name) a.balanceCents else a.balanceCents), fontWeight = FontWeight.Medium)
+                        Text(a.name, Modifier.weight(1f))
+                        Text(formatMoney(a.balanceCents), fontWeight = FontWeight.Medium)
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = "查看并编辑${a.name}",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-        dismissButton = {}
+        confirmButton = {
+            TextButton(onClick = onAdd) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Text("新建账户")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
     )
 }
 

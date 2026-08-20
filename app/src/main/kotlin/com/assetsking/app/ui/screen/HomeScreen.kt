@@ -39,6 +39,7 @@ import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.database.WindfallEntity
+import com.assetsking.model.AccountType
 import com.assetsking.ui.theme.AssetsKingTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,6 +75,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
     var showBills by remember { mutableStateOf(false) }
     var showReimbursement by remember { mutableStateOf(false) }
+    var addingAccountType by remember { mutableStateOf<AccountType?>(null) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var accountDetail by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -178,7 +180,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 onGotoLoans = { selectedTab = 3 },
                 onGotoBills = { showBills = true },
                 onGotoReimbursement = { showReimbursement = true },
-                onEditAccount = { accountDetail = it }
+                onEditAccount = { accountDetail = it },
+                onAddAccount = { addingAccountType = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(
@@ -301,6 +304,16 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         )
     }
 
+    addingAccountType?.let { initialType ->
+        AddAccountSheet(
+            initialType = initialType,
+            onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit ->
+                model.addAccount(name, type, balance, card, stmtDay, dueDay, limit)
+            },
+            onDismiss = { addingAccountType = null }
+        )
+    }
+
     // 待确认箱全屏页（REQ 待确认箱 UI）：覆盖在 Scaffold 之上
     // 周期账单页（不占底部导航，从首页「本月待扣」模块进入，REQ 导航§3-4）
     if (showBills) {
@@ -361,7 +374,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         EditAccountSheet(
             account = account,
             onSave = { model.updateAccount(it); editingAccount = null },
-            onDelete = { model.deleteAccount(it); editingAccount = null },
+            onArchive = { model.archiveAccount(it); editingAccount = null },
             onDismiss = { editingAccount = null }
         )
     }

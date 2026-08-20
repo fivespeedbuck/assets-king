@@ -26,7 +26,7 @@ import com.assetsking.ui.format.accountTypeLabel
 fun EditAccountSheet(
     account: AccountEntity,
     onSave: (AccountEntity) -> Unit,
-    onDelete: (String) -> Unit,
+    onArchive: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(account.name) }
@@ -37,7 +37,7 @@ fun EditAccountSheet(
     var statementDue by remember { mutableStateOf(if (account.statementOriginalDueCents > 0) "%.2f".format(account.statementOriginalDueCents / 100.0) else "") }
     var pending by remember { mutableStateOf(if (account.pendingCents > 0) "%.2f".format(account.pendingCents / 100.0) else "") }
     var cardTail by remember { mutableStateOf(account.cardTail ?: "") }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var confirmArchive by remember { mutableStateOf(false) }
 
     Sheet(title = "编辑账户", onDismiss = onDismiss) {
         FormField(value = name, onValueChange = { name = it }, label = "账户名称")
@@ -112,28 +112,40 @@ fun EditAccountSheet(
         ) { Text("保存") }
 
         Spacer(Modifier.height(8.dp))
-        if (confirmDelete) {
+        if (account.balanceCents != 0L) {
+            Text(
+                "账户余额归零后才能归档，历史流水会继续保留。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(
+                onClick = {},
+                enabled = false,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("余额归零后可归档") }
+        } else if (confirmArchive) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = { confirmDelete = false },
+                    onClick = { confirmArchive = false },
                     modifier = Modifier.weight(1f)
                 ) { Text("取消") }
                 Button(
-                    onClick = { onDelete(account.id) },
+                    onClick = { onArchive(account.id) },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error
                     )
-                ) { Text("确认删除") }
+                ) { Text("确认归档") }
             }
         } else {
             OutlinedButton(
-                onClick = { confirmDelete = true },
+                onClick = { confirmArchive = true },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("删除账户") }
+            ) { Text("归档账户") }
         }
     }
 }

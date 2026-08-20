@@ -262,6 +262,27 @@ class LedgerRepositoryIntegrationTest {
         assertEquals("current-ledger", database.transactionDao().all().single().id)
     }
 
+    @Test
+    fun archiveZeroBalanceAccountKeepsAccountAndTransactionHistory() = runBlocking {
+        database.transactionDao().insert(sampleExpense("archive-history"))
+
+        repository.archiveAccount("cash")
+
+        assertTrue(database.accountDao().find("cash")?.archived == true)
+        assertEquals("archive-history", database.transactionDao().all().single().id)
+    }
+
+    @Test
+    fun archiveRejectsAccountWithRemainingBalance() = runBlocking {
+        val account = requireNotNull(database.accountDao().find("cash"))
+        database.accountDao().upsert(account.copy(balanceCents = 1L))
+
+        val failure = runCatching { repository.archiveAccount("cash") }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertFalse(requireNotNull(database.accountDao().find("cash")).archived)
+    }
+
     private suspend fun insertAccount(id: String) {
         database.accountDao().upsert(
             AccountEntity(id = id, name = id, type = AccountType.ASSET.name, balanceCents = 0L)
