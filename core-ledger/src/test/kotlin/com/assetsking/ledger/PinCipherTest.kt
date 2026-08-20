@@ -1,11 +1,17 @@
 package com.assetsking.ledger
 
+import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import java.security.GeneralSecurityException
 import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 class PinCipherTest {
 
@@ -38,6 +44,33 @@ class PinCipherTest {
         assertFalse(first.contentEquals(second))
         assertContentEquals(data, PinCipher.decrypt(first, "000000"))
         assertContentEquals(data, PinCipher.decrypt(second, "000000"))
+    }
+
+    @Test
+    fun `manual KDF remains compatible with standard PBKDF2 backups`() {
+        val data = "旧版标准 PBKDF2 备份".toByteArray()
+        val salt = ByteArray(16) { it.toByte() }
+        val iv = ByteArray(12) { (it + 16).toByte() }
+        val spec = PBEKeySpec("123456".toCharArray(), salt, 120_000, 256)
+        val standardKey = try {
+            SecretKeySpec(
+                SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded,
+                "AES"
+            )
+        } finally {
+            spec.clearPassword()
+        }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, standardKey, GCMParameterSpec(128, iv))
+        val encrypted = cipher.doFinal(data)
+        val backup = ByteBuffer.allocate(4 + salt.size + iv.size + encrypted.size)
+            .put("AKB1".toByteArray(Charsets.US_ASCII))
+            .put(salt)
+            .put(iv)
+            .put(encrypted)
+            .array()
+
+        assertContentEquals(data, PinCipher.decrypt(backup, "123456"))
     }
 
     @Test

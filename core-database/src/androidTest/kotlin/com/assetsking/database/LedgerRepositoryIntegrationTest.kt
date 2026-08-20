@@ -249,7 +249,7 @@ class LedgerRepositoryIntegrationTest {
         assertEquals(creditAccount.balanceCents, database.balanceCheckpointDao().latestFor(creditAccount.id)?.balanceCents)
     }
 
-    @Test
+    @Test(timeout = 30_000L)
     fun wrongRestorePinCannotReplaceTheCurrentDatabase() = runBlocking {
         database.transactionDao().insert(sampleExpense("current-ledger"))
         repository.setBackupPin("123456")
@@ -258,7 +258,6 @@ class LedgerRepositoryIntegrationTest {
             .listFiles { file -> file.name.endsWith(".db.enc") }
             .orEmpty()
             .single()
-
         assertFalse(repository.restoreFromPicked(Uri.fromFile(backup), "654321"))
         assertEquals("current-ledger", database.transactionDao().all().single().id)
     }

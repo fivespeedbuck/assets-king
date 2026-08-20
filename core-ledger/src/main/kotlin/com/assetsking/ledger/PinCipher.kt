@@ -4,9 +4,8 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
-import javax.crypto.SecretKeyFactory
+import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
@@ -21,6 +20,7 @@ object PinCipher {
     private const val ivSize = 12
     private const val tagBits = 128
     private const val iterations = 120_000
+    private const val keySize = 32
     private val random = SecureRandom()
 
     private fun requireValidPin(pin: String) {
@@ -28,13 +28,46 @@ object PinCipher {
     }
 
     private fun key(pin: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, iterations, 256)
+        val password = pin.toByteArray(Charsets.UTF_8)
         return try {
-            val bytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-            SecretKeySpec(bytes, "AES")
+            SecretKeySpec(pbkdf2HmacSha256(password, salt), "AES")
         } finally {
-            spec.clearPassword()
+            password.fill(0)
         }
+    }
+
+    /**
+     * PBKDF2-HMAC-SHA256 的标准单块实现（RFC 8018）。
+     *
+     * 6 位 PIN 只需要 32 字节密钥，因此只派生第一个块。这里不使用 Android 的
+     * SecretKeyFactory：部分 OriginOS 设备在同进程连续调用约五次后会永久休眠。
+     * 算法、迭代次数和输出与旧实现完全一致，已有 AKB1 备份仍可恢复。
+     */
+    private fun pbkdf2HmacSha256(password: ByteArray, salt: ByteArray): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(password, "HmacSHA256"))
+
+        var previous = ByteArray(keySize)
+        var current = ByteArray(keySize)
+        val derived = ByteArray(keySize)
+        mac.update(salt)
+        mac.update(byteArrayOf(0, 0, 0, 1))
+        mac.doFinal(previous, 0)
+        previous.copyInto(derived)
+
+        repeat(iterations - 1) {
+            mac.update(previous)
+            mac.doFinal(current, 0)
+            current.indices.forEach { index ->
+                derived[index] = (derived[index].toInt() xor current[index].toInt()).toByte()
+            }
+            val swap = previous
+            previous = current
+            current = swap
+        }
+        previous.fill(0)
+        current.fill(0)
+        return derived
     }
 
     fun encrypt(data: ByteArray, pin: String): ByteArray {

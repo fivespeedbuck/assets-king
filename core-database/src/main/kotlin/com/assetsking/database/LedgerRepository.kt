@@ -333,7 +333,13 @@ class LedgerRepository(
             runCatching {
                 val stamp = uri.lastPathSegment?.substringAfter("_")?.substringBefore(".") ?: "restore"
                 val dir = java.io.File(context.filesDir, "backups/manual")
-                val content = context.contentResolver.openInputStream(uri)?.readBytes() ?: return@runCatching false
+                val content = if (uri.scheme == android.content.ContentResolver.SCHEME_FILE) {
+                    val path = uri.path ?: return@runCatching false
+                    java.io.File(path).takeIf { it.isFile }?.readBytes() ?: return@runCatching false
+                } else {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@runCatching false
+                }
                 val dbBytes = com.assetsking.ledger.PinCipher.decrypt(content, pin)
                 // 兼容旧 XOR 备份时，错误 PIN 只会产出乱码；覆盖前必须先验证 SQLite 文件头。
                 val sqliteHeader = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)

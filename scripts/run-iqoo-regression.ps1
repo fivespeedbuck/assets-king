@@ -38,6 +38,18 @@ function Invoke-InstrumentationTest {
     )
 
     & $AdbPath -s $Serial shell am force-stop $Package | Out-Null
+    $remainingPid = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $remainingPid = (& $AdbPath -s $Serial shell pidof $Package 2>$null | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($remainingPid)) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not [string]::IsNullOrWhiteSpace($remainingPid)) {
+        throw "Previous instrumentation process did not stop: $Package ($remainingPid)"
+    }
+    # OriginOS reports force-stop before its process bookkeeping is fully settled.
+    # A short quiet window prevents the sixth Room case from inheriting the old runner.
+    Start-Sleep -Milliseconds 500
     $output = (& $AdbPath -s $Serial shell am instrument -w -r -e class $ClassName $Runner 2>&1 | Out-String)
     $output.TrimEnd() | Write-Host
     if ($LASTEXITCODE -ne 0 -or $output -notmatch [regex]::Escape($ExpectedSummary)) {
