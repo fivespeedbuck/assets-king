@@ -247,6 +247,8 @@ fun TransactionEditorScreen(
         EditorKind.INCOME -> incomeSub.type
         else -> null
     }
+    val accountTailConflict = pendingItem != null && selectedAccount != null &&
+        PendingConfirmationPolicy.accountTailMismatch(selectedAccount.cardTail, parsed?.cardTail)
     val balanceConflict = pendingItem != null && directionChosen &&
         PendingConfirmationPolicy.balanceConflict(
             type = editorType,
@@ -283,7 +285,8 @@ fun TransactionEditorScreen(
                 if (repaySub == RepaySub.LOAN && loanPlanId == null) add("贷款计划")
             }
         }
-        if (balanceConflict) add("余额校验")
+        if (accountTailConflict) add("资金账户（银行尾号 ${parsed?.cardTail}）")
+        else if (balanceConflict) add("余额校验")
     }
 
     Scaffold(
@@ -808,7 +811,7 @@ private fun EvidenceSectionInEditor(
             color = MaterialTheme.colorScheme.primary
         )
         if (show) {
-            listOf(own) + merged.forEach { n ->
+            (listOf(own) + merged).forEach { n ->
                 Column(Modifier.padding(vertical = 4.dp)) {
                     Text("${n.sourceLabel ?: n.packageName} · ${formatTime(n.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(n.content.ifBlank { n.title.orEmpty() }, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -838,8 +841,13 @@ private fun BalancePreviewInEditor(
         return
     }
     if (parsed.balanceCents == null || parsed.cardTail == null || account.type != AccountType.ASSET.name) return
-    if (account.cardTail != parsed.cardTail) {
-        Text("银行尾号与所选账户不符", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+    if (PendingConfirmationPolicy.accountTailMismatch(account.cardTail, parsed.cardTail)) {
+        val selectedTail = account.cardTail?.let { "尾号 $it" } ?: "未设置卡号尾号"
+        Text(
+            "银行消息来自尾号 ${parsed.cardTail}，所选资金账户「${account.name}」$selectedTail；请改选对应资金账户",
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.labelSmall
+        )
         return
     }
     val delta = when {

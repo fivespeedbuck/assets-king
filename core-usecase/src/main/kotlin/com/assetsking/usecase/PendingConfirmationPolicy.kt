@@ -77,6 +77,9 @@ object PendingConfirmationPolicy {
         return PendingConfirmationValidation(type, missing)
     }
 
+    fun accountTailMismatch(accountCardTail: String?, bankCardTail: String?): Boolean =
+        bankCardTail != null && accountCardTail != bankCardTail
+
     /**
      * 只有带卡号尾号的银行余额才能和具体账户做校验；无尾号的余额不作为冲突证据。
      * 信用卡/贷款余额沿用现有账户口径，不把银行短信中的“余额”当成可用额度计算。
@@ -92,7 +95,7 @@ object PendingConfirmationPolicy {
     ): Boolean {
         if (type == null || amountCents == null || amountCents <= 0 || accountType == null) return false
         if (bankBalanceCents == null || bankCardTail == null) return false
-        if (accountCardTail != bankCardTail) return true
+        if (accountTailMismatch(accountCardTail, bankCardTail)) return true
         if (accountType != AccountType.ASSET || currentBalanceCents == null) return false
         val delta = BalanceMath.transactionDelta(accountType, type, amountCents)
         return !BalanceMath.checkBalance(currentBalanceCents, delta, bankBalanceCents).matches

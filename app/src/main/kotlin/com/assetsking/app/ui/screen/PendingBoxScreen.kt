@@ -446,7 +446,7 @@ private fun PendingBoxCard(
                 )
                 Spacer(Modifier.padding(horizontal = 8.dp))
                 Text(
-                    merchant ?: "待补全商户",
+                    merchant ?: "待补全",
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
@@ -469,7 +469,7 @@ private fun PendingBoxCard(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
-                    "· 分类 ${category?.let(::categoryLabel) ?: "待补全分类"}",
+                    "· 分类 ${category?.let(::categoryLabel) ?: "待补全"}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                 )

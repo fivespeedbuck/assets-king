@@ -87,4 +87,11 @@ class PendingConfirmationPolicyTest {
 
         assertTrue(PendingConfirmationField.BALANCE in result.missing)
     }
+
+    @Test
+    fun `bank tail mismatch identifies the selected account field`() {
+        assertTrue(PendingConfirmationPolicy.accountTailMismatch("5678", "1234"))
+        assertFalse(PendingConfirmationPolicy.accountTailMismatch("1234", "1234"))
+        assertFalse(PendingConfirmationPolicy.accountTailMismatch("1234", null))
+    }
 }
