@@ -30,10 +30,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -186,57 +189,50 @@ fun HomeTab(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("总资产", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        TextButton(
+                        Text(
+                            "资产概览",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
                             onClick = {
                                 privacy = !privacy
                                 prefs.edit().putBoolean("privacy_mode", privacy).apply()
                             },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                            modifier = Modifier.background(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                RoundedCornerShape(50)
-                            )
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(50))
                         ) {
-                            Text(if (privacy) "显示金额" else "隐私金额", style = MaterialTheme.typography.labelSmall)
+                            Icon(
+                                imageVector = if (privacy) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (privacy) "显示金额" else "隐藏金额",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(21.dp)
+                            )
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.Bottom
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (privacy) {
-                            Text(
-                                "••••",
-                                Modifier.weight(1f).clickable { showAssetAccounts = true },
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1
-                            )
-                        } else {
-                            BigMoney(
-                                state.v5?.availableCashCents ?: 0L,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f).clickable { showAssetAccounts = true },
-                                style = MaterialTheme.typography.headlineLarge
-                            )
-                        }
-                        Column(
-                            Modifier.clickable { showDebtAccounts = true },
-                            horizontalAlignment = Alignment.End
-                        ) {
-                            Text("总欠款", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                if (privacy) "••••" else formatMoney(state.v5?.totalDebtCents ?: 0L),
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium,
-                                color = HomeRed,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        HomeHeroMetric(
+                            label = "总资产",
+                            cents = state.v5?.availableCashCents ?: 0L,
+                            hidden = privacy,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                            onClick = { showAssetAccounts = true }
+                        )
+                        VerticalDivider(Modifier.height(66.dp))
+                        HomeHeroMetric(
+                            label = "总欠款",
+                            cents = state.v5?.totalDebtCents ?: 0L,
+                            hidden = privacy,
+                            color = HomeRed,
+                            modifier = Modifier.weight(1f),
+                            onClick = { showDebtAccounts = true }
+                        )
                     }
                     Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
@@ -568,6 +564,47 @@ private fun HomeMetric(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+/** 首页最重要的两项金额等宽同级展示，避免金额被挤到卡片角落。 */
+@Composable
+private fun HomeHeroMetric(
+    label: String,
+    cents: Long,
+    hidden: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+        if (hidden) {
+            Text(
+                "••••",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = color,
+                maxLines = 1
+            )
+        } else {
+            BigMoney(
+                cents = cents,
+                color = color,
+                style = MaterialTheme.typography.headlineMedium
+            )
+        }
     }
 }
 
