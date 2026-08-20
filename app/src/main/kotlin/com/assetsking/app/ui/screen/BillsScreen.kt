@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,10 +10,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +46,7 @@ import java.util.Locale
  * 扣了 = 有流水认领到这条规则（确认时自动挂、或规则自动记）→ 打勾；
  * 没扣且有匹配的待确认通知 → 一键确认；没扣也没通知 → 待扣。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BillsScreen(
     rules: List<RecurringRuleEntity>,
@@ -45,42 +54,49 @@ fun BillsScreen(
     pendingItems: List<PendingItem>,
     accounts: List<AccountEntity>,
     viewModel: LedgerViewModel,
-    onBack: () -> Unit = {}
+    onBack: () -> Unit
 ) {
     val sorted = rules.sortedBy { it.nextRunAt }
     val fmt = SimpleDateFormat("M月d日", Locale.CHINA)
-    Column(Modifier.fillMaxSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != {}) {
-                androidx.compose.material3.TextButton(onClick = onBack) { Text("← 返回") }
-            }
-            Text("周期账单", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 16.dp))
-        }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item {
-            // 本月已扣/待扣汇总（REQ 导航§3）
-            // 审核 J-3 修复：按自然月统计（原按 nextRunAt±15 天窗口，月初/月末会跨月，与「本月」口径不符）。
-            val zone0 = ZoneId.systemDefault()
-            val monthStart0 = YearMonth.now().atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli()
-            val monthEnd0 = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli() - 1
-            val claimedTxs = transactions.filter { tx ->
-                tx.occurredAt in monthStart0..monthEnd0 &&
-                    tx.recurringRuleId != null && sorted.any { it.id == tx.recurringRuleId }
-            }
-            val pendingSum = sorted.filter { rule ->
-                rule.nextRunAt in monthStart0..monthEnd0 &&
-                    transactions.none { tx -> tx.recurringRuleId == rule.id && tx.occurredAt in monthStart0..monthEnd0 }
-            }.sumOf { it.amountCents }
-            GlassCard {
-                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Text("本月已扣 ${formatMoney(claimedTxs.sumOf { it.amountCents })}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
-                    Text("待扣 ${formatMoney(pendingSum)}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("周期账单") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { contentPadding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(contentPadding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                // 本月已扣/待扣汇总（REQ 导航§3）
+                // 审核 J-3 修复：按自然月统计（原按 nextRunAt±15 天窗口，月初/月末会跨月，与「本月」口径不符）。
+                val zone0 = ZoneId.systemDefault()
+                val monthStart0 = YearMonth.now().atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli()
+                val monthEnd0 = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(zone0).toInstant().toEpochMilli() - 1
+                val claimedTxs = transactions.filter { tx ->
+                    tx.occurredAt in monthStart0..monthEnd0 &&
+                        tx.recurringRuleId != null && sorted.any { it.id == tx.recurringRuleId }
+                }
+                val pendingSum = sorted.filter { rule ->
+                    rule.nextRunAt in monthStart0..monthEnd0 &&
+                        transactions.none { tx -> tx.recurringRuleId == rule.id && tx.occurredAt in monthStart0..monthEnd0 }
+                }.sumOf { it.amountCents }
+                GlassCard {
+                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        Text("本月已扣 ${formatMoney(claimedTxs.sumOf { it.amountCents })}", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
+                        Text("待扣 ${formatMoney(pendingSum)}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
-        }
         items(sorted.size, key = { sorted[it].id }) { idx ->
             val rule = sorted[idx]
             val claimedTx = transactions.firstOrNull { tx ->
@@ -173,7 +189,7 @@ fun BillsScreen(
                 }
             }
         }
-        item { Spacer(Modifier.height(8.dp)) }
-    }
+            item { Spacer(Modifier.height(8.dp)) }
+        }
     }
 }
