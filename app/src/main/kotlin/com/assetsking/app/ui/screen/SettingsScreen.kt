@@ -22,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,6 +45,7 @@ import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.WindfallEntity
+import com.assetsking.ledger.SmsSenderWhitelist
 import com.assetsking.model.TransactionCategory
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.FormField
@@ -57,6 +59,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+private fun parseSmsSenderWhitelistInput(input: String): Set<String>? {
+    val senders = input
+        .split(',', '\n', '\r')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+    if (senders.isEmpty() || senders.any { it.length !in 3..20 || it.any { c -> !c.isDigit() } }) {
+        return null
+    }
+    return senders.toSet()
+}
 
 @Composable
 fun SettingsScreen(
@@ -77,6 +90,8 @@ fun SettingsScreen(
     notificationSources: Map<String, String> = emptyMap(),
     notificationWhitelist: Set<String> = emptySet(),
     onSetNotificationWhitelist: (Set<String>) -> Unit = {},
+    smsSenderWhitelist: Set<String> = emptySet(),
+    onSetSmsSenderWhitelist: (Set<String>) -> Unit = {},
     windfalls: List<WindfallEntity> = emptyList(),
     currentTotalDebtCents: Long = 0,
     onSaveWindfall: (WindfallEntity) -> Unit = {},
@@ -97,6 +112,11 @@ fun SettingsScreen(
     var newCatName by remember { mutableStateOf("") }
     var showWindfall by remember { mutableStateOf(false) }
     var backupMsg by remember { mutableStateOf("") }
+    var smsSenderInput by remember(smsSenderWhitelist) {
+        mutableStateOf(smsSenderWhitelist.joinToString("\n"))
+    }
+    var smsWhitelistMessage by remember { mutableStateOf<String?>(null) }
+    var smsWhitelistMessageIsError by remember { mutableStateOf(false) }
     // 检查更新（REQ 设置§13）
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateMsg by remember { mutableStateOf("") }
@@ -438,6 +458,61 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
+                }
+            }
+        }
+
+        // ── 短信发送方白名单：实时接收与历史补扫共用 ──
+        item {
+            GlassCard {
+                Text("短信发送方白名单", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "只解析这些短号发来的短信；陌生发送方不会进入实时接收或历史补扫。支持逗号或换行分隔，每项 3–20 位数字。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = smsSenderInput,
+                    onValueChange = {
+                        smsSenderInput = it
+                        smsWhitelistMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("短信短号") },
+                    placeholder = { Text("95555\n95533") },
+                    minLines = 3,
+                    maxLines = 6
+                )
+                smsWhitelistMessage?.let { message ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (smsWhitelistMessageIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        val defaults = SmsSenderWhitelist.defaults
+                        onSetSmsSenderWhitelist(defaults)
+                        smsSenderInput = defaults.joinToString("\n")
+                        smsWhitelistMessageIsError = false
+                        smsWhitelistMessage = "已恢复默认（${defaults.size} 个发送方）"
+                    }) { Text("恢复默认") }
+                    Button(onClick = {
+                        val senders = parseSmsSenderWhitelistInput(smsSenderInput)
+                        if (senders == null) {
+                            smsWhitelistMessageIsError = true
+                            smsWhitelistMessage = "请输入至少一个 3–20 位数字短号，使用逗号或换行分隔"
+                        } else {
+                            onSetSmsSenderWhitelist(senders)
+                            smsWhitelistMessageIsError = false
+                            smsWhitelistMessage = "已保存 ${senders.size} 个发送方"
+                        }
+                    }) { Text("保存") }
                 }
             }
         }

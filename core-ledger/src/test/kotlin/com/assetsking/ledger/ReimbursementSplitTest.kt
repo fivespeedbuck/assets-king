@@ -21,6 +21,17 @@ class ReimbursementSplitTest {
     }
 
     @Test
+    fun `repeated reimbursement only receives the unreimbursed remainder`() {
+        val originalAmount = 10_000L
+        val alreadyReimbursed = 7_000L
+
+        assertEquals(
+            listOf(3_000L),
+            ReimbursementSplit.cover(listOf(originalAmount - alreadyReimbursed), 10_000L)
+        )
+    }
+
+    @Test
     fun `no expenses means no covers`() {
         assertEquals(emptyList(), ReimbursementSplit.cover(emptyList(), 1000))
     }

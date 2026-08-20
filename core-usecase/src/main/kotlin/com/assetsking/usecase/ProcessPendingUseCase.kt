@@ -4,7 +4,6 @@ import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.TransactionCategory
-import com.assetsking.model.TransactionType
 import kotlinx.coroutines.flow.first
 
 /**
@@ -19,7 +18,7 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
     private val categorizer = RuleBasedCategorizer()
 
     /** 批量处理所有 NEW 通知，返回处理数量。
-     *  匹配已学规则 → 直接入账；新商户 → PENDING_CONFIRMATION */
+     *  已学规则只用于编辑页预填；所有有效通知都进入 PENDING_CONFIRMATION。 */
     suspend fun invoke(): Int {
         val newNotifications = repository.observeNewNotifications().first()
         if (newNotifications.isEmpty()) return 0
@@ -27,11 +26,10 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         // 判重要跟「已在待确认箱里的」「已确认的」和「已忽略的」都比。
         // IGNORED 必须在内：补扫以新 id 重读收件箱，用户忽略过的短信不拦就会每次复活进箱
         // （REQ 监听 §12：已入箱/已确认/已永久删除的通知不得再次生成候选）。
-        // 已忽略只比最近 7 天的，防历史噪音无限增长。
+        // IGNORED 记录本身就是永久墓碑；不能按时间裁剪，否则第 8 天补扫会把它复活。
         val seen = repository.pendingNotifications.first().toMutableList()
         val linked = repository.linkedNotifications.first()
-        val recentCutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
-        val ignored = repository.ignoredNotifications.first().filter { it.postedAt >= recentCutoff }
+        val ignored = repository.ignoredNotifications.first()
 
         var processed = 0
         for (notification in newNotifications) {
@@ -41,28 +39,6 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 repository.updateNotificationStatus(notification.id, "IGNORED")
                 repository.updateNotificationNote(notification.id, "无法识别金额")
                 continue
-            }
-
-            // ── 自动对账 ──
-            // 银行短信自带「尾号3721…余额657.09」，这是银行给的权威数字。一到就按尾号
-            // 把余额对上，不必等用户确认这笔流水。判重之前做：重复的那条余额同样有效。
-            // 差额校验要带上「待确认变化」（REQ 对账 §4）：同尾号的待确认证据和本条自身
-            // 都算进账面应有余额，否则刚收到短信就会误报差额（余额是扣款后的值）。
-            val tail = parsed.cardTail
-            val bankBalance = parsed.balanceCents
-            if (tail != null && bankBalance != null) {
-                val pendingDeltas = seen.mapNotNull { other ->
-                    val p = NotificationParser.parse(other.content, other.title)
-                    if (p.cardTail != tail || p.amountCents == null || p.isExpense == null) return@mapNotNull null
-                    com.assetsking.ledger.LedgerDelta(
-                        occurredAt = other.postedAt,
-                        deltaCents = if (p.isExpense) -p.amountCents else p.amountCents
-                    )
-                }
-                val thisDelta = if (parsed.isExpense != null) {
-                    if (parsed.isExpense) -parsed.amountCents else parsed.amountCents
-                } else null
-                repository.reconcileFromNotification(tail, bankBalance, notification.postedAt, pendingDeltas, thisDelta)
             }
 
             // ── 内容指纹（REQ 监听 §12）：同一条证据以不同 id 重生 ──
@@ -159,24 +135,11 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                 continue
             }
 
-            // 匹配已学规则 → 自动入账
-            val learned = repository.matchLearnedRule(parsed.merchant)
-            if (learned != null) {
-                val type = runCatching { TransactionType.valueOf(learned.type) }.getOrDefault(TransactionType.EXPENSE)
-                repository.confirmNotification(
-                    notificationId = notification.id,
-                    accountId = learned.accountId,
-                    amountCents = parsed.amountCents,
-                    type = type,
-                    category = learned.category,
-                    merchant = parsed.merchant,
-                    note = notification.title
-                )
-            } else {
-                repository.updateNotificationStatus(notification.id, "PENDING_CONFIRMATION")
-            }
+            // 铁律：通知和学习规则只能生成/预填待确认候选，不能绕过用户直接形成正式流水。
+            // 已学习的账户、类型和分类在统一编辑器打开时预填，仍由用户点击“确认入账”。
+            repository.updateNotificationStatus(notification.id, "PENDING_CONFIRMATION")
             // 收下了就进 seen —— 本批后面的通知要能跟它判重。
-            // 被规则自动入账的也要进：银行那条随后到时才认得出是同一笔。
+            // 本批次后续证据也要能与刚进入待确认箱的候选判重。
             seen += notification
             processed++
         }

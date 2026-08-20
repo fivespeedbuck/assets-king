@@ -61,17 +61,23 @@ import com.assetsking.database.CategoryEntity
 import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.TransactionType
+import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.IconLibrary
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.format.formatMoneyCompact
+import com.assetsking.ui.format.formatSignedMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.theme.ExpenseRed
+import com.assetsking.ui.theme.IncomeGreen
+import com.assetsking.ui.theme.TextSecondaryLight
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
 
-private val FlowGreen = Color(0xFF66BB6A)
-private val FlowRed = Color(0xFFE57373)
-private val FlowGray = Color(0xFF757575)
+private val FlowGreen = IncomeGreen
+private val FlowRed = ExpenseRed
+private val FlowGray = TextSecondaryLight
 
 private fun typeLabel(type: String): String = when (type) {
     "EXPENSE" -> "支出"
@@ -91,10 +97,10 @@ private fun amountColorOf(type: String): Color = when (type) {
     else -> FlowGray
 }
 
-private fun amountPrefixOf(type: String): String = when (type) {
-    "EXPENSE", "FEE" -> "−¥"
-    "INCOME", "REFUND", "REIMBURSEMENT" -> "+¥"
-    else -> "¥"
+private fun dayLabel(day: LocalDate): String = when {
+    day == LocalDate.now() -> "今天"
+    day == LocalDate.now().minusDays(1) -> "昨天"
+    else -> "${day.monthValue}月${day.dayOfMonth}日"
 }
 
 /**
@@ -179,6 +185,7 @@ fun TransactionsScreen(
     val reimbOffset = rangeTxs.filter { it.type == "EXPENSE" }.sumOf { it.reimbursedCents }
     val monthIncome = rangeTxs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
     val monthExpense = (rangeTxs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents } - refundOffset - reimbOffset).coerceAtLeast(0L)
+    val monthNet = monthIncome - monthExpense
 
     // 筛选 + 搜索（REQ 流水§11-12）
     val accountNameOf = { id: String -> state.accounts.firstOrNull { it.id == id }?.name ?: "" }
@@ -199,13 +206,16 @@ fun TransactionsScreen(
                 formatMoney(tx.amountCents).contains(searchQuery))
     }.sortedByDescending { it.occurredAt }
 
-    Column(Modifier.fillMaxSize()) {
-        // ── 双视图切换（REQ 流水商户库分类库入口 §1）──
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = viewMode == "list", onClick = { viewMode = "list" }, label = { Text("流水记录") })
-            FilterChip(selected = viewMode == "library", onClick = { viewMode = "library" }, label = { Text("商户与分类库") })
-        }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (viewMode == "library") {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("商户与分类库", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { viewMode = "list" }) { Text("返回流水") }
+            }
             MerchantCategoryLibrary(
                 merchants = merchants,
                 categories = categories,
@@ -213,56 +223,96 @@ fun TransactionsScreen(
             )
             return@Column
         }
-        // ── 时间范围快速切换（REQ 流水§1）──
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = rangeMode == "MONTH" && month == YearMonth.now(), onClick = { rangeMode = "MONTH"; month = YearMonth.now(); dayFilter = null }, label = { Text("本月") })
-            FilterChip(selected = rangeMode == "MONTH" && month == YearMonth.now().minusMonths(1), onClick = { rangeMode = "MONTH"; month = YearMonth.now().minusMonths(1); dayFilter = null }, label = { Text("上月") })
-            FilterChip(selected = rangeMode == "LAST3", onClick = { rangeMode = "LAST3"; dayFilter = null }, label = { Text("近三月") })
-            FilterChip(selected = rangeMode == "CUSTOM", onClick = { rangeMode = "CUSTOM"; dayFilter = null }, label = { Text("自定义") })
-            if (dayFilter != null) {
-                FilterChip(selected = true, onClick = { dayFilter = null }, label = { Text("当日 ${dayFilter!!.monthValue}月${dayFilter!!.dayOfMonth}日 ✕") })
+
+        // ── 月度摘要卡（REQ 流水§16/§19）：白卡、紧凑层级、与效果图一致 ──
+        GlassCard(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            contentPadding = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { month = month.minusMonths(1) }) {
+                        Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上月")
+                    }
+                    Text(
+                        "${month.year}年${month.monthValue}月",
+                        Modifier.clickable { showMonthPicker = true }.padding(horizontal = 4.dp),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    IconButton(onClick = { month = month.plusMonths(1) }) {
+                        Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下月")
+                    }
+                }
+                IconButton(onClick = { calendarMode = !calendarMode }) {
+                    Icon(
+                        Icons.Filled.DateRange,
+                        contentDescription = "月历",
+                        tint = if (calendarMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("收入", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatMoneyCompact(monthIncome), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FlowGreen)
+                }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("支出", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(formatMoneyCompact(monthExpense), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FlowRed)
+                }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("结余", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (monthNet >= 0) formatMoneyCompact(monthNet) else "−${formatMoneyCompact(-monthNet)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (monthNet >= 0) FlowGreen else FlowRed
+                    )
+                }
+            }
+        }
+
+        // ── 页面标题与操作：搜索/筛选保留原入口 ──
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("流水记录", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            IconButton(onClick = { showSearch = !showSearch }) {
+                Icon(Icons.Filled.Search, contentDescription = "搜索", tint = if (showSearch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = { showFilter = true }) {
+                Icon(
+                    Icons.Filled.List,
+                    contentDescription = "筛选",
+                    tint = if (fTypes.isNotEmpty() || fCategory != null || fNecessity != null || fChannel != null || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // 时间范围和商户/分类库入口收进筛选面板，默认页面保持效果图的简洁层级。
+        if (dayFilter != null) {
+            FilterChip(
+                selected = true,
+                onClick = { dayFilter = null },
+                label = { Text("当日 ${dayFilter!!.monthValue}月${dayFilter!!.dayOfMonth}日 ✕") },
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
         }
         if (rangeMode == "CUSTOM") {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { showStartPicker = true }) { Text("起 ${customStart ?: month.atDay(1)}", style = MaterialTheme.typography.labelMedium) }
                 Text("至", style = MaterialTheme.typography.labelMedium)
                 TextButton(onClick = { showEndPicker = true }) { Text("止 ${customEnd ?: month.atEndOfMonth()}", style = MaterialTheme.typography.labelMedium) }
-            }
-        }
-        // ── 月度摘要卡（REQ 流水§16/§19）──
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp, 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { month = month.minusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上月") }
-                Text(
-                    "${month.year}年${month.monthValue}月",
-                    Modifier.clickable { showMonthPicker = true }.padding(horizontal = 4.dp),
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                IconButton(onClick = { month = month.plusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下月") }
-                IconButton(onClick = { calendarMode = !calendarMode }) {
-                    Icon(Icons.Filled.DateRange, contentDescription = "月历", tint = if (calendarMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Row {
-                IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Filled.Search, contentDescription = "搜索", tint = if (showSearch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = { showFilter = true }) { Icon(Icons.Filled.List, contentDescription = "筛选", tint = if (fTypes.isNotEmpty() || fCategory != null || fNecessity != null || fChannel != null || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
-            }
-        }
-        if (!showSearch && !multiSelect) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Text("收入 ${formatMoney(monthIncome)}", color = FlowGreen, style = MaterialTheme.typography.bodyMedium)
-                Text("支出 ${formatMoney(monthExpense)}", color = FlowRed, style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "结余 ${if (monthIncome - monthExpense >= 0) formatMoney(monthIncome - monthExpense) else formatMoney(monthExpense - monthIncome)}",
-                    color = if (monthIncome - monthExpense >= 0) FlowGreen else FlowRed,
-                    style = MaterialTheme.typography.bodyMedium
-                )
             }
         }
         if (showSearch || multiSelect) {
@@ -294,36 +344,50 @@ fun TransactionsScreen(
             }
         } else {
             // ── 连续列表（REQ 流水§1-3/§15/§21）──
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                var lastDay: LocalDate? = null
-                filtered.forEach { tx ->
-                    val day = Instant.ofEpochMilli(tx.occurredAt).atZone(zone).toLocalDate()
-                    if (day != lastDay) {
-                        lastDay = day
-                        item(key = "sep-$day") {
-                            Text(
-                                if (day == LocalDate.now()) "今天" else "${day.monthValue}月${day.dayOfMonth}日",
-                                Modifier.padding(top = 10.dp, bottom = 4.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+            LazyColumn(
+                Modifier.fillMaxWidth().weight(1f),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (filtered.isEmpty()) {
+                    item {
+                        Text("没有符合条件的流水", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    filtered.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.forEach { (day, dayTxs) ->
+                        item(key = "day-$day") {
+                            Column {
+                                Text(
+                                    dayLabel(day),
+                                    Modifier.padding(start = 2.dp, bottom = 6.dp),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                GlassCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = Modifier
+                                ) {
+                                    dayTxs.forEachIndexed { index, tx ->
+                                        TransactionListRow(
+                                            tx = tx,
+                                            accountName = accountNameOf(tx.accountId),
+                                            category = categories.firstOrNull { it.name == tx.category },
+                                            multiSelect = multiSelect,
+                                            checked = tx.id in selected,
+                                            modifier = Modifier.padding(horizontal = 12.dp),
+                                            onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
+                                            onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
+                                            onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
+                                        )
+                                        if (index < dayTxs.lastIndex) {
+                                            HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                    item(key = tx.id) {
-                        TransactionListRow(
-                            tx = tx,
-                            accountName = accountNameOf(tx.accountId),
-                            category = categories.firstOrNull { it.name == tx.category },
-                            multiSelect = multiSelect,
-                            checked = tx.id in selected,
-                            onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
-                            onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
-                            onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
-                        )
-                    }
-                }
-                if (filtered.isEmpty()) {
-                    item { Text("没有符合条件的流水", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
         }
@@ -368,12 +432,26 @@ fun TransactionsScreen(
     if (showFilter) {
         FilterDialog(
             categories = categories,
+            range = when {
+                rangeMode == "LAST3" -> "LAST3"
+                rangeMode == "CUSTOM" -> "CUSTOM"
+                month == YearMonth.now().minusMonths(1) -> "LAST_MONTH"
+                else -> "THIS_MONTH"
+            },
             fTypes = fTypes, fCategory = fCategory, fNecessity = fNecessity, fChannel = fChannel,
             fMinCents = fMinCents, fMaxCents = fMaxCents,
-            onApply = { t, c, n, ch, min, max ->
+            onApply = { pickedRange, t, c, n, ch, min, max ->
+                when (pickedRange) {
+                    "THIS_MONTH" -> { rangeMode = "MONTH"; month = YearMonth.now() }
+                    "LAST_MONTH" -> { rangeMode = "MONTH"; month = YearMonth.now().minusMonths(1) }
+                    "LAST3" -> rangeMode = "LAST3"
+                    "CUSTOM" -> rangeMode = "CUSTOM"
+                }
+                dayFilter = null
                 fTypes = t; fCategory = c; fNecessity = n; fChannel = ch; fMinCents = min; fMaxCents = max
                 showFilter = false
             },
+            onOpenLibrary = { showFilter = false; viewMode = "library" },
             onClear = { fTypes = emptySet(); fCategory = null; fNecessity = null; fChannel = null; fMinCents = ""; fMaxCents = ""; showFilter = false },
             onDismiss = { showFilter = false }
         )
@@ -428,12 +506,22 @@ private fun TransactionListRow(
     category: CategoryEntity?,
     multiSelect: Boolean,
     checked: Boolean,
+    modifier: Modifier = Modifier,
     onToggle: () -> Unit,
     onEnterMulti: () -> Unit,
     onClick: () -> Unit
 ) {
+    val metadata = listOfNotNull(
+        typeLabel(tx.type),
+        tx.category.ifEmpty { null },
+        if (tx.channel != null) "${tx.channel} · $accountName" else accountName.ifEmpty { null },
+        if (tx.necessity == true) "必要" else if (tx.necessity == false) "非必要" else null
+    ).joinToString(" · ")
     Row(
-        Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onEnterMulti).padding(vertical = 8.dp),
+        modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onEnterMulti)
+            .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (multiSelect) {
@@ -441,7 +529,7 @@ private fun TransactionListRow(
         }
         // 左侧浅主题色圆角底块 + 深色线性分类图标（REQ 流水§22）
         Box(
-            Modifier.size(38.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
+            Modifier.size(40.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -453,36 +541,44 @@ private fun TransactionListRow(
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    tx.merchant ?: typeLabel(tx.type),
-                    fontWeight = FontWeight.Medium,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-            }
             Text(
-                listOfNotNull(
-                    typeLabel(tx.type),
-                    tx.category.ifEmpty { null },
-                    if (tx.channel != null) "$tx.channel · $accountName" else accountName.ifEmpty { null },
-                    if (tx.necessity == true) "必要" else if (tx.necessity == false) "非必要" else null,
-                    formatTime(tx.occurredAt)
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                tx.merchant ?: typeLabel(tx.type),
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    metadata,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    formatTime(tx.occurredAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Spacer(Modifier.width(8.dp))
         Text(
-            "${amountPrefixOf(tx.type)}${formatMoney(tx.amountCents)}",
+            formatSignedMoney(
+                tx.amountCents,
+                positive = when (tx.type) {
+                    "EXPENSE", "FEE" -> false
+                    "INCOME", "REFUND", "REIMBURSEMENT" -> true
+                    else -> null
+                }
+            ),
             fontWeight = FontWeight.Bold,
             color = amountColorOf(tx.type),
-            style = MaterialTheme.typography.bodyLarge
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1
         )
     }
 }
@@ -574,12 +670,15 @@ internal fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, 
 @Composable
 private fun FilterDialog(
     categories: List<CategoryEntity>,
+    range: String,
     fTypes: Set<String>, fCategory: String?, fNecessity: Boolean?, fChannel: String?,
     fMinCents: String, fMaxCents: String,
-    onApply: (Set<String>, String?, Boolean?, String?, String, String) -> Unit,
+    onApply: (String, Set<String>, String?, Boolean?, String?, String, String) -> Unit,
+    onOpenLibrary: () -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    var pickedRange by remember { mutableStateOf(range) }
     var types by remember { mutableStateOf(fTypes) }
     var category by remember { mutableStateOf(fCategory) }
     var necessity by remember { mutableStateOf(fNecessity) }
@@ -591,6 +690,23 @@ private fun FilterDialog(
         title = { Text("筛选") },
         text = {
             Column {
+                Text("数据范围", fontWeight = FontWeight.Medium)
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    listOf(
+                        "本月" to "THIS_MONTH",
+                        "上月" to "LAST_MONTH",
+                        "近三月" to "LAST3",
+                        "自定义" to "CUSTOM"
+                    ).forEach { (label, value) ->
+                        FilterChip(
+                            selected = pickedRange == value,
+                            onClick = { pickedRange = value },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(2.dp)
+                        )
+                    }
+                }
+                TextButton(onClick = onOpenLibrary) { Text("打开商户与分类库") }
                 Text("交易类型", fontWeight = FontWeight.Medium)
                 Row {
                     listOf("支出" to "EXPENSE", "收入" to "INCOME", "退款" to "REFUND", "转账还款" to "LOAN_PAYMENT").forEach { (label, t) ->
@@ -629,7 +745,7 @@ private fun FilterDialog(
         confirmButton = {
             Row {
                 TextButton(onClick = onClear) { Text("清空") }
-                TextButton(onClick = { onApply(types, category, necessity, channel, min, max) }) { Text("应用") }
+                TextButton(onClick = { onApply(pickedRange, types, category, necessity, channel, min, max) }) { Text("应用") }
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }

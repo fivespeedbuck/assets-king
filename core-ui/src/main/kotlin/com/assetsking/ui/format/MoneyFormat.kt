@@ -1,20 +1,44 @@
 package com.assetsking.ui.format
 
-import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import java.text.NumberFormat
 import java.util.Locale
 
 private val currencyFormat = NumberFormat.getCurrencyInstance(Locale.CHINA)
 
 fun formatMoney(cents: Long): String = currencyFormat.format(cents / 100.0)
+
+/** 效果图口径：整元省略 .00，有角分时固定两位。 */
+fun formatMoneyCompact(cents: Long): String {
+    val (intPart, decPart) = splitMoney(cents)
+    val sign = if (cents < 0) "−" else ""
+    return buildString {
+        append(sign)
+        append('¥')
+        append(intPart)
+        if (decPart != null) append('.').append(decPart)
+    }
+}
+
+/** 单一入口生成带方向的金额，避免调用方手写“−¥”后再拼一个自带 ¥ 的金额。 */
+fun formatSignedMoney(cents: Long, positive: Boolean?): String {
+    val unsigned = formatMoneyCompact(kotlin.math.abs(cents)).removePrefix("−")
+    return when (positive) {
+        true -> "+$unsigned"
+        false -> "−$unsigned"
+        null -> unsigned
+    }
+}
 
 /**
  * 大金额「整数突出、小数弱化」（REQ 首页UI§15）：整元不显示 `.00`，存在角分时小数部分缩小。
@@ -40,15 +64,20 @@ fun BigMoney(
 ) {
     val (intPart, decPart) = splitMoney(cents)
     val sign = if (cents < 0) "-" else ""
-    Row(modifier, verticalAlignment = Alignment.Bottom) {
-        Text("$sign¥$intPart", style = style, fontWeight = FontWeight.Bold, color = color)
+    val amount = buildAnnotatedString {
+        append("$sign¥$intPart")
         if (decPart != null) {
-            Text(
-                ".$decPart",
-                style = style.copy(fontSize = style.fontSize * 0.6f),
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
+            withStyle(SpanStyle(fontSize = style.fontSize * 0.6f)) { append(".$decPart") }
         }
     }
+    Text(
+        text = amount,
+        modifier = modifier,
+        style = style,
+        fontWeight = FontWeight.Bold,
+        color = color,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
 }

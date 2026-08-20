@@ -10,6 +10,7 @@ import com.assetsking.ledger.InstallmentMatcher
 import com.assetsking.ledger.LedgerDelta
 import com.assetsking.ledger.ReimbursementSplit
 import com.assetsking.ledger.RuleBasedCategorizer
+import com.assetsking.ledger.SmsSenderWhitelist
 import com.assetsking.model.AccountType
 import com.assetsking.model.InstallmentStatus
 import com.assetsking.model.LoanInstallment
@@ -34,6 +35,8 @@ data class LearnedRule(
     val category: String
 )
 
+private class NotificationAlreadyHandledException : RuntimeException()
+
 class LedgerRepository(
     private val context: android.content.Context,
     private val database: AssetsKingDatabase,
@@ -51,6 +54,17 @@ class LedgerRepository(
         database.rawNotificationDao().observeByStatus("IGNORED")
     private val _lastReceivedAt = MutableStateFlow(prefs.getLong("last_notification_received_at", 0L))
     val lastReceivedAt: Flow<Long> = _lastReceivedAt
+    private val _lastListenerHealthyAt = MutableStateFlow(prefs.getLong("last_listener_healthy_at", 0L))
+    val lastListenerHealthyAt: Flow<Long> = _lastListenerHealthyAt
+    private val _smsSenderWhitelist = MutableStateFlow(
+        prefs.getString("sms_sender_whitelist", null)
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.toSet()
+            ?: SmsSenderWhitelist.defaults
+    )
+    val smsSenderWhitelist: Flow<Set<String>> = _smsSenderWhitelist
     private val categorizer = RuleBasedCategorizer()
 
     suspend fun seedKnownAccounts() {
@@ -93,6 +107,14 @@ class LedgerRepository(
             _lastReceivedAt.value = notification.receivedAt
             prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
         }
+    }
+
+    /** Last completed listener recovery window; persisted so a process restart does not widen the gap. */
+    fun lastListenerHealthyAtValue(): Long = _lastListenerHealthyAt.value
+
+    fun markListenerHealthy(at: Long = System.currentTimeMillis()) {
+        _lastListenerHealthyAt.value = at
+        prefs.edit().putLong("last_listener_healthy_at", at).apply()
     }
 
     // ── 待确认通知防丢：最后通知过几笔（prefs），心跳/开机/重连时据此补发 ──
@@ -147,40 +169,45 @@ class LedgerRepository(
         }
         runCatching {
             val dbFile = context.getDatabasePath("assets-king.db")
-            // WAL 先 checkpoint，尽量让主库文件自包含
-            runCatching { database.openHelper.writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)") }
+            require(dbFile.isFile) { "数据库文件不存在" }
+            // 恢复只使用主库文件，因此 WAL checkpoint 失败时绝不能继续生成一个看似成功、
+            // 实际缺少最近流水的备份。
+            database.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { cursor ->
+                require(cursor.moveToFirst()) { "WAL checkpoint 未返回结果" }
+                // SQLite 返回三列：busy / log frames / checkpointed frames。busy=0 才表示快照完整。
+                require(cursor.getInt(0) == 0) { "数据库正忙，WAL checkpoint 未完成" }
+            }
             val stamp = System.currentTimeMillis()
             val prefix = if (manual) "manual" else "auto"
             val kind = if (manual) "manual" else "auto"
             val localDir = java.io.File(context.filesDir, "backups/$kind")
 
-            // SAF 目录（REQ 备份§2）：所选目录下建 assets-king-backups/{manual,auto}/；失败回退应用私有目录
+            // 用户选过 SAF 目录后，写入失败必须返回 false；静默回退私有目录会让人误以为
+            // 外部备份已经存在，真正恢复时却找不到文件。
             val safSub: androidx.documentfile.provider.DocumentFile? = backupDirUri()?.let { root ->
-                runCatching {
-                    val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, root)
-                        ?: return@runCatching null
-                    val base = tree.findFile("assets-king-backups") ?: tree.createDirectory("assets-king-backups")
-                    base?.findFile(kind) ?: base?.createDirectory(kind)
-                }.getOrNull()
+                val tree = requireNotNull(androidx.documentfile.provider.DocumentFile.fromTreeUri(context, root))
+                val base = tree.findFile("assets-king-backups") ?: tree.createDirectory("assets-king-backups")
+                requireNotNull(base?.findFile(kind) ?: base?.createDirectory(kind))
             }
 
             fun enc(name: String, data: ByteArray) {
                 if (safSub != null) {
-                    runCatching {
-                        safSub.findFile(name)?.delete()
-                        val f = safSub.createFile("application/octet-stream", name) ?: return
-                        context.contentResolver.openOutputStream(f.uri)?.use { it.write(data) }
-                    }
+                    safSub.findFile(name)?.delete()
+                    val f = requireNotNull(safSub.createFile("application/octet-stream", name))
+                    requireNotNull(context.contentResolver.openOutputStream(f.uri)).use { it.write(data) }
                 } else {
                     localDir.mkdirs()
                     java.io.File(localDir, name).writeBytes(data)
                 }
             }
-            fun encFile(src: java.io.File, ext: String) {
-                if (!src.exists()) return
+            fun encFile(src: java.io.File, ext: String, required: Boolean = false) {
+                if (!src.exists()) {
+                    require(!required) { "必要的备份源文件不存在：${src.name}" }
+                    return
+                }
                 enc("${prefix}_${stamp}$ext", com.assetsking.ledger.PinCipher.encrypt(src.readBytes(), pin))
             }
-            encFile(dbFile, ".db.enc")
+            encFile(dbFile, ".db.enc", required = true)
             encFile(java.io.File(dbFile.path + "-wal"), ".wal.enc")
             encFile(java.io.File(dbFile.path + "-shm"), ".shm.enc")
             val prefsJson = JSONObject().apply {
@@ -275,7 +302,8 @@ class LedgerRepository(
         if (migrationDone()) return@withContext true
         if (backupPin().length != 6) return@withContext false
         // 备份必须在事务外：wal_checkpoint 不能跑在活动事务里
-        if (!backupNow(manual = false)) return@withContext false
+        // 迁移会永久清空旧流水，不能复用“今日已自动备份”的旧快照；强制生成独立、永久保留的当前快照。
+        if (!backupNow(manual = true)) return@withContext false
         val accounts = database.accountDao().all()
         database.withTransaction {
             database.transactionDao().deleteAll()
@@ -307,7 +335,14 @@ class LedgerRepository(
                 val dir = java.io.File(context.filesDir, "backups/manual")
                 val content = context.contentResolver.openInputStream(uri)?.readBytes() ?: return@runCatching false
                 val dbBytes = com.assetsking.ledger.PinCipher.decrypt(content, pin)
-                backupNow(manual = true)
+                // 兼容旧 XOR 备份时，错误 PIN 只会产出乱码；覆盖前必须先验证 SQLite 文件头。
+                val sqliteHeader = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
+                if (dbBytes.size < sqliteHeader.size || !dbBytes.copyOfRange(0, sqliteHeader.size).contentEquals(sqliteHeader)) {
+                    return@runCatching false
+                }
+                if (!isHealthySqlite(dbBytes)) return@runCatching false
+                // 恢复是破坏性操作：当前数据备份失败时绝不继续覆盖。
+                if (!backupNow(manual = true)) return@runCatching false
                 // 审核 BUG-2 修复：恢复前关闭数据库连接并删除 -wal/-shm。
                 // 否则当前进程的 WAL 里未 checkpoint 的数据会与覆盖后的主库混用，
                 // 导致数据损坏或「恢复到旧数据」。关闭后本实例不可再用，调用方需重启进程。
@@ -333,6 +368,12 @@ class LedgerRepository(
                             is Int -> editor.putInt(k, v)
                             is Long -> editor.putLong(k, v)
                             is Double -> editor.putLong(k, v.toLong())
+                            is org.json.JSONArray -> editor.putStringSet(
+                                k,
+                                (0 until v.length()).mapNotNull { index ->
+                                    v.optString(index).takeIf(String::isNotBlank)
+                                }.toSet()
+                            )
                         }
                     }
                     editor.apply()
@@ -340,6 +381,30 @@ class LedgerRepository(
                 true
             }.getOrDefault(false)
         }
+
+    /** 在覆盖当前账本前，对解密结果做 SQLite 自身的结构完整性检查。 */
+    private fun isHealthySqlite(bytes: ByteArray): Boolean {
+        val candidate = java.io.File.createTempFile("assets-king-restore-", ".db", context.cacheDir)
+        return try {
+            candidate.writeBytes(bytes)
+            val opened = android.database.sqlite.SQLiteDatabase.openDatabase(
+                candidate.path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+            )
+            try {
+                opened.rawQuery("PRAGMA quick_check(1)", null).use { cursor ->
+                    cursor.moveToFirst() && cursor.getString(0) == "ok"
+                }
+            } finally {
+                opened.close()
+            }
+        } finally {
+            candidate.delete()
+            java.io.File(candidate.path + "-wal").delete()
+            java.io.File(candidate.path + "-shm").delete()
+        }
+    }
 
     // ── 首页可配置模块（REQ 首页可配置模块 §1-10）：启用集合存 prefs，默认 本月预算+待报销+周期扣款 ──
 
@@ -377,7 +442,7 @@ class LedgerRepository(
         database.rawNotificationDao().updateStatus(id, status)
     }
 
-    /** 同额转出+转入两条通知合并确认「账户转账」（REQ 待确认交易类型§4）：记转账 + 两条通知标 IGNORED（去重指纹保留，补扫不复活）。 */
+    /** 同额转出+转入两条通知合并确认「账户转账」（REQ 待确认交易类型§4）。 */
     suspend fun confirmTransferFromNotifications(
         outNotificationId: String,
         inNotificationId: String,
@@ -386,12 +451,27 @@ class LedgerRepository(
         amountCents: Long,
         note: String?
     ) {
-        val postedAt = database.rawNotificationDao().findById(outNotificationId)?.postedAt
-            ?: System.currentTimeMillis()
-        addTransfer(fromAccountId, toAccountId, amountCents, note, postedAt)
-        listOf(outNotificationId, inNotificationId).forEach { id ->
-            database.rawNotificationDao().updateProcessingNote(id, "merged-transfer")
-            database.rawNotificationDao().updateStatus(id, "IGNORED")
+        require(outNotificationId != inNotificationId)
+        require(amountCents > 0)
+        try {
+            database.withTransaction {
+                // 两条证据必须在同一事务里全部认领成功。任一已被处理就整体回滚，
+                // 防止双击/并发确认重复生成转账，或只把其中一条卡在 LINKING。
+                if (database.rawNotificationDao().claimForConfirmation(outNotificationId) != 1 ||
+                    database.rawNotificationDao().claimForConfirmation(inNotificationId) != 1
+                ) {
+                    throw NotificationAlreadyHandledException()
+                }
+                val postedAt = database.rawNotificationDao().findById(outNotificationId)?.postedAt
+                    ?: System.currentTimeMillis()
+                addTransfer(fromAccountId, toAccountId, amountCents, note, postedAt)
+                listOf(outNotificationId, inNotificationId).forEach { id ->
+                    database.rawNotificationDao().updateProcessingNote(id, "merged-transfer")
+                    database.rawNotificationDao().updateStatus(id, "IGNORED")
+                }
+            }
+        } catch (_: NotificationAlreadyHandledException) {
+            // 幂等无操作：先完成的那次确认已经是唯一有效结果。
         }
     }
 
@@ -418,6 +498,10 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
+            // 先原子认领再做任何余额或流水变更。重复点击、并发确认或已处理通知直接无操作返回。
+            if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
+                return@withTransaction
+            }
             // 流水日期用通知到达时间，不用确认时刻：银行短信即时推，postedAt≈真实扣款时间；
             // 用户可能隔天才点确认，用确认时刻会把日期记错（真机实报：88 元短信 08:39 到、09:41 确认）
             val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
@@ -598,30 +682,6 @@ class LedgerRepository(
         if (newBalance != account.balanceCents) {
             database.accountDao().upsert(account.copy(balanceCents = newBalance))
         }
-    }
-
-    /**
-     * 通知一到就自动对账，不必等用户确认那笔流水。按尾号找账户，找不到就什么都不做。
-     *
-     * @param postedAt 通知的推送时间。补扫会把旧短信重新读一遍，旧余额不能覆盖新余额，
-     *   所以比 lastCheckedAt 旧的直接丢弃。
-     * @param pendingDeltas 可归属本账户的待确认证据增量（REQ 对账 §4 要求待确认变化也参与校验）
-     * @param thisEvidenceDeltaCents 本条证据自身的增量（银行余额是扣款后的值，校验须包含它）
-     * @return 是否真的对上了账
-     */
-    suspend fun reconcileFromNotification(
-        cardTail: String,
-        balanceCents: Long,
-        postedAt: Long,
-        pendingDeltas: List<LedgerDelta> = emptyList(),
-        thisEvidenceDeltaCents: Long? = null
-    ): Boolean {
-        val candidates = database.accountDao().findByCardTail(cardTail, AccountType.ASSET.name)
-        // 两张卡尾号相同就无法判断是哪张，宁可不对
-        val account = candidates.singleOrNull() ?: return false
-        if ((account.lastCheckedAt ?: 0L) >= postedAt) return false
-        applyBankBalance(account.id, cardTail, balanceCents, postedAt, pendingDeltas, thisEvidenceDeltaCents)
-        return true
     }
 
     suspend fun addAccount(
@@ -895,8 +955,16 @@ class LedgerRepository(
         database.withTransaction {
             val expenses = expenseIds
                 .map { requireNotNull(database.transactionDao().findById(it)) }
-                .filter { it.type == TransactionType.EXPENSE.name }
-            val covers = ReimbursementSplit.cover(expenses.map { it.amountCents }, amountCents)
+                .filter {
+                    it.type == TransactionType.EXPENSE.name &&
+                        it.isReimbursable &&
+                        it.reimbursedCents < it.amountCents
+                }
+            // 只能覆盖每笔垫付尚未报销的余额；重复报销不得让 reimbursedCents 超过原消费。
+            val covers = ReimbursementSplit.cover(
+                expenses.map { (it.amountCents - it.reimbursedCents).coerceAtLeast(0L) },
+                amountCents
+            )
             val txId = UUID.randomUUID().toString()
             database.transactionDao().insert(
                 TransactionEntity(
@@ -1170,11 +1238,9 @@ class LedgerRepository(
     }
 
     /**
-     * 处理到期的周期性账单：插入流水 + 计算下次执行时间。循环补漏多周期。
-     *
-     * 关键：**真实扣款已经被通知抓到时，绝不再造一笔**，改为把已有那笔认领给规则。
-     * 否则「周期账单自动生成」+「通知自动记账」会把同一笔房租/订阅记两次，
-     * 余额和 V5 的必须还/缺口全部虚高。
+     * 处理到期的周期性账单：只认领真实流水并推进下次日期，绝不自动造消费。
+     * 找不到真实扣款时保留已到期的 nextRunAt，账单页据此显示“待核实”；
+     * 用户确认通知或手工关联后，下次处理才会推进规则。
      */
     suspend fun processRecurring(): Int {
         val now = System.currentTimeMillis()
@@ -1182,7 +1248,7 @@ class LedgerRepository(
             .filter { it.nextRunAt <= now }
         if (due.isEmpty()) return 0
 
-        var inserted = 0
+        var linked = 0
         database.withTransaction {
             for (rule in due) {
                 var cursor = rule.nextRunAt
@@ -1190,25 +1256,20 @@ class LedgerRepository(
                     val existing = findRealChargeFor(rule, cursor)
                     if (existing != null) {
                         database.transactionDao().updateRecurringRuleId(existing.id, rule.id)
+                        linked++
+                        cursor = nextRun(cursor, rule.interval)
                     } else {
-                        addTransaction(
-                            accountId = rule.accountId,
-                            amountCents = rule.amountCents,
-                            type = TransactionType.valueOf(rule.type),
-                            category = rule.category,
-                            merchant = rule.merchant,
-                            note = rule.note,
-                            occurredAt = cursor,
-                            recurringRuleId = rule.id
-                        )
-                        inserted++
+                        // 未发生或尚未捕获都不能假定已经扣款。停在最早未核实期次，
+                        // 避免余额、预算和统计被一笔“计划”污染。
+                        break
                     }
-                    cursor = nextRun(cursor, rule.interval)
                 }
-                database.recurringRuleDao().upsert(rule.copy(nextRunAt = cursor))
+                if (cursor != rule.nextRunAt) {
+                    database.recurringRuleDao().upsert(rule.copy(nextRunAt = cursor))
+                }
             }
         }
-        return inserted
+        return linked
     }
 
     /**
@@ -1600,6 +1661,16 @@ class LedgerRepository(
 
     /** 监听服务在 onNotificationPosted 里同步调用，等不了 Flow */
     fun isWhitelisted(packageName: String): Boolean = packageName in _notificationWhitelist.value
+
+    fun setSmsSenderWhitelist(senders: Set<String>) {
+        val normalized = senders.map(String::trim).filter(String::isNotEmpty).toSet()
+        _smsSenderWhitelist.value = normalized
+        prefs.edit().putString("sms_sender_whitelist", normalized.joinToString(",")).apply()
+    }
+
+    /** Shared by SMS_RECEIVED and inbox rescan; unknown senders are rejected before parsing. */
+    fun isSmsSenderWhitelisted(sender: String): Boolean =
+        SmsSenderWhitelist.isAllowed(sender, _smsSenderWhitelist.value)
 
     /** 自动发现的通知来源：包名 → 应用名。设置页据此列出可开关的清单 */
     private val _notificationSources = MutableStateFlow(readNotificationSources())

@@ -12,15 +12,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.CalendarToday
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -52,22 +56,21 @@ import com.assetsking.database.LedgerRepository
 import com.assetsking.database.TransactionEntity
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.format.formatMoneyCompact
+import com.assetsking.ui.theme.ExpenseRed
+import com.assetsking.ui.theme.IncomeGreen
+import com.assetsking.ui.theme.ThemePrimaryGreen
 import com.assetsking.usecase.GetStatsUseCase
 import com.assetsking.usecase.StatsData
-import java.time.Instant
-import java.time.LocalDate
 import java.time.YearMonth
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
-private val StatsGreen = Color(0xFF66BB6A)
-private val StatsRed = Color(0xFFE57373)
+private val StatsGreen = IncomeGreen
+private val StatsRed = ExpenseRed
 
 private val categoryPalette = listOf(
-    Color(0xFF5C9CE6), Color(0xFF9B8AFB), Color(0xFFF2A93B), Color(0xFF6BCB8F),
-    Color(0xFFE86E6E), Color(0xFF4ECDC4), Color(0xFFF28DB2), Color(0xFF8D6E63),
-    Color(0xFF90A4AE), Color(0xFFFFB74D), Color(0xFF7986CB)
+    ThemePrimaryGreen, Color(0xFFF2A93B), Color(0xFF5C9CE6), Color(0xFF6BCB8F),
+    Color(0xFF90A4AE), Color(0xFF8D6E63), Color(0xFF4ECDC4), Color(0xFF6B7A75)
 )
 
 private fun catColor(index: Int): Color = categoryPalette[index % categoryPalette.size]
@@ -126,25 +129,34 @@ fun StatsScreen(
     val necessarySpent = expenses.filter { it.necessity == true }.sumOf { netOf(it) }
     val optionalSpent = expenses.filter { it.necessity == false }.sumOf { netOf(it) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         // ── 月份切换（REQ 统计§21）──
         item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                IconButton(onClick = { month = month.minusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上月") }
+            Row(
+                Modifier.fillMaxWidth().height(48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                IconButton(onClick = { month = month.minusMonths(1) }) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上月") }
                 Text(
                     "${month.year}年${month.monthValue}月",
                     Modifier.clickable { showMonthPicker = true }.padding(horizontal = 8.dp),
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium
                 )
-                IconButton(onClick = { month = month.plusMonths(1) }) { Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下月") }
+                Icon(Icons.Outlined.CalendarToday, contentDescription = "选择月份", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                IconButton(onClick = { month = month.plusMonths(1) }) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下月") }
             }
         }
 
         // ── ①本月消费组成（REQ 统计§14-16）──
         item {
-            GlassCard {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            GlassCard(contentPadding = Modifier) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)) {
                     val drill = drillCategory
                     if (drill != null) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -177,8 +189,19 @@ fun StatsScreen(
                             }
                         }
                     } else {
-                        Text("本月消费组成", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("本月消费组成", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                "点击分类看流水",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(2.dp))
                         val slices = topLevelTotals.mapIndexed { i, (parentId, total) ->
                             val parent = categories.firstOrNull { it.id == parentId }
                             Triple(parent?.name ?: "其他", total, catColor(i))
@@ -186,7 +209,6 @@ fun StatsScreen(
                         // 双层环（REQ 统计§14）：内圈一级占比、外圈显示各一级分类内部的必要/非必要构成
                         // 审核 J-2 修复：外圈原只按全局必要/非必要/默认三段，与「各一级分类内部构成」口径不符。
                         // 改为每个一级分类在外圈拆成必要(实色)/非必要(半透明)两段，顺序与内圈一致。
-                        val defaultSpent = expenses.filter { it.necessity == null }.sumOf { netOf(it) }
                         val outerSlices = topLevelTotals.mapIndexed { i, (parentId, _) ->
                             val color = catColor(i)
                             val sub = expenses.filter { tx ->
@@ -205,15 +227,11 @@ fun StatsScreen(
                             totalCents = monthExpense,
                             slices = slices.map { (_, total, color) -> total to color },
                             outerSlices = outerSlices,
-                            modifier = Modifier.size(180.dp).align(Alignment.CenterHorizontally)
+                            modifier = Modifier.size(214.dp).align(Alignment.CenterHorizontally)
                         )
-                        Text(
-                            "外圈：每个分类实色=必要 · 浅色=非必要｜合计 必要 ${formatMoney(necessarySpent)} · 非必要 ${formatMoney(optionalSpent)} · 默认 ${formatMoney(defaultSpent)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        CompositionLegend()
+                        Spacer(Modifier.height(7.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         // 报销单独显示（REQ 报销§5）：本月报销到账已从消费/预算冲减，不计普通收入
                         val monthReimbursed = monthTxs.filter { it.type == "REIMBURSEMENT" }.sumOf { it.amountCents }
                         if (monthReimbursed > 0) {
@@ -232,21 +250,34 @@ fun StatsScreen(
                             val nonNec = if (parent != null) expenses.filter {
                                 categories.firstOrNull { c -> c.name == it.category }?.parentId == parent.id && it.necessity == false
                             }.sumOf { netOf(it) } else 0L
-                            Row(
-                                Modifier.fillMaxWidth().clickable { parent?.let { drillCategory = it } }.padding(vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(Modifier.size(10.dp).background(color, CircleShape))
-                                Spacer(Modifier.width(8.dp))
-                                Text(name, Modifier.weight(1f))
-                                Text(
-                                    "${formatMoney(total)} · ${if (monthExpense > 0) (total * 100 / monthExpense) else 0}%" +
-                                        if (nonNec > 0) " · 非必要 ${nonNec * 100 / total.coerceAtLeast(1)}%" else "",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            }
+                            CategoryStatRow(
+                                name = name,
+                                amountCents = total,
+                                nonNecessaryCents = nonNec,
+                                totalMonthCents = monthExpense,
+                                color = color,
+                                onClick = { parent?.let { drillCategory = it } }
+                            )
                         }
-                        if (slices.isEmpty()) Text("本月暂无消费", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (slices.isEmpty()) {
+                            Text(
+                                "本月暂无消费",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            val top = slices.first()
+                            val topCategory = categories.firstOrNull { it.name == top.first }
+                            val topNonNecessary = topCategory?.let { category ->
+                                expenses.filter {
+                                    categories.firstOrNull { c -> c.name == it.category }?.parentId == category.id && it.necessity == false
+                                }.sumOf { netOf(it) }
+                            } ?: 0L
+                            InsightCard(
+                                text = "${top.first}本月最大支出，其中非必要消费 ${formatMoneyCompact(topNonNecessary)}。"
+                            )
+                        }
                     }
                 }
             }
@@ -254,8 +285,8 @@ fun StatsScreen(
 
         // ── ②本月预算（REQ 统计§6/§17-18）──
         item {
-            GlassCard {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            GlassCard(contentPadding = Modifier) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)) {
                     Text("本月预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     ProgressLine("必要预算", necessarySpent, budgetSum, StatsGreen)
@@ -281,8 +312,8 @@ fun StatsScreen(
 
         // ── ③收支趋势（REQ 统计§19-20）──
         item {
-            GlassCard {
-                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            GlassCard(contentPadding = Modifier) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("收支趋势", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         Row {
@@ -343,6 +374,115 @@ fun StatsScreen(
     }
 }
 
+@Composable
+private fun CompositionLegend() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        LegendItem(color = StatsGreen, label = "必要")
+        Spacer(Modifier.width(18.dp))
+        LegendItem(color = StatsGreen.copy(alpha = 0.35f), label = "非必要")
+    }
+}
+
+@Composable
+private fun LegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(width = 18.dp, height = 6.dp)
+                .background(color, RoundedCornerShape(3.dp))
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** 分类排行：数字摘要 + 必要/非必要分段条，点击仍沿用原有下钻行为。 */
+@Composable
+private fun CategoryStatRow(
+    name: String,
+    amountCents: Long,
+    nonNecessaryCents: Long,
+    totalMonthCents: Long,
+    color: Color,
+    onClick: () -> Unit
+) {
+    val share = if (totalMonthCents > 0) (amountCents * 100 / totalMonthCents).coerceIn(0, 100) else 0
+    val nonNecessary = nonNecessaryCents.coerceIn(0, amountCents)
+    val necessary = (amountCents - nonNecessary).coerceAtLeast(0L)
+    val necessaryFraction = if (amountCents > 0) necessary.toFloat() / amountCents else 0f
+    val nonNecessaryFraction = if (amountCents > 0) nonNecessary.toFloat() / amountCents else 0f
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(10.dp).background(color, CircleShape))
+            Spacer(Modifier.width(10.dp))
+            Text(name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            Text("$share%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.width(18.dp))
+            Text(formatMoneyCompact(amountCents), style = MaterialTheme.typography.bodySmall)
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, top = 6.dp)
+                .height(6.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(3.dp))
+        ) {
+            if (necessaryFraction > 0f) {
+                Box(
+                    Modifier
+                        .weight(necessaryFraction)
+                        .fillMaxHeight()
+                        .background(color, RoundedCornerShape(3.dp))
+                )
+            }
+            if (nonNecessaryFraction > 0f) {
+                Box(
+                    Modifier
+                        .weight(nonNecessaryFraction)
+                        .fillMaxHeight()
+                        .background(color.copy(alpha = 0.35f), RoundedCornerShape(3.dp))
+                )
+            }
+        }
+        if (nonNecessary > 0L) {
+            Text(
+                "非必要 ${nonNecessary * 100 / amountCents.coerceAtLeast(1)}%",
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 3.dp),
+                textAlign = TextAlign.End,
+                style = MaterialTheme.typography.labelSmall,
+                color = StatsRed
+            )
+        }
+        HorizontalDivider(Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@Composable
+private fun InsightCard(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Outlined.Lightbulb, contentDescription = "消费洞察", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
 /** 环形图：内圈占比环 + 可选外圈构成环 + 中心总支出（REQ 统计§14 双层同屏） */
 @Composable
 private fun DonutChart(
@@ -351,10 +491,22 @@ private fun DonutChart(
     modifier: Modifier = Modifier,
     outerSlices: List<Pair<Long, Color>> = emptyList()
 ) {
+    val ringTrackColor = MaterialTheme.colorScheme.surfaceVariant
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val dim = size.minDimension
             fun ring(radius: Float, strokeW: Float, segs: List<Pair<Long, Color>>) {
+                val ringSize = Size(radius * 2, radius * 2)
+                val ringTopLeft = Offset(size.width / 2 - radius, size.height / 2 - radius)
+                drawArc(
+                    ringTrackColor,
+                    -90f,
+                    360f,
+                    false,
+                    style = Stroke(width = strokeW),
+                    size = ringSize,
+                    topLeft = ringTopLeft
+                )
                 var start = -90f
                 segs.forEach { (cents, color) ->
                     if (cents <= 0 || totalCents <= 0) return@forEach
@@ -362,8 +514,8 @@ private fun DonutChart(
                     drawArc(
                         color, start, sweep, false,
                         style = Stroke(width = strokeW),
-                        size = Size(radius * 2, radius * 2),
-                        topLeft = Offset(size.width / 2 - radius, size.height / 2 - radius)
+                        size = ringSize,
+                        topLeft = ringTopLeft
                     )
                     start += sweep
                 }
@@ -377,7 +529,7 @@ private fun DonutChart(
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("总支出", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(formatMoney(totalCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(formatMoneyCompact(totalCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
         }
     }
 }

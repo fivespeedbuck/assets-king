@@ -216,6 +216,13 @@ interface RawNotificationDao {
     @Query("UPDATE raw_notifications SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 
+    /**
+     * 原子认领一条仍可确认的通知。返回 1 才允许继续入账；重复点击或并发确认返回 0。
+     * NEW 只保留给兼容旧数据；正常流程必须先进入 PENDING_CONFIRMATION 再由用户确认。
+     */
+    @Query("UPDATE raw_notifications SET status = 'LINKING' WHERE id = :id AND status IN ('NEW', 'PENDING_CONFIRMATION')")
+    suspend fun claimForConfirmation(id: String): Int
+
     @Query("UPDATE raw_notifications SET processingNote = :note WHERE id = :id")
     suspend fun updateProcessingNote(id: String, note: String)
 

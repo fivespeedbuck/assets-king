@@ -79,6 +79,7 @@ import com.assetsking.ui.component.IconLibrary
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.usecase.AccountInference
+import com.assetsking.usecase.PendingConfirmationPolicy
 import kotlin.math.roundToLong
 import java.time.Instant
 import java.time.ZoneId
@@ -126,20 +127,35 @@ fun TransactionEditorScreen(
             }
         )
     }
+    // 待确认通知方向未知时不把“支出”当成默认答案；用户必须主动选择方向。
+    var directionChosen by remember { mutableStateOf(pendingItem == null || parsed?.isExpense != null) }
     // 审核 BUG-6 修复：退款通知预填「退款」子类型（原固定 INCOME，用户不改就把退款记成收入）。
     var incomeSub by remember { mutableStateOf(if (parsed?.isRefund == true) IncomeSub.REFUND else IncomeSub.INCOME) }
     var repaySub by remember { mutableStateOf(RepaySub.CREDIT_CARD) }
     var amountExpr by remember { mutableStateOf(parsed?.amountCents?.let { "%.2f".format(it / 100.0) } ?: "") }
     var occurredAt by remember { mutableStateOf(pendingItem?.notification?.postedAt ?: System.currentTimeMillis()) }
-    val inferredAccountId = remember(pendingItem, kind) {
+    val inferredAccountId = remember(pendingItem, accounts, merchantLastAccount) {
         if (pendingItem != null) AccountInference.infer(
-            bankMatchedAccountId = parsed?.bankHint?.let { hint -> accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }?.id },
+            bankMatchedAccountId = parsed?.bankHint?.let { hint ->
+                val active = accounts.asSequence().filterNot { it.archived }
+                active.firstOrNull { account ->
+                    account.cardTail != null && account.cardTail == parsed.cardTail &&
+                        (account.name.contains(hint) || hint.contains(account.name))
+                }?.id ?: active.firstOrNull { account ->
+                    account.name.contains(hint) || hint.contains(account.name)
+                }?.id
+            },
             merchantHistoryAccountId = parsed?.merchant?.let { merchantLastAccount[it] },
             sourcePackage = pendingItem.notification.packageName,
-            candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
+            candidates = accounts.filterNot { it.archived }.map { AccountInference.Candidate(it.id, it.name) }
         ) else null
     }
-    var accountId by remember { mutableStateOf(inferredAccountId ?: accounts.firstOrNull { it.type == AccountType.ASSET.name }?.id ?: accounts.firstOrNull()?.id.orEmpty()) }
+    var accountId by remember {
+        mutableStateOf(
+            if (pendingItem != null) inferredAccountId.orEmpty()
+            else accounts.firstOrNull { !it.archived && it.type == AccountType.ASSET.name }?.id.orEmpty()
+        )
+    }
     var toAccountId by remember { mutableStateOf(accounts.firstOrNull { it.type == AccountType.CREDIT.name }?.id.orEmpty()) }
     var channel by remember { mutableStateOf(if (pendingItem != null) AccountInference.channelLabel(pendingItem.notification.packageName, pendingItem.notification.sourceLabel) else "微信支付") }
     var merchantText by remember { mutableStateOf(parsed?.merchant ?: "") }
@@ -184,9 +200,8 @@ fun TransactionEditorScreen(
         val cutoff = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
         transactions.filter { it.occurredAt >= cutoff }.groupingBy { it.category }.eachCount()
     }
-    // 收入用独立分类库（REQ 预期收入§4）；切换类型时清掉上一类型的已选分类，防止错带
+    // 收入用独立分类库（REQ 预期收入§4）。
     val catKind = if (kind == EditorKind.INCOME) "INCOME" else "EXPENSE"
-    LaunchedEffect(kind) { categoryId = null; necessity = null }
     val parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == catKind }
     val childrenOf = { parentId: String? ->
         categories.filter { it.parentId == parentId && !it.isArchived && it.kind == catKind }
@@ -196,17 +211,65 @@ fun TransactionEditorScreen(
     val selectedCategory = categories.firstOrNull { it.id == categoryId }
     val selectedCategoryName = selectedCategory?.name ?: ""
 
+    // 学习规则只负责预填，绝不自动落账。解析出的“退款”证据优先于历史商户类型。
+    LaunchedEffect(pendingItem?.notification?.id, categories, accounts) {
+        val merchant = parsed?.merchant ?: return@LaunchedEffect
+        val learned = repository.matchLearnedRule(merchant) ?: return@LaunchedEffect
+        accounts.firstOrNull { it.id == learned.accountId && !it.archived }?.let { accountId = it.id }
+        if (parsed.isRefund != true) {
+            when (runCatching { TransactionType.valueOf(learned.type) }.getOrNull()) {
+                TransactionType.INCOME -> {
+                    directionChosen = true
+                    kind = EditorKind.INCOME
+                    incomeSub = IncomeSub.INCOME
+                }
+                TransactionType.REFUND -> {
+                    directionChosen = true
+                    kind = EditorKind.INCOME
+                    incomeSub = IncomeSub.REFUND
+                }
+                TransactionType.EXPENSE -> {
+                    directionChosen = true
+                    kind = EditorKind.EXPENSE
+                }
+                else -> Unit
+            }
+        }
+        val expectedKind = if (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME) "INCOME" else "EXPENSE"
+        categories.firstOrNull {
+            it.name == learned.category && it.kind == expectedKind && !it.isArchived
+        }?.let { categoryId = it.id }
+    }
+
+    val selectedAccount = accounts.firstOrNull { it.id == accountId && !it.archived }
+    val editorType = when (kind) {
+        EditorKind.EXPENSE -> TransactionType.EXPENSE
+        EditorKind.INCOME -> incomeSub.type
+        else -> null
+    }
+    val balanceConflict = pendingItem != null && directionChosen &&
+        PendingConfirmationPolicy.balanceConflict(
+            type = editorType,
+            amountCents = amountCents,
+            accountType = selectedAccount?.type?.let { runCatching { AccountType.valueOf(it) }.getOrNull() },
+            accountCardTail = selectedAccount?.cardTail,
+            bankCardTail = parsed?.cardTail,
+            currentBalanceCents = selectedAccount?.balanceCents,
+            bankBalanceCents = parsed?.balanceCents
+        )
+
     // ── 必填校验（REQ 编辑器§19）──
     val missing = buildList {
         if (amountCents <= 0) add("金额")
+        if (pendingItem != null && !directionChosen) add("方向")
         when (kind) {
             EditorKind.EXPENSE -> {
-                if (accountId.isBlank()) add("账户")
+                if (selectedAccount == null) add("账户")
                 if (merchantText.isBlank()) add("商户")
                 if (categoryId == null) add("分类")
             }
             EditorKind.INCOME -> {
-                if (accountId.isBlank()) add("账户")
+                if (selectedAccount == null) add("账户")
                 if (merchantText.isBlank()) add("收入来源")
                 if (categoryId == null && incomeSub == IncomeSub.INCOME) add("收入分类")
             }
@@ -220,6 +283,7 @@ fun TransactionEditorScreen(
                 if (repaySub == RepaySub.LOAN && loanPlanId == null) add("贷款计划")
             }
         }
+        if (balanceConflict) add("余额校验")
     }
 
     Scaffold(
@@ -275,8 +339,15 @@ fun TransactionEditorScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 EditorKind.entries.forEach { k ->
                     FilterChip(
-                        selected = kind == k,
-                        onClick = { kind = k },
+                        selected = directionChosen && kind == k,
+                        onClick = {
+                            directionChosen = true
+                            if (kind != k) {
+                                kind = k
+                                categoryId = null
+                                necessity = null
+                            }
+                        },
                         label = { Text(k.label) }
                     )
                 }
@@ -431,7 +502,7 @@ fun TransactionEditorScreen(
             // ── 证据 + 余额校验预览（待确认模式，REQ 归并§6/§17-18）──
             if (pendingItem != null) {
                 EvidenceSectionInEditor(pendingItem, ignoredItems, viewModel)
-                BalancePreviewInEditor(pendingItem, accounts, accountId, amountCents, kind, incomeSub)
+                BalancePreviewInEditor(pendingItem, accounts, accountId, amountCents, kind, incomeSub, directionChosen)
             }
 
             Spacer(Modifier.height(24.dp))
@@ -622,24 +693,24 @@ private fun CategoryGrid(
                     dropTarget.onItemDropped = { draggedId, targetId -> moveItem(draggedId, targetId) }
                     Column(
                         Modifier.weight(1f).alpha(if (draggingId == parent.id) 0.4f else 1f)
-                            .clickable {
-                                // 无二级分类（收入种子等）：点一级直接选中；否则展开二级面板
-                                if (childrenOf(parent.id).isEmpty()) onSelect(parent)
-                                else {
-                                    expandedParent = if (expandedParent == parent.id) null else parent.id
-                                    if (selectedCategoryId == null) expandedParent = parent.id
-                                }
-                            }
                             .dragAndDropSource {
-                                detectTapGestures(onLongPress = {
-                                    draggingId = parent.id
-                                    startTransfer(
-                                        DragAndDropTransferData(
-                                            clipData = ClipData.newPlainText("category", parent.id)
+                                // 点击和长按必须由同一个手势识别器处理；两个识别器叠加时，长按识别器会
+                                // 消耗普通点击，导致分类永远选不中、确认按钮持续禁用。
+                                detectTapGestures(
+                                    onTap = {
+                                        if (childrenOf(parent.id).isEmpty()) onSelect(parent)
+                                        else expandedParent = if (expandedParent == parent.id) null else parent.id
+                                    },
+                                    onLongPress = {
+                                        draggingId = parent.id
+                                        startTransfer(
+                                            DragAndDropTransferData(
+                                                clipData = ClipData.newPlainText("category", parent.id)
+                                            )
                                         )
-                                    )
-                                    draggingId = null
-                                })
+                                        draggingId = null
+                                    }
+                                )
                             }
                             .dragAndDropTarget(
                                 shouldStartDragAndDrop = { it.mimeTypes().contains("text/plain") },
@@ -757,12 +828,17 @@ private fun BalancePreviewInEditor(
     accountId: String,
     amountCents: Long,
     kind: EditorKind,
-    incomeSub: IncomeSub
+    incomeSub: IncomeSub,
+    directionChosen: Boolean
 ) {
     val parsed = pendingItem.parsed
-    val account = accounts.firstOrNull { it.id == accountId } ?: return
+    val account = accounts.firstOrNull { it.id == accountId && !it.archived } ?: return
+    if (!directionChosen) {
+        Text("请先选择收入/支出方向", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+        return
+    }
     if (parsed.balanceCents == null || parsed.cardTail == null || account.type != AccountType.ASSET.name) return
-    if (account.cardTail != null && account.cardTail != parsed.cardTail) {
+    if (account.cardTail != parsed.cardTail) {
         Text("银行尾号与所选账户不符", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
         return
     }

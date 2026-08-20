@@ -51,13 +51,23 @@ class AssetsNotificationListenerService : NotificationListenerService() {
     private fun startKeepAliveNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_KEEP_ALIVE, "后台运行", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_KEEP_ALIVE, "后台运行", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "静默保持自动记账监听"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
         )
+        // Android 渠道的声音配置创建后不可由 App 可靠改写；换新渠道完成静默迁移，
+        // 再移除曾继承系统提示音的旧渠道，避免设置页残留两个“后台运行”。
+        nm.deleteNotificationChannel(LEGACY_CHANNEL_KEEP_ALIVE)
         val notif = Notification.Builder(this, CHANNEL_KEEP_ALIVE)
             .setContentTitle("资产大王")
             .setContentText("正在监听银行短信和支付通知")
             .setSmallIcon(R.drawable.ic_launcher)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)  // 锁屏只显示「资产大王正在监听」（REQ 监听§6）
             .build()
         val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
@@ -79,6 +89,7 @@ class AssetsNotificationListenerService : NotificationListenerService() {
                     .setContentText("总资产 ${formatMoney(m.availableCashCents)} · 总欠款 ${formatMoney(m.totalDebtCents)} · 监听中")
                     .setSmallIcon(R.drawable.ic_launcher)
                     .setOngoing(true)
+                    .setOnlyAlertOnce(true)
                     .setVisibility(Notification.VISIBILITY_PRIVATE)
                     .build()
                 getSystemService(NotificationManager::class.java).notify(KEEP_ALIVE_NOTIF_ID, notif)
@@ -89,22 +100,31 @@ class AssetsNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         isConnected = true
+        val app = application as? AssetsKingApplication
+        val connectionStartedAt = System.currentTimeMillis()
+        // Keep the previous completed connection as the rescan boundary. It is
+        // advanced only after the recovery window has been processed successfully.
+        val lastHealthyAt = app?.repository?.lastListenerHealthyAtValue() ?: 0L
         // App 更新、重启、系统解绑期间推的通知，系统不会补发，原先一律永久丢失。
         // 绑定成功后补扫一遍通知栏：RawNotification 主键是 "key:postTime"，
         // DAO 是 onConflict=IGNORE，同一条扫几次都只入库一次。
         runCatching { activeNotifications?.forEach { onNotificationPosted(it) } }
         // 短信补扫：掉线期间已从通知栏消失的银行短信，从收件箱补回（需 READ_SMS）
-        val app = application as? AssetsKingApplication
         if (app != null) {
             serviceScope.launch {
                 _rescanning.value = true
+                var recoveryComplete = false
                 try {
-                    SmsRescan.rescan(this@AssetsNotificationListenerService, app.repository)
+                    val scan = SmsRescan.rescan(this@AssetsNotificationListenerService, app.repository, lastHealthyAt)
                     app.processPending.invoke()
                     // 重连补扫产生的待确认：防抖 Job 已随旧进程死亡，直接补评估发通知
                     PendingNotifier.ensureNotified(this@AssetsNotificationListenerService)
                     updateKeepAliveText()
+                    // READ_SMS/query failure must leave the old boundary intact;
+                    // a successful scan with zero rows is still a healthy result.
+                    recoveryComplete = scan.completed
                 } finally {
+                    if (recoveryComplete) app.repository.markListenerHealthy(connectionStartedAt)
                     _rescanning.value = false
                 }
             }
@@ -186,7 +206,8 @@ class AssetsNotificationListenerService : NotificationListenerService() {
     }
 
     companion object {
-        private const val CHANNEL_KEEP_ALIVE = "assets_king_foreground"
+        private const val CHANNEL_KEEP_ALIVE = "assets_king_foreground_silent_v2"
+        private const val LEGACY_CHANNEL_KEEP_ALIVE = "assets_king_foreground"
         private const val KEEP_ALIVE_NOTIF_ID = 1
 
         // StateFlow 而非普通 Boolean：绑定是异步完成的，UI 得能在完成那一刻自己更新，

@@ -30,20 +30,36 @@ private fun lightScheme(primary: Color, primaryContainer: Color, onPrimaryContai
     onPrimary = Color.White,
     primaryContainer = primaryContainer,
     onPrimaryContainer = onPrimaryContainer,
+    // Material 3 的默认 secondary 是紫色；未显式覆盖时 FilterChip 等组件会
+    // 在浅绿主题里突然出现紫块，破坏整套效果图的单一色相。
+    secondary = primary,
+    onSecondary = Color.White,
+    secondaryContainer = primaryContainer,
+    onSecondaryContainer = onPrimaryContainer,
+    tertiary = primary,
+    onTertiary = Color.White,
+    tertiaryContainer = primaryContainer,
+    onTertiaryContainer = onPrimaryContainer,
     background = SurfaceLight,
     surface = SurfaceLight,
+    surfaceContainer = GlassCardLight,
+    surfaceVariant = SurfaceVariantLight,
     onBackground = TextPrimaryLight,
     onSurface = TextPrimaryLight,
     onSurfaceVariant = TextSecondaryLight,
-    outline = OutlineLight
+    outline = OutlineLight,
+    outlineVariant = OutlineVariantLight
 )
 
 // 龙巢深色占位（Codex 后续替换完整深色令牌）
 private val LongNestScheme = darkColorScheme(
     primary = ThemePrimaryLongNest,
     onPrimary = Color(0xFF1C1C1E),
+    secondary = ThemePrimaryLongNest,
+    onSecondary = Color(0xFF1C1C1E),
     background = SurfaceDark,
     surface = SurfaceDark,
+    surfaceContainer = GlassCardDark,
     onBackground = TextPrimaryDark,
     onSurface = TextPrimaryDark,
     onSurfaceVariant = TextSecondaryDark,

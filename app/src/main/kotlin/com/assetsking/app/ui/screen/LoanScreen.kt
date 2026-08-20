@@ -2,6 +2,7 @@ package com.assetsking.app.ui.screen
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,12 +22,12 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +54,7 @@ import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.theme.IncomeGreen
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -177,29 +179,37 @@ fun LoanScreen(
     }.sortedWith(compareBy({ it.paid }, { it.dueDay }))
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            Text(
+                "负债仪表盘",
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleLarge
+            )
+        }
         // V5 负债仪表盘（统一口径，来自 GetV5MetricsUseCase）
         item {
-            GlassCard {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("负债仪表盘", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (v5 != null) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("当前总负债", style = MaterialTheme.typography.bodyMedium)
-                        Text(formatMoney(v5.totalDebtCents), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                        Text("当前总负债", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatMoney(v5.totalDebtCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月必须还款", style = MaterialTheme.typography.bodyMedium)
-                        Text(formatMoney(v5.mustRepayCents), fontWeight = FontWeight.Bold)
+                        Text("本月必须还款", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatMoney(v5.mustRepayCents), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月净降债", style = MaterialTheme.typography.bodyMedium)
+                        Text("本月净降债", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
                             if (v5.netDebtReductionCents >= 0) "+${formatMoney(v5.netDebtReductionCents)}" else formatMoney(v5.netDebtReductionCents),
                             fontWeight = FontWeight.Bold,
-                            color = if (v5.netDebtReductionCents > 0) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
+                            color = if (v5.netDebtReductionCents > 0) IncomeGreen else MaterialTheme.colorScheme.error
                         )
                     }
                     // 剩余本金/剩余利息/本月已还（REQ 贷款页§10）
@@ -209,13 +219,14 @@ fun LoanScreen(
                     }
                     val monthPaid = transactions.filter { it.type == "LOAN_PAYMENT" && it.occurredAt in monthStartMillis..monthEndMillis }.sumOf { it.amountCents }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("剩余本金 / 剩余利息", style = MaterialTheme.typography.bodyMedium)
+                        Text("剩余本金 / 剩余利息", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("${formatMoney(remainP)} / ${formatMoney(remainI)}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("本月已还", style = MaterialTheme.typography.bodyMedium)
-                        Text(formatMoney(monthPaid), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = Color(0xFF66BB6A))
+                        Text("本月已还", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(formatMoney(monthPaid), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = IncomeGreen)
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Text(
                         "${v5TrendLabel(v5.trend)} · ${v5StageLabel(v5.stage)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -224,37 +235,50 @@ fun LoanScreen(
                 } else {
                     Text("加载中…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // 还款成果（REQ 年终奖还债§6）：累计已还本金/已付利息/已付手续费/已结清项目
-                val loanPayments = transactions.filter { it.type == "LOAN_PAYMENT" }
-                val paidPrincipal = loanPayments.sumOf { if (it.principalCents > 0) it.principalCents else it.amountCents }
-                val paidInterest = loanPayments.sumOf { it.interestCents }
-                val paidFee = loanPayments.sumOf { it.feeCents }
-                val settledCount = plans.count { it.status == "PAID_OFF" }
-                Spacer(Modifier.height(4.dp))
-                Text("还款成果", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    "已还本金 ${formatMoney(paidPrincipal)} · 已付利息 ${formatMoney(paidInterest)} · 已付手续费 ${formatMoney(paidFee)} · 已结清 ${settledCount} 笔",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                if (dueItems.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text("每月扣款日", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    dueItems.forEach { item ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("每月${item.day}日  ${item.label}", style = MaterialTheme.typography.bodySmall)
-                            Text(formatMoney(item.amount), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
+            }
+            }
+        }
+
+        // 还款成果（REQ 年终奖还债§6）：累计已还本金/已付利息/已付手续费/已结清项目
+        item {
+            val loanPayments = transactions.filter { it.type == "LOAN_PAYMENT" }
+            val paidPrincipal = loanPayments.sumOf { if (it.principalCents > 0) it.principalCents else it.amountCents }
+            val paidInterest = loanPayments.sumOf { it.interestCents }
+            val paidFee = loanPayments.sumOf { it.feeCents }
+            val settledCount = plans.count { it.status == "PAID_OFF" }
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("还款成果", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "已还本金 ${formatMoney(paidPrincipal)} · 已付利息 ${formatMoney(paidInterest)} · 已付手续费 ${formatMoney(paidFee)} · 已结清 ${settledCount} 笔",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        if (dueItems.isNotEmpty()) {
+            item {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("每月扣款日", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        dueItems.forEachIndexed { index, due ->
+                            if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("每月${due.day}日  ${due.label}", style = MaterialTheme.typography.bodySmall)
+                                Text(formatMoney(due.amount), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
                 }
-            }
             }
         }
 
         // ── 本月还款列表（REQ 贷款页§2-3/§10-11）：逾期置顶 → 本月待还 → 已还删除线 ──
         if (repayRows.isNotEmpty()) {
             item {
-                GlassCard {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("本月还款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         repayRows.forEach { r ->
                             val overdue = !r.paid && r.dueDay < todayDay
@@ -298,7 +322,13 @@ fun LoanScreen(
             }
         }
         if (plans.isEmpty()) {
-            item { GlassCard { Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            item {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.Center) {
+                        Text("暂无贷款计划", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         } else {
             // 已结清移入底部折叠分组（REQ 贷款页§13/§17）
             val settledPlans = plans.filter { it.status == "PAID_OFF" }
@@ -314,13 +344,13 @@ fun LoanScreen(
                         installments = installments
                     )
                 )
-                GlassCard {
-                Column(modifier = Modifier.fillMaxWidth()) {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
                             if (plan.status == "PAID_OFF") "${account?.name ?: "未知账户"} · 已结清" else account?.name ?: "未知账户",
                             fontWeight = FontWeight.Medium,
-                            color = if (plan.status == "PAID_OFF") Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurface
+                            color = if (plan.status == "PAID_OFF") IncomeGreen else MaterialTheme.colorScheme.onSurface
                         )
                         Text("本金 ${formatMoney(plan.principalCents)}", style = MaterialTheme.typography.bodyMedium)
                     }
@@ -374,7 +404,7 @@ fun LoanScreen(
                                     Text(
                                         "${if (inst.status == InstallmentStatus.PAID) "已还" else "待还"} 第${inst.number}期",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = if (inst.status == InstallmentStatus.PAID) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurface
+                                        color = if (inst.status == InstallmentStatus.PAID) IncomeGreen else MaterialTheme.colorScheme.onSurface
                                     )
                                     Text("本金${formatMoney(inst.principal.cents)} + 利息${formatMoney(inst.interest.cents)}", style = MaterialTheme.typography.bodySmall)
                                     Text(formatMoney(inst.total.cents), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
@@ -403,7 +433,7 @@ fun LoanScreen(
                                 }) { Text("计算") }
                             }
                             earlyResult?.let { r ->
-                                Text("节省利息 ${formatMoney(r.savedInterest)} · 缩短 ${installments.size - r.newRemainingMonths} 个月", style = MaterialTheme.typography.labelSmall, color = Color(0xFF66BB6A))
+                                Text("节省利息 ${formatMoney(r.savedInterest)} · 缩短 ${installments.size - r.newRemainingMonths} 个月", style = MaterialTheme.typography.labelSmall, color = IncomeGreen)
                             }
                         }
                     }
@@ -441,9 +471,9 @@ fun LoanScreen(
                 if (showSettled) {
                     items(settledPlans, key = { it.id }) { plan ->
                         val account = accounts.firstOrNull { it.id == plan.accountId }
-                        GlassCard {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("${account?.name ?: "未知账户"} · 已结清", color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
+                        GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("${account?.name ?: "未知账户"} · 已结清", color = IncomeGreen, fontWeight = FontWeight.Medium)
                                 Text("总还款 ${formatMoney(LoanCalculator.summarize(LoanPlan(
                                     id = plan.id, accountId = plan.accountId,
                                     principal = Money(plan.principalCents),
@@ -470,12 +500,18 @@ fun LoanScreen(
             }
         }
         if (cardInstallments.isEmpty()) {
-            item { GlassCard { Text("暂无信用卡分期", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+            item {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Box(Modifier.fillMaxWidth().height(64.dp), contentAlignment = Alignment.Center) {
+                        Text("暂无信用卡分期", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         } else {
             items(cardInstallments, key = { it.id }) { inst ->
                 val card = accounts.firstOrNull { it.id == inst.cardAccountId }
-                GlassCard {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("${card?.name ?: "信用卡"} · ${inst.label}", fontWeight = FontWeight.Medium)
                             Text(
@@ -561,7 +597,7 @@ fun LoanScreen(
                             Text(
                                 "${if (inst.status == InstallmentStatus.PAID) "已还" else "待还"} 第${inst.number}期",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (inst.status == InstallmentStatus.PAID) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurface,
+                                color = if (inst.status == InstallmentStatus.PAID) IncomeGreen else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.weight(1f)
                             )
                             Text("本金${formatMoney(inst.principal.cents)} 利息${formatMoney(inst.interest.cents)} 费${formatMoney(inst.fee.cents)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

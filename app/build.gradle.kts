@@ -16,6 +16,14 @@ android {
         versionName = "0.1.0"
     }
 
+    buildTypes {
+        debug {
+            // 真机验收版与用户现有安装并存，避免 UI/迁移回归误触正式账本数据。
+            applicationIdSuffix = ".recovery"
+            versionNameSuffix = "-recovery"
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true   // 检查更新需读取 BuildConfig.VERSION_NAME（REQ 设置§13）

@@ -1,21 +1,28 @@
 package com.assetsking.app.ui.screen
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.CreditCard
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.ReceiptLong
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.CreditCard
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -55,6 +62,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
     val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
+    val smsSenderWhitelist by model.smsSenderWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
     val context = LocalContext.current
     var showSheet by remember { mutableStateOf(false) }
@@ -78,34 +86,64 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     // 贷款页悬浮＋脉冲（REQ 贷款页§16）
     var loanAddPulse by remember { mutableStateOf(0) }
     val listenerStatus = rememberListenerStatus()
+    val navSurface = MaterialTheme.colorScheme.surfaceContainer
+    val navOutline = MaterialTheme.colorScheme.outlineVariant
+    val navPrimary = MaterialTheme.colorScheme.primary
+    val navPrimaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val navOnSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                modifier = Modifier.drawBehind {
+                    val strokeWidth = 1.dp.toPx()
+                    drawLine(
+                        color = navOutline,
+                        start = Offset(0f, strokeWidth / 2f),
+                        end = Offset(size.width, strokeWidth / 2f),
+                        strokeWidth = strokeWidth
+                    )
+                },
+                containerColor = navSurface,
+                tonalElevation = 0.dp
+            ) {
                 listOf("首页", "统计", "流水", "贷款", "设置").forEachIndexed { idx, label ->
                     NavigationBarItem(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
-                        // 贴底扁平导航（REQ 视觉§8）：当前项主题色，其余中性深灰，去选中胶囊底座
+                        // 贴底扁平导航（REQ 视觉§8）：当前项小底块+主题色，其余中性次要色
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedIconColor = navPrimary,
+                            selectedTextColor = navPrimary,
+                            unselectedIconColor = navOnSurfaceVariant,
+                            unselectedTextColor = navOnSurfaceVariant,
                             indicatorColor = Color.Transparent
                         ),
-                        // 线性图标+中文，不用 Emoji（REQ 视觉§4）
+                        // Outlined/AutoMirrored 线性图标+中文，不用 Emoji（REQ 视觉§4）
                         icon = {
-                            Icon(
-                                when (idx) {
-                                    0 -> Icons.Filled.Home
-                                    1 -> Icons.Filled.BarChart
-                                    2 -> Icons.Filled.ReceiptLong
-                                    3 -> Icons.Filled.CreditCard
-                                    else -> Icons.Filled.Settings
-                                },
-                                contentDescription = label
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                if (selectedTab == idx) {
+                                    Box(
+                                        Modifier
+                                            .size(28.dp)
+                                            .background(
+                                                navPrimaryContainer,
+                                                RoundedCornerShape(8.dp)
+                                            )
+                                    )
+                                }
+                                Icon(
+                                    when (idx) {
+                                        0 -> Icons.Outlined.Home
+                                        1 -> Icons.Outlined.BarChart
+                                        2 -> Icons.AutoMirrored.Outlined.ReceiptLong
+                                        3 -> Icons.Outlined.CreditCard
+                                        else -> Icons.Outlined.Settings
+                                    },
+                                    modifier = Modifier.size(20.dp),
+                                    contentDescription = label
+                                )
+                            }
                         },
                         label = { Text(label) }
                     )
@@ -126,7 +164,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
-                ) { Text("＋", style = MaterialTheme.typography.headlineSmall) }
+                ) { Icon(Icons.Filled.Add, contentDescription = "新增") }
             }
         },
         containerColor = MaterialTheme.colorScheme.background
@@ -220,6 +258,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     notificationSources = notificationSources,
                     notificationWhitelist = notificationWhitelist,
                     onSetNotificationWhitelist = { model.setNotificationWhitelist(it) },
+                    smsSenderWhitelist = smsSenderWhitelist,
+                    onSetSmsSenderWhitelist = { model.setSmsSenderWhitelist(it) },
                     windfalls = windfalls,
                     currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
                     onSaveWindfall = { model.saveWindfall(it) },
@@ -357,6 +397,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             onDismiss = { editingTransaction = null },
             recurringRules = recurringRules,
             onLinkToRule = { txId, ruleId -> model.linkToRecurringRule(txId, ruleId) },
+            categories = categories,
             customCategoryNames = customCategories.map { it.name }
         )
     }

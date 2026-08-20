@@ -4,6 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalance
@@ -45,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,11 +56,19 @@ import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
 import com.assetsking.database.AccountEntity
+import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
+import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.format.formatSignedMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.theme.ExpenseRed
+import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.usecase.AccountInference
+import com.assetsking.usecase.PendingConfirmationInput
+import com.assetsking.usecase.PendingConfirmationPolicy
+import com.assetsking.usecase.PendingConfirmationValidation
 import com.assetsking.usecase.TransferPairMerge
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -64,25 +76,17 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-private val BoxGreen = Color(0xFF66BB6A)
-private val BoxRed = Color(0xFFE57373)
+private val BoxGreen = IncomeGreen
+private val BoxRed = ExpenseRed
 private val BoxGray = Color(0xFF757575)
 
-private fun typeOf(item: PendingItem): TransactionType = when {
-    item.parsed.isExpense == false -> TransactionType.INCOME
-    else -> TransactionType.EXPENSE
-}
+private fun typeOf(item: PendingItem): TransactionType? =
+    PendingConfirmationPolicy.typeFor(item.parsed.isExpense, item.parsed.isRefund)
 
-private fun amountColor(type: TransactionType): Color = when (type) {
+private fun amountColor(type: TransactionType?): Color = when (type) {
     TransactionType.EXPENSE -> BoxRed
     TransactionType.INCOME, TransactionType.REFUND, TransactionType.REIMBURSEMENT -> BoxGreen
     else -> BoxGray
-}
-
-private fun amountPrefix(type: TransactionType): String = when (type) {
-    TransactionType.EXPENSE -> "−¥"
-    TransactionType.INCOME, TransactionType.REFUND, TransactionType.REIMBURSEMENT -> "+¥"
-    else -> "¥"
 }
 
 /**
@@ -131,14 +135,22 @@ fun PendingBoxScreen(
                         TextButton(
                             enabled = selected.isNotEmpty(),
                             onClick = {
-                                val count = selected.size
-                                selected.toList().forEach { id ->
-                                    val item = sorted.firstOrNull { it.notification.id == id } ?: return@forEach
-                                    confirmItem(viewModel, item, accounts, merchantLastAccount)
+                                val picked = selected.mapNotNull { id ->
+                                    sorted.firstOrNull { it.notification.id == id }
                                 }
-                                selected.clear()
-                                multiSelect = false
-                                scope.launch { snackbar.showSnackbar("已入账 $count 笔") }
+                                val incomplete = picked.count {
+                                    !pendingValidation(viewModel, it, accounts, merchantLastAccount).canConfirm
+                                }
+                                if (incomplete > 0) {
+                                    scope.launch { snackbar.showSnackbar("有 $incomplete 笔需先去补全") }
+                                } else {
+                                    val count = picked.count {
+                                        confirmItem(viewModel, it, accounts, merchantLastAccount)
+                                    }
+                                    selected.clear()
+                                    multiSelect = false
+                                    scope.launch { snackbar.showSnackbar("已入账 $count 笔") }
+                                }
                             }
                         ) { Text("确认入账") }
                     }
@@ -229,6 +241,7 @@ fun PendingBoxScreen(
                             value == SwipeToDismissBoxValue.EndToStart
                         })
                         SwipeToDismissBox(
+                            modifier = Modifier.clip(RoundedCornerShape(20.dp)),
                             state = dismissState,
                             enableDismissFromStartToEnd = false,
                             backgroundContent = {
@@ -256,13 +269,17 @@ fun PendingBoxScreen(
                                 merchantLastAccount = merchantLastAccount,
                                 multiSelect = multiSelect,
                                 checked = item.notification.id in selected,
-                                complete = item.parsed.merchant != null,
+                                complete = pendingValidation(viewModel, item, accounts, merchantLastAccount).canConfirm,
                                 onToggleSelect = {
-                                    if (item.notification.id in selected) selected.remove(item.notification.id)
-                                    else selected.add(item.notification.id)
+                                    if (pendingValidation(viewModel, item, accounts, merchantLastAccount).canConfirm) {
+                                        if (item.notification.id in selected) selected.remove(item.notification.id)
+                                        else selected.add(item.notification.id)
+                                    }
                                 },
                                 onEnterMultiSelect = {
-                                    if (!multiSelect) {
+                                    if (!pendingValidation(viewModel, item, accounts, merchantLastAccount).canConfirm) {
+                                        onOpenEditor(item)
+                                    } else if (!multiSelect) {
                                         multiSelect = true
                                         selected.add(item.notification.id)
                                     }
@@ -295,7 +312,35 @@ fun PendingBoxScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+private fun pendingValidation(
+    viewModel: LedgerViewModel,
+    item: PendingItem,
+    accounts: List<AccountEntity>,
+    merchantLastAccount: Map<String, String>
+): PendingConfirmationValidation {
+    val account = inferAccountId(item, accounts, merchantLastAccount)?.let { id ->
+        accounts.firstOrNull { it.id == id && !it.archived }
+    }
+    val parsed = item.parsed
+    val category = parsed.merchant?.let { viewModel.categorize(it, null).name }
+    return PendingConfirmationPolicy.validate(
+        PendingConfirmationInput(
+            amountCents = parsed.amountCents,
+            isExpense = parsed.isExpense,
+            isRefund = parsed.isRefund,
+            accountId = account?.id,
+            category = category,
+            merchant = parsed.merchant,
+            accountType = account?.type?.let { runCatching { com.assetsking.model.AccountType.valueOf(it) }.getOrNull() },
+            accountCardTail = account?.cardTail,
+            bankCardTail = parsed.cardTail,
+            currentBalanceCents = account?.balanceCents,
+            bankBalanceCents = parsed.balanceCents
+        )
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun PendingBoxCard(
     item: PendingItem,
@@ -314,21 +359,17 @@ private fun PendingBoxCard(
     val amountCents = parsed.amountCents ?: 0L
     val merchant = parsed.merchant
     val type = typeOf(item)
-    val inferredId = AccountInference.infer(
-        bankMatchedAccountId = parsed.bankHint?.let { hint ->
-            accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }?.id
-        },
-        merchantHistoryAccountId = merchant?.let { merchantLastAccount[it] },
-        sourcePackage = item.notification.packageName,
-        candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
-    )
-    val account = accounts.firstOrNull { it.id == inferredId }
+    val category = merchant?.let { viewModel.categorize(it, null) }
+    val inferredId = inferAccountId(item, accounts, merchantLastAccount)
+    val account = accounts.firstOrNull { it.id == inferredId && !it.archived }
     val isCompleting = System.currentTimeMillis() - item.notification.receivedAt < 10_000
     val isRescanned = item.notification.sourceLabel?.startsWith("短信补回") == true
 
     GlassCard(
         Modifier.fillMaxWidth().combinedClickable(
-            onClick = { if (multiSelect) onToggleSelect() else onOpenEditor() },
+            onClick = {
+                if (multiSelect && complete) onToggleSelect() else onOpenEditor()
+            },
             onLongClick = onEnterMultiSelect
         )
     ) {
@@ -338,7 +379,14 @@ private fun PendingBoxCard(
                     Checkbox(checked = checked, onCheckedChange = { onToggleSelect() }, enabled = complete)
                 }
                 Text(
-                    "${amountPrefix(type)}${formatMoney(amountCents)}",
+                    formatSignedMoney(
+                        amountCents,
+                        positive = when (type) {
+                            TransactionType.EXPENSE -> false
+                            TransactionType.INCOME, TransactionType.REFUND, TransactionType.REIMBURSEMENT -> true
+                            else -> null
+                        }
+                    ),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     color = amountColor(type)
@@ -355,8 +403,7 @@ private fun PendingBoxCard(
                 )
                 if (complete && !multiSelect) {
                     Button(onClick = {
-                        confirmItem(viewModel, item, accounts, merchantLastAccount)
-                        onConfirmed()
+                        if (confirmItem(viewModel, item, accounts, merchantLastAccount)) onConfirmed()
                     }) { Text("确认") }
                 } else if (!multiSelect) {
                     OutlinedButton(onClick = onOpenEditor) { Text("去补全") }
@@ -364,7 +411,15 @@ private fun PendingBoxCard(
             }
 
             Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    "· 分类 ${category?.let(::categoryLabel) ?: "待补全分类"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                )
                 Text("· ${account?.name ?: "未选账户"}", style = MaterialTheme.typography.labelSmall)
                 Text("· ${AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)}", style = MaterialTheme.typography.labelSmall)
                 Text("· ${formatTime(item.notification.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -394,39 +449,44 @@ private fun confirmItem(
     item: PendingItem,
     accounts: List<AccountEntity>,
     merchantLastAccount: Map<String, String>
-) {
+): Boolean {
+    val validation = pendingValidation(viewModel, item, accounts, merchantLastAccount)
+    if (!validation.canConfirm) return false
     val parsed = item.parsed
-    val amount = parsed.amountCents ?: return
-    val type = when {
-        // 审核 BUG-6 修复：优先识别退款（isRefund），否则退款被记成 INCOME，
-        // 虚增收入且不冲减原消费（REQ 退款§8/收入§5）。
-        parsed.isRefund -> TransactionType.REFUND
-        parsed.isExpense == false -> TransactionType.INCOME
-        else -> TransactionType.EXPENSE
-    }
-    val accountId = inferAccountId(item, accounts, merchantLastAccount) ?: accounts.firstOrNull()?.id ?: return
+    val amount = parsed.amountCents ?: return false
+    val type = validation.type ?: return false
+    val accountId = inferAccountId(item, accounts, merchantLastAccount) ?: return false
+    val category = parsed.merchant?.let { viewModel.categorize(it, null).name } ?: return false
     viewModel.confirmNotification(
         notificationId = item.notification.id,
         accountId = accountId,
         amountCents = amount,
         type = type,
-        category = viewModel.categorize(parsed.merchant, null).name,
+        category = category,
         merchant = parsed.merchant,
         note = item.notification.title,
         bankBalanceCents = parsed.balanceCents,
         bankCardTail = parsed.cardTail,
         channel = AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)
     )
+    return true
 }
 
 private fun inferAccountId(item: PendingItem, accounts: List<AccountEntity>, merchantLastAccount: Map<String, String>): String? =
     AccountInference.infer(
         bankMatchedAccountId = item.parsed.bankHint?.let { hint ->
-            accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }?.id
+            val active = accounts.asSequence().filterNot { it.archived }
+            active.firstOrNull { account ->
+                account.cardTail != null && account.cardTail == item.parsed.cardTail &&
+                    (account.name.contains(hint) || hint.contains(account.name))
+            }?.id ?: active.firstOrNull { account ->
+                account.name.contains(hint) || hint.contains(account.name)
+            }?.id
         },
         merchantHistoryAccountId = item.parsed.merchant?.let { merchantLastAccount[it] },
         sourcePackage = item.notification.packageName,
-        candidates = accounts.map { AccountInference.Candidate(it.id, it.name) }
+        candidates = accounts.filterNot { it.archived }
+            .map { AccountInference.Candidate(it.id, it.name) }
     )
 
 /** 同额转出+转入合并卡（REQ 待确认交易类型§4）：确认直接记账户转账，可「分开处理」恢复独立卡片 */

@@ -36,14 +36,17 @@ class SmsReceiver : BroadcastReceiver() {
         // 长短信会被拆成多段，拼起来才是完整原文
         val body = messages.joinToString("") { it.messageBody.orEmpty() }
         if (body.isBlank()) return
-        val sender = messages.firstOrNull()?.originatingAddress
+        val sender = messages.firstOrNull()?.originatingAddress?.trim().orEmpty()
+
+        val app = context.applicationContext as? AssetsKingApplication ?: return
+        val repository = app.repository
+        // 与历史补扫共用同一持久化白名单；陌生发送方在解析前直接丢弃。
+        if (!repository.isSmsSenderWhitelisted(sender)) return
 
         // 只落库能解析出金额的短信：验证码 / 营销 / 个人短信不进库，避免冲垮待确认箱。
         // 与通知监听共用同一套两层否决（硬否决 + 软否决），不是新写一套判断。
         if (NotificationParser.parse(body, sender).amountCents == null) return
 
-        val app = context.applicationContext as? AssetsKingApplication ?: return
-        val repository = app.repository
         val timestamp = messages.firstOrNull()?.timestampMillis ?: System.currentTimeMillis()
 
         // goAsync：把接收器生命周期从 onReceive 结束延长到落库完成，防进程刚收到就又被杀

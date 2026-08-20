@@ -169,6 +169,7 @@ class LedgerViewModel(
     /** 自动发现的通知来源：包名 → 应用名 */
     val notificationSources: Flow<Map<String, String>> = repository.notificationSources
     val notificationWhitelist: Flow<Set<String>> = repository.notificationWhitelist
+    val smsSenderWhitelist: Flow<Set<String>> = repository.smsSenderWhitelist
     /** 最近一次原始证据入库时间（0 = 从未收到） */
     val lastReceivedAt: Flow<Long> = repository.lastReceivedAt
 
@@ -343,6 +344,11 @@ class LedgerViewModel(
     /** 通知来源开关：只有白名单里的 app 会被读取入库 */
     fun setNotificationWhitelist(packages: Set<String>) {
         repository.setNotificationWhitelist(packages)
+    }
+
+    /** 银行短信发送方白名单：实时接收与历史补扫共用。 */
+    fun setSmsSenderWhitelist(senders: Set<String>) {
+        repository.setSmsSenderWhitelist(senders)
     }
 
     /** 提前还款：只减本金、不当消费、不标普通期次（铁律 3） */

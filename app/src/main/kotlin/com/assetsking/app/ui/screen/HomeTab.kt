@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +27,9 @@ import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.draganddrop.mimeTypes
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
@@ -33,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,6 +65,9 @@ import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.BigMoney
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.theme.ExpenseRed
+import com.assetsking.ui.theme.IncomeGreen
+import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.usecase.GetStatsUseCase
 import com.assetsking.usecase.StatsData
 import com.assetsking.usecase.UpcomingRepayment
@@ -69,12 +77,12 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private val HomeGreen = Color(0xFF66BB6A)
-private val HomeRed = Color(0xFFE57373)
-private val HomeOrange = Color(0xFFFFB74D)
+private val HomeGreen = IncomeGreen
+private val HomeRed = ExpenseRed
+private val HomeOrange = PendingOrange
 
 /** 首页固定核心区 + 可配置模块（REQ 首页信息优先级/UI结构/可配置模块）。 */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun HomeTab(
     padding: PaddingValues,
@@ -101,6 +109,9 @@ fun HomeTab(
     var showAssetAccounts by remember { mutableStateOf(false) }
     var showDebtAccounts by remember { mutableStateOf(false) }
     var privacy by remember { mutableStateOf(context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).getBoolean("privacy_mode", false)) }
+    val todayLabel = remember {
+        DateTimeFormatter.ofPattern("M月d日 · E", Locale.CHINA).format(java.time.LocalDate.now())
+    }
 
     val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
     fun money(cents: Long) = if (privacy) "••••" else formatMoney(cents)
@@ -142,44 +153,109 @@ fun HomeTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // 首页标题与日期胶囊保持独立层级，避免和总览金额争夺视觉焦点。
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "总览",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    todayLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(50))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+        }
+
         // ── 第一层：财务总览卡（REQ 首页UI§1-2/§17-18）──
         item {
-            GlassCard {
+            GlassCard(contentPadding = Modifier) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // 总资产 / 总欠款 左右并列
-                        Column(Modifier.weight(1f).clickable { showAssetAccounts = true }) {
-                            Text("总资产", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            // 大金额整数突出小数弱化（REQ 首页UI§15）；隐私模式固定 ••••（§9）
-                            if (privacy) Text("••••", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            else BigMoney(state.v5?.availableCashCents ?: 0L, color = MaterialTheme.colorScheme.primary)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("总资产", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(
+                            onClick = {
+                                privacy = !privacy
+                                prefs.edit().putBoolean("privacy_mode", privacy).apply()
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                            modifier = Modifier.background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(50)
+                            )
+                        ) {
+                            Text(if (privacy) "显示金额" else "隐私金额", style = MaterialTheme.typography.labelSmall)
                         }
-                        Column(Modifier.weight(1f).clickable { showDebtAccounts = true }, horizontalAlignment = Alignment.End) {
-                            Text("总欠款", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (privacy) Text("••••", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = HomeRed)
-                            else BigMoney(state.v5?.totalDebtCents ?: 0L, color = HomeRed)
-                        }
-                        // 隐私开关（REQ 首页UI§9）
-                        TextButton(onClick = {
-                            privacy = !privacy
-                            prefs.edit().putBoolean("privacy_mode", privacy).apply()
-                        }) { Text(if (privacy) "显示金额" else "隐藏金额", style = MaterialTheme.typography.labelSmall) }
                     }
-                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        if (privacy) {
+                            Text(
+                                "••••",
+                                Modifier.weight(1f).clickable { showAssetAccounts = true },
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1
+                            )
+                        } else {
+                            BigMoney(
+                                state.v5?.availableCashCents ?: 0L,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f).clickable { showAssetAccounts = true },
+                                style = MaterialTheme.typography.headlineLarge
+                            )
+                        }
+                        Column(
+                            Modifier.clickable { showDebtAccounts = true },
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text("总欠款", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                if (privacy) "••••" else formatMoney(state.v5?.totalDebtCents ?: 0L),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = HomeRed,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
                     HorizontalDivider()
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     // 本月收支一行（整行可点进统计，REQ 首页UI§18）
                     Row(
                         Modifier.fillMaxWidth().clickable { onGotoStats() }.padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("收入 ${money(monthIncome)}", color = HomeGreen, style = MaterialTheme.typography.bodyMedium)
-                        Text("支出 ${money(monthExpense)}", color = HomeRed, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "结余 ${if (monthBalance >= 0) money(monthBalance) else money(-monthBalance)}",
-                            color = if (monthBalance >= 0) HomeGreen else HomeRed,
-                            style = MaterialTheme.typography.bodyMedium
+                        HomeMetric("收入", money(monthIncome), HomeGreen, Modifier.weight(1f))
+                        VerticalDivider(Modifier.height(30.dp))
+                        HomeMetric("支出", money(monthExpense), HomeRed, Modifier.weight(1f))
+                        VerticalDivider(Modifier.height(30.dp))
+                        HomeMetric(
+                            "结余",
+                            if (monthBalance >= 0) money(monthBalance) else money(-monthBalance),
+                            if (monthBalance >= 0) HomeGreen else HomeRed,
+                            Modifier.weight(1f)
                         )
                     }
                     // 最近还款提醒（REQ 首页UI§5-7）：到期前 3 天窗口或逾期
@@ -212,18 +288,25 @@ fun HomeTab(
             VaultStatusCard(
                 listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
-                pendingCount = state.pendingItems.size,
-                pendingNetCents = state.pendingItems.sumOf { p ->
-                    val amt = p.parsed.amountCents ?: 0L
-                    when (p.parsed.isExpense) { true -> -amt; false -> amt; null -> 0L }
-                },
                 needsReconciliationCount = state.accounts.filter {
                     it.balanceStatus == "DISCREPANCY" || System.currentTimeMillis() - (it.lastCheckedAt ?: 0L) > 7 * 24 * 60 * 60 * 1000L
                 }.size,
-                onShowPending = onShowPending,
                 onShowReconciliation = onShowReconciliation,
                 context = context
             )
+        }
+
+        if (state.pendingItems.isNotEmpty()) {
+            item {
+                PendingStatusCard(
+                    pendingCount = state.pendingItems.size,
+                    pendingNetCents = state.pendingItems.sumOf { p ->
+                        val amt = p.parsed.amountCents ?: 0L
+                        when (p.parsed.isExpense) { true -> -amt; false -> amt; null -> 0L }
+                    },
+                    onShowPending = onShowPending
+                )
+            }
         }
 
         // ── 可配置模块区（REQ 首页可配置模块 §1-10）──
@@ -462,15 +545,90 @@ private fun AccountListDialog(
     )
 }
 
-/** 金库状态卡（REQ 首页UI §19-22）：三个完整点击区 + 净变化。 */
+/** 首页总览的等宽指标；金额严格单行，避免窄屏把小数挤成竖排。 */
+@Composable
+private fun HomeMetric(
+    label: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 待确认入口独立成卡，和金库监听状态保持清晰的层级关系。 */
+@Composable
+private fun PendingStatusCard(
+    pendingCount: Int,
+    pendingNetCents: Long,
+    onShowPending: () -> Unit
+) {
+    GlassCard(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onShowPending),
+        contentPadding = Modifier
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .background(HomeOrange.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ReceiptLong,
+                    contentDescription = null,
+                    tint = HomeOrange,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(Modifier.size(12.dp))
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text("待确认 $pendingCount 笔", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "净变化 ${if (pendingNetCents > 0) "+" else ""}${formatMoney(pendingNetCents)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(
+                onClick = onShowPending,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.background(HomeOrange.copy(alpha = 0.16f), RoundedCornerShape(50))
+            ) {
+                Text("处理", color = HomeOrange, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+/** 金库状态卡（REQ 首页UI §19-22）：状态与监听详情入口。 */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun VaultStatusCard(
     listenerStatus: ListenerStatus,
     lastReceivedAt: Long,
-    pendingCount: Int,
-    pendingNetCents: Long,
     needsReconciliationCount: Int,
-    onShowPending: () -> Unit,
     onShowReconciliation: () -> Unit,
     context: Context
 ) {
@@ -489,13 +647,6 @@ private fun VaultStatusCard(
         !smsGranted -> "短信补扫未开启" to HomeOrange
         else -> "金库正常" to MaterialTheme.colorScheme.primary
     }
-    // 金库警示背景（REQ 首页UI§22）：恢复中/权限缺失/漏收用浅橙/浅红警示背景，正常不加深底色
-    val warnBg = when {
-        listenerStatus == ListenerStatus.DISABLED || listenerStatus == ListenerStatus.DISCONNECTED ->
-            HomeRed.copy(alpha = 0.12f)
-        rescanning || !smsGranted -> HomeOrange.copy(alpha = 0.16f)
-        else -> Color.Transparent
-    }
     // 漏收窗口（REQ 监听§21）：掉线期间的账目靠短信兜底补收，文案随权限状态变化
     val gapHint = when {
         listenerStatus == ListenerStatus.DISCONNECTED && smsGranted ->
@@ -504,50 +655,88 @@ private fun VaultStatusCard(
             "短信兜底未开启：掉线期间账目可能漏记"
         else -> null
     }
-    GlassCard {
+    val statusBadgeLabel = when {
+        listenerStatus == ListenerStatus.DISABLED || listenerStatus == ListenerStatus.DISCONNECTED -> "中断"
+        rescanning -> "恢复"
+        !smsGranted -> "短信"
+        else -> "正常"
+    }
+    val statusBadgeBackground = when {
+        listenerStatus == ListenerStatus.DISABLED || listenerStatus == ListenerStatus.DISCONNECTED ->
+            HomeRed.copy(alpha = 0.12f)
+        rescanning || !smsGranted -> HomeOrange.copy(alpha = 0.16f)
+        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    }
+    GlassCard(contentPadding = Modifier) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("金库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.AccountBalance,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                Spacer(Modifier.size(12.dp))
+                Column(
+                    Modifier.weight(1f).clickable { showDetail = true },
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        statusLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        when {
+                            lastReceivedAt <= 0L -> "监听中 · 等待第一笔账目"
+                            rescanning -> "恢复中 · 最近入库 ${formatTime(lastReceivedAt)}"
+                            listenerStatus == ListenerStatus.OK -> "监听中 · 最近入库 ${formatTime(lastReceivedAt)}"
+                            else -> "最近入库 ${formatTime(lastReceivedAt)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Text(
-                    statusLabel,
-                    style = MaterialTheme.typography.bodySmall,
+                    statusBadgeLabel,
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = statusColor,
-                    modifier = Modifier.background(warnBg, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp)
+                    modifier = Modifier
+                        .background(statusBadgeBackground, RoundedCornerShape(50))
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().clickable { showDetail = true }
-            )
             gapHint?.let {
+                Spacer(Modifier.height(8.dp))
                 Text(
                     it,
                     style = MaterialTheme.typography.labelSmall,
                     color = if (smsGranted) HomeOrange else HomeRed
                 )
             }
-            if (pendingCount > 0 || needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
+            if (needsReconciliationCount > 0 || listenerStatus != ListenerStatus.OK) {
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (pendingCount > 0) {
-                        Text(
-                            "待确认 $pendingCount · 净变化 ${if (pendingNetCents > 0) "+" else ""}${formatMoney(pendingNetCents)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { onShowPending() }
-                        )
-                    }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     if (needsReconciliationCount > 0) {
-                        Text(
-                            "需核对 $needsReconciliationCount",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { onShowReconciliation() }
-                        )
+                        TextButton(onClick = onShowReconciliation) {
+                            Text("需核对 $needsReconciliationCount", style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                        }
                     }
                     if (listenerStatus != ListenerStatus.OK) {
                         TextButton(onClick = { openListenerSettings(context) }) {

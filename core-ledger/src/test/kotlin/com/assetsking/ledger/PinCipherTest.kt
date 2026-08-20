@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import java.security.GeneralSecurityException
+import java.security.MessageDigest
 
 class PinCipherTest {
 
@@ -16,10 +18,10 @@ class PinCipherTest {
     }
 
     @Test
-    fun `wrong pin produces garbage not original`() {
+    fun `wrong pin is rejected`() {
         val data = ByteArray(256) { it.toByte() }
         val encrypted = PinCipher.encrypt(data, "123456")
-        assertFalse(PinCipher.decrypt(encrypted, "654321").contentEquals(data))
+        assertFailsWith<GeneralSecurityException> { PinCipher.decrypt(encrypted, "654321") }
     }
 
     @Test
@@ -29,8 +31,45 @@ class PinCipherTest {
     }
 
     @Test
-    fun `same pin decrypts deterministically`() {
+    fun `same pin uses a fresh nonce for every backup`() {
         val data = ByteArray(128) { (it * 7).toByte() }
-        assertContentEquals(PinCipher.encrypt(data, "000000"), PinCipher.encrypt(data, "000000"))
+        val first = PinCipher.encrypt(data, "000000")
+        val second = PinCipher.encrypt(data, "000000")
+        assertFalse(first.contentEquals(second))
+        assertContentEquals(data, PinCipher.decrypt(first, "000000"))
+        assertContentEquals(data, PinCipher.decrypt(second, "000000"))
+    }
+
+    @Test
+    fun `tampered backup is rejected`() {
+        val encrypted = PinCipher.encrypt("账本".toByteArray(), "123456")
+        encrypted[encrypted.lastIndex] = (encrypted.last().toInt() xor 1).toByte()
+        assertFailsWith<GeneralSecurityException> { PinCipher.decrypt(encrypted, "123456") }
+    }
+
+    @Test
+    fun `legacy xor backup remains readable`() {
+        val data = "旧版资产大王备份".toByteArray()
+        val encrypted = legacyTransform(data, "123456")
+        assertContentEquals(data, PinCipher.decrypt(encrypted, "123456"))
+    }
+
+    private fun legacyTransform(data: ByteArray, pin: String): ByteArray {
+        val out = ByteArray(data.size)
+        var counter = 0L
+        var written = 0
+        while (written < data.size) {
+            val md = MessageDigest.getInstance("SHA-256")
+            md.update(pin.toByteArray(Charsets.UTF_8))
+            md.update(ByteArray(8) { i -> ((counter shr (56 - i * 8)) and 0xFF).toByte() })
+            val block = md.digest()
+            repeat(minOf(block.size, data.size - written)) { offset ->
+                val index = written + offset
+                out[index] = (data[index].toInt() xor (block[offset].toInt() and 0xFF)).toByte()
+            }
+            written += minOf(block.size, data.size - written)
+            counter++
+        }
+        return out
     }
 }

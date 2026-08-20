@@ -1,16 +1,81 @@
 package com.assetsking.ledger
 
+import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
- * 备份加密（REQ 备份§4）：6 位数字密码 → SHA-256 → XOR 密钥流。
+ * 备份加密（REQ 备份§4）：6 位数字密码经 PBKDF2 派生密钥，再用 AES-GCM 加密并校验完整性。
  *
- * ponytail: XOR 流加密强度明显低于长密码 AES；REQ 明确接受——产品提示「6 位密码主要
- * 防止文件被随手打开，强度低于长密码；密码遗忘后备份无法恢复」。密钥流用
- * SHA-256(PIN 字节) 反复扩展（counter 拼接），不依赖随机数（同 PIN 可重复解密）。
+ * 6 位 PIN 仍不具备长密码的抗暴力强度，但错误 PIN 或文件被篡改时会明确失败，绝不能
+ * 静默产出乱码再覆盖当前数据库。decrypt 保留旧 XOR 格式兼容，恢复层会再校验 SQLite。
  */
 object PinCipher {
-    private fun stream(pin: String, length: Int): ByteArray {
+    private val magic = "AKB1".toByteArray(Charsets.US_ASCII)
+    private const val saltSize = 16
+    private const val ivSize = 12
+    private const val tagBits = 128
+    private const val iterations = 120_000
+    private val random = SecureRandom()
+
+    private fun requireValidPin(pin: String) {
+        require(pin.length == 6 && pin.all { it.isDigit() }) { "备份密码必须是 6 位数字" }
+    }
+
+    private fun key(pin: String, salt: ByteArray): SecretKeySpec {
+        val spec = PBEKeySpec(pin.toCharArray(), salt, iterations, 256)
+        return try {
+            val bytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+            SecretKeySpec(bytes, "AES")
+        } finally {
+            spec.clearPassword()
+        }
+    }
+
+    fun encrypt(data: ByteArray, pin: String): ByteArray {
+        requireValidPin(pin)
+        val salt = ByteArray(saltSize).also(random::nextBytes)
+        val iv = ByteArray(ivSize).also(random::nextBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key(pin, salt), GCMParameterSpec(tagBits, iv))
+        val encrypted = cipher.doFinal(data)
+        return ByteBuffer.allocate(magic.size + salt.size + iv.size + encrypted.size)
+            .put(magic)
+            .put(salt)
+            .put(iv)
+            .put(encrypted)
+            .array()
+    }
+
+    fun decrypt(data: ByteArray, pin: String): ByteArray {
+        requireValidPin(pin)
+        if (!data.hasModernHeader()) return legacyTransform(data, pin)
+        require(data.size >= magic.size + saltSize + ivSize + tagBits / 8) { "备份文件已损坏" }
+
+        val buffer = ByteBuffer.wrap(data).apply { position(magic.size) }
+        val salt = ByteArray(saltSize).also(buffer::get)
+        val iv = ByteArray(ivSize).also(buffer::get)
+        val encrypted = ByteArray(buffer.remaining()).also(buffer::get)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key(pin, salt), GCMParameterSpec(tagBits, iv))
+        return cipher.doFinal(encrypted)
+    }
+
+    private fun ByteArray.hasModernHeader(): Boolean =
+        size >= magic.size && magic.indices.all { this[it] == magic[it] }
+
+    /** 仅用于读取 2026-08-20 前已经生成的备份。新备份一律使用 AES-GCM。 */
+    private fun legacyTransform(data: ByteArray, pin: String): ByteArray {
+        val key = legacyStream(pin, data.size)
+        return ByteArray(data.size) { i -> (data[i].toInt() xor (key[i].toInt() and 0xFF)).toByte() }
+    }
+
+    private fun legacyStream(pin: String, length: Int): ByteArray {
         val pinBytes = pin.toByteArray(Charsets.UTF_8)
         val out = ByteArray(length)
         var counter = 0L
@@ -28,13 +93,4 @@ object PinCipher {
         }
         return out
     }
-
-    fun encrypt(data: ByteArray, pin: String): ByteArray {
-        require(pin.length == 6 && pin.all { it.isDigit() }) { "备份密码必须是 6 位数字" }
-        val key = stream(pin, data.size)
-        return ByteArray(data.size) { i -> (data[i].toInt() xor (key[i].toInt() and 0xFF)).toByte() }
-    }
-
-    /** 与 encrypt 对称；密码错时静默产出乱码（无法校验），产品层已提示遗忘无法恢复。 */
-    fun decrypt(data: ByteArray, pin: String): ByteArray = encrypt(data, pin)
 }

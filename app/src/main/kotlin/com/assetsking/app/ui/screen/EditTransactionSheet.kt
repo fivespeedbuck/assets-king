@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.assetsking.database.AccountEntity
+import com.assetsking.database.CategoryEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.TransactionCategory
@@ -58,9 +59,9 @@ fun EditTransactionSheet(
     onDismiss: () -> Unit,
     recurringRules: List<RecurringRuleEntity> = emptyList(),
     onLinkToRule: (String, String?) -> Unit = { _, _ -> },
+    categories: List<CategoryEntity> = emptyList(),
     customCategoryNames: List<String> = emptyList()
 ) {
-    val allCats = com.assetsking.ui.format.allCategories(customCategoryNames)
     val currentType = runCatching { TransactionType.valueOf(transaction.type) }
         .getOrDefault(TransactionType.EXPENSE)
 
@@ -75,6 +76,16 @@ fun EditTransactionSheet(
     var accountDropdownExpanded by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    val categoryKind = if (type == TransactionType.INCOME) "INCOME" else "EXPENSE"
+    val selectableEntityNames = categories
+        .filter { !it.isArchived && it.kind == categoryKind }
+        .filter { category ->
+            category.parentId != null || categories.none {
+                !it.isArchived && it.kind == categoryKind && it.parentId == category.id
+            }
+        }
+        .map { it.name }
+    val allCats = (listOf(categoryStr) + selectableEntityNames + customCategoryNames).distinct()
 
     Sheet(title = "编辑流水", onDismiss = onDismiss) {
         // 资金账户（REQ 流水§8 统一编辑）：换账户时仓库层对旧/新账户各自重算余额
