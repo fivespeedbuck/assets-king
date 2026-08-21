@@ -45,8 +45,8 @@ interface TransactionDao {
     @Query("UPDATE transactions SET category = :category WHERE id = :id")
     suspend fun updateCategory(id: String, category: String)
 
-    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity WHERE id = :id")
-    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?)
+    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity, channel = :channel WHERE id = :id")
+    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?)
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -330,16 +330,4 @@ interface MonthDebtAnchorDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(anchor: MonthDebtAnchorEntity)
-}
-
-@Dao
-interface CustomCategoryDao {
-    @Query("SELECT * FROM custom_categories ORDER BY name")
-    fun observeAll(): Flow<List<CustomCategoryEntity>>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(cat: CustomCategoryEntity)
-
-    @Query("DELETE FROM custom_categories WHERE name = :name")
-    suspend fun deleteByName(name: String)
 }

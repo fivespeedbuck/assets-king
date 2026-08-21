@@ -801,7 +801,8 @@ class LedgerRepository(
         note: String?,
         accountId: String,
         occurredAt: Long,
-        necessity: Boolean?
+        necessity: Boolean?,
+        channel: String?
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -813,7 +814,7 @@ class LedgerRepository(
             if (!isLoanTx) {
                 database.transactionDao().update(
                     id, amountCents, type.name, category, merchant, note,
-                    accountId, occurredAt, necessity
+                    accountId, occurredAt, necessity, channel
                 )
                 recomputeBalance(old.accountId)
                 if (accountId != old.accountId) recomputeBalance(accountId)
@@ -1080,18 +1081,6 @@ class LedgerRepository(
 
     suspend fun adjustmentsFor(accountId: String): List<BalanceAdjustmentEntity> =
         database.balanceAdjustmentDao().allFor(accountId)
-
-    // ── Custom Categories ──
-
-    val customCategories: Flow<List<CustomCategoryEntity>> = database.customCategoryDao().observeAll()
-
-    suspend fun addCustomCategory(name: String) {
-        database.customCategoryDao().upsert(CustomCategoryEntity(name.trim()))
-    }
-
-    suspend fun deleteCustomCategory(name: String) {
-        database.customCategoryDao().deleteByName(name)
-    }
 
     // ── 分类库（REQ 初始分类库 §1-21）──
 

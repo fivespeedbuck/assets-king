@@ -136,11 +136,6 @@ data class SnapshotEntity(
     val netWorth: Long
 )
 
-@Entity(tableName = "custom_categories")
-data class CustomCategoryEntity(
-    @PrimaryKey val name: String     // e.g. "宠物", "旅行"
-)
-
 // V5 信用卡分期：只做展示与未来预测，绝不进 totalDebt（已在卡 balance 内）
 @Entity(tableName = "credit_card_installments", indices = [Index("cardAccountId")])
 data class CreditCardInstallmentEntity(

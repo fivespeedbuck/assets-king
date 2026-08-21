@@ -1,6 +1,7 @@
 package com.assetsking.app.ui.screen
 
 import android.content.ClipData
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +28,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,8 +53,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,8 +82,12 @@ import com.assetsking.ledger.AmountExpression
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.IconLibrary
+import com.assetsking.ui.component.Sheet
+import com.assetsking.ui.format.datePickerMillis
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.format.replaceLocalDate
+import com.assetsking.ui.format.replaceLocalTime
 import com.assetsking.usecase.AccountInference
 import com.assetsking.usecase.PendingConfirmationPolicy
 import kotlin.math.roundToLong
@@ -94,7 +104,8 @@ private enum class IncomeSub(val label: String, val type: TransactionType) {
 }
 private enum class RepaySub(val label: String) { CREDIT_CARD("信用卡还款"), LOAN("贷款还款") }
 
-private val channelOptions = listOf("微信支付", "支付宝", "银行短信", "其他")
+internal fun isOrdinaryEditableTransaction(type: TransactionType): Boolean =
+    type == TransactionType.EXPENSE || type == TransactionType.INCOME || type == TransactionType.REFUND
 
 /**
  * 统一全屏交易编辑器（REQ 编辑器 §1-29）：手动记账与待确认复用同一流程。
@@ -104,6 +115,8 @@ private val channelOptions = listOf("微信支付", "支付宝", "银行短信",
 @Composable
 fun TransactionEditorScreen(
     pendingItem: PendingItem?,
+    editingTransaction: TransactionEntity? = null,
+    initialLoanPlanId: String? = null,
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
     merchants: List<MerchantEntity>,
@@ -117,23 +130,45 @@ fun TransactionEditorScreen(
     onDone: () -> Unit,
     onBack: () -> Unit
 ) {
+    // 系统返回键/左右边缘返回手势与顶部返回箭头走同一路由，先退出编辑器而不是退出应用。
+    BackHandler(onBack = onBack)
+
     val parsed = pendingItem?.parsed
-    var kind by remember {
+    var kind by remember(pendingItem?.notification?.id, editingTransaction?.id, initialLoanPlanId) {
         mutableStateOf(
             when {
-                pendingItem == null -> EditorKind.EXPENSE
+                initialLoanPlanId != null -> EditorKind.REPAY
+                editingTransaction?.type == TransactionType.INCOME.name ||
+                    editingTransaction?.type == TransactionType.REFUND.name -> EditorKind.INCOME
                 parsed?.isExpense == false -> EditorKind.INCOME
                 else -> EditorKind.EXPENSE
             }
         )
     }
     // 待确认通知方向未知时不把“支出”当成默认答案；用户必须主动选择方向。
-    var directionChosen by remember { mutableStateOf(pendingItem == null || parsed?.isExpense != null) }
+    var directionChosen by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(editingTransaction != null || pendingItem == null || parsed?.isExpense != null)
+    }
     // 审核 BUG-6 修复：退款通知预填「退款」子类型（原固定 INCOME，用户不改就把退款记成收入）。
-    var incomeSub by remember { mutableStateOf(if (parsed?.isRefund == true) IncomeSub.REFUND else IncomeSub.INCOME) }
-    var repaySub by remember { mutableStateOf(RepaySub.CREDIT_CARD) }
-    var amountExpr by remember { mutableStateOf(parsed?.amountCents?.let { "%.2f".format(it / 100.0) } ?: "") }
-    var occurredAt by remember { mutableStateOf(pendingItem?.notification?.postedAt ?: System.currentTimeMillis()) }
+    var incomeSub by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(
+            if (editingTransaction?.type == TransactionType.REFUND.name || parsed?.isRefund == true) IncomeSub.REFUND
+            else IncomeSub.INCOME
+        )
+    }
+    var repaySub by remember(initialLoanPlanId) {
+        mutableStateOf(if (initialLoanPlanId != null) RepaySub.LOAN else RepaySub.CREDIT_CARD)
+    }
+    var amountExpr by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(
+            editingTransaction?.amountCents?.let { "%.2f".format(it / 100.0) }
+                ?: parsed?.amountCents?.let { "%.2f".format(it / 100.0) }
+                ?: ""
+        )
+    }
+    var occurredAt by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(editingTransaction?.occurredAt ?: pendingItem?.notification?.postedAt ?: System.currentTimeMillis())
+    }
     val inferredAccountId = remember(pendingItem, accounts, merchantLastAccount) {
         if (pendingItem != null) AccountInference.infer(
             bankMatchedAccountId = parsed?.bankHint?.let { hint ->
@@ -150,26 +185,49 @@ fun TransactionEditorScreen(
             candidates = accounts.filterNot { it.archived }.map { AccountInference.Candidate(it.id, it.name) }
         ) else null
     }
-    var accountId by remember {
+    var accountId by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(
-            if (pendingItem != null) inferredAccountId.orEmpty()
+            if (editingTransaction != null) editingTransaction.accountId
+            else if (pendingItem != null) inferredAccountId.orEmpty()
             else accounts.firstOrNull { !it.archived && it.type == AccountType.ASSET.name }?.id.orEmpty()
         )
     }
     var toAccountId by remember { mutableStateOf(accounts.firstOrNull { it.type == AccountType.CREDIT.name }?.id.orEmpty()) }
-    var channel by remember { mutableStateOf(if (pendingItem != null) AccountInference.channelLabel(pendingItem.notification.packageName, pendingItem.notification.sourceLabel) else "微信支付") }
-    var merchantText by remember { mutableStateOf(parsed?.merchant ?: "") }
-    var categoryId by remember { mutableStateOf<String?>(null) }
-    var necessity by remember { mutableStateOf<Boolean?>(null) } // null = 按分类默认
-    var isReimbursable by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf("") }
+    var channel by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(
+            editingTransaction?.channel.orEmpty().ifBlank {
+                if (pendingItem != null) AccountInference.channelLabel(pendingItem.notification.packageName, pendingItem.notification.sourceLabel)
+                else "微信"
+            }
+        )
+    }
+    var customChannelSelected by remember { mutableStateOf(isCustomPaymentChannel(channel)) }
+    var merchantText by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(editingTransaction?.merchant.orEmpty().ifBlank { parsed?.merchant.orEmpty() })
+    }
+    val editingCategoryKind = if (editingTransaction?.type == TransactionType.INCOME.name) "INCOME" else "EXPENSE"
+    var categoryId by remember(editingTransaction?.id) {
+        mutableStateOf(
+            categories.firstOrNull {
+                it.name == editingTransaction?.category && it.kind == editingCategoryKind && !it.isArchived
+            }?.id
+        )
+    }
+    var editingCategoryInitialized by remember(editingTransaction?.id) {
+        mutableStateOf(editingTransaction == null || categoryId != null)
+    }
+    var necessity by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.necessity) }
+    var isReimbursable by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.isReimbursable ?: false) }
+    var note by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.note.orEmpty()) }
     var keypadExpanded by remember { mutableStateOf(pendingItem == null) }
     var showDatePicker by remember { mutableStateOf(false) }
-    var showCategoryManage by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     var showNewCategory by remember { mutableStateOf(false) }
     var newCategoryParentId by remember { mutableStateOf<String?>(null) }
+    var pendingCategoryName by remember { mutableStateOf<String?>(null) }
     // 贷款还款
-    var loanPlanId by remember { mutableStateOf<String?>(null) }
+    var loanPlanId by remember(initialLoanPlanId) { mutableStateOf(initialLoanPlanId) }
     var loanSuggestion by remember { mutableStateOf<Pair<LoanPlanEntity, com.assetsking.model.LoanInstallment>?>(null) }
     var principalCents by remember { mutableStateOf(0L) }
     var interestCents by remember { mutableStateOf(0L) }
@@ -208,11 +266,33 @@ fun TransactionEditorScreen(
             .sortedByDescending { catUsage[it.name] ?: 0 }
     }
 
-    val selectedCategory = categories.firstOrNull { it.id == categoryId }
+    // 分类 ID 只有在当前收支库中才有效，避免切换方向后把已经隐藏的旧分类保存回去。
+    val selectedCategory = categories.firstOrNull { it.id == categoryId && it.kind == catKind && !it.isArchived }
     val selectedCategoryName = selectedCategory?.name ?: ""
+    val effectiveNecessity = necessity ?: selectedCategory?.defaultNecessary ?: true
+    val visibleKinds = if (editingTransaction != null) listOf(EditorKind.EXPENSE, EditorKind.INCOME) else EditorKind.entries
+    val visibleIncomeSubs = if (editingTransaction != null) listOf(IncomeSub.INCOME, IncomeSub.REFUND) else IncomeSub.entries
+
+    LaunchedEffect(categories, editingTransaction?.id) {
+        if (!editingCategoryInitialized && categories.isNotEmpty()) {
+            categoryId = categories.firstOrNull {
+                it.name == editingTransaction?.category && it.kind == editingCategoryKind && !it.isArchived
+            }?.id
+            editingCategoryInitialized = true
+        }
+    }
+
+    LaunchedEffect(categories, pendingCategoryName, catKind) {
+        val name = pendingCategoryName ?: return@LaunchedEffect
+        categories.firstOrNull { it.name == name && it.kind == catKind && !it.isArchived }?.let {
+            categoryId = it.id
+            pendingCategoryName = null
+        }
+    }
 
     // 学习规则只负责预填，绝不自动落账。解析出的“退款”证据优先于历史商户类型。
     LaunchedEffect(pendingItem?.notification?.id, categories, accounts) {
+        if (editingTransaction != null) return@LaunchedEffect
         val merchant = parsed?.merchant ?: return@LaunchedEffect
         val learned = repository.matchLearnedRule(merchant) ?: return@LaunchedEffect
         accounts.firstOrNull { it.id == learned.accountId && !it.archived }?.let { accountId = it.id }
@@ -268,12 +348,12 @@ fun TransactionEditorScreen(
             EditorKind.EXPENSE -> {
                 if (selectedAccount == null) add("账户")
                 if (merchantText.isBlank()) add("商户")
-                if (categoryId == null) add("分类")
+                if (selectedCategory == null) add("分类")
             }
             EditorKind.INCOME -> {
                 if (selectedAccount == null) add("账户")
                 if (merchantText.isBlank()) add("收入来源")
-                if (categoryId == null && incomeSub == IncomeSub.INCOME) add("收入分类")
+                if (selectedCategory == null && incomeSub == IncomeSub.INCOME) add("收入分类")
             }
             EditorKind.TRANSFER -> {
                 if (accountId.isBlank() || toAccountId.isBlank()) add("转出/转入账户")
@@ -290,16 +370,12 @@ fun TransactionEditorScreen(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(kind.label) },
+                title = { Text(if (editingTransaction != null) "编辑流水" else kind.label) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
-                },
-                actions = {
-                    if (kind == EditorKind.EXPENSE || kind == EditorKind.INCOME) {
-                        TextButton(onClick = { showCategoryManage = true }) { Text("分类管理") }
-                    }
                 }
             )
         },
@@ -319,18 +395,39 @@ fun TransactionEditorScreen(
                 Button(
                     onClick = {
                         if (missing.isEmpty()) {
-                            doSave(
-                                kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
-                                merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
-                                loanPlanId, principalCents, interestCents, feeCents, expenseIds.value,
-                                pendingItem, viewModel
-                            )
+                            if (editingTransaction != null) {
+                                val updatedType = if (kind == EditorKind.EXPENSE) TransactionType.EXPENSE else incomeSub.type
+                                val updatedCategory = when {
+                                    kind == EditorKind.EXPENSE -> selectedCategoryName
+                                    incomeSub == IncomeSub.INCOME -> selectedCategoryName
+                                    else -> editingTransaction.category.ifBlank { com.assetsking.model.TransactionCategory.UNCATEGORIZED.name }
+                                }
+                                viewModel.updateTransaction(
+                                    editingTransaction.id,
+                                    amountCents,
+                                    updatedType,
+                                    updatedCategory,
+                                    merchantText.trim().takeIf { it.isNotEmpty() },
+                                    note.trim().takeIf { it.isNotEmpty() },
+                                    accountId,
+                                    occurredAt,
+                                    if (updatedType == TransactionType.EXPENSE) effectiveNecessity else editingTransaction.necessity,
+                                    channel.trim().takeIf { it.isNotEmpty() }
+                                )
+                            } else {
+                                doSave(
+                                    kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
+                                    merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
+                                    loanPlanId, principalCents, interestCents, feeCents, expenseIds.value,
+                                    pendingItem, viewModel
+                                )
+                            }
                             onDone()
                         }
                     },
                     enabled = amountCents > 0 && missing.isEmpty(),
                     modifier = Modifier.fillMaxWidth().height(48.dp)
-                ) { Text("确认入账", fontWeight = FontWeight.Bold) }
+                ) { Text(if (editingTransaction != null) "保存修改" else "确认入账", fontWeight = FontWeight.Bold) }
             }
         }
     ) { padding ->
@@ -340,7 +437,7 @@ fun TransactionEditorScreen(
         ) {
             // ── 类型切换（REQ 编辑器§2/§11/§24）──
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                EditorKind.entries.forEach { k ->
+                visibleKinds.forEach { k ->
                     FilterChip(
                         selected = directionChosen && kind == k,
                         onClick = {
@@ -357,7 +454,7 @@ fun TransactionEditorScreen(
             }
             when (kind) {
                 EditorKind.INCOME -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IncomeSub.entries.forEach { s ->
+                    visibleIncomeSubs.forEach { s ->
                         FilterChip(selected = incomeSub == s, onClick = { incomeSub = s }, label = { Text(s.label) })
                     }
                 }
@@ -377,10 +474,14 @@ fun TransactionEditorScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            if (evaluated != null && amountExpr.isNotBlank()) {
+            Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.CenterStart) {
                 Text(
-                    "= ${formatMoney((evaluated * 100).roundToLong())}",
-                    style = MaterialTheme.typography.labelSmall,
+                    when {
+                        amountExpr.isBlank() -> "＝"
+                        evaluated != null -> "＝ ${formatMoney((evaluated * 100).roundToLong())}"
+                        else -> "＝ …"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
@@ -390,33 +491,65 @@ fun TransactionEditorScreen(
                 TextButton(onClick = { keypadExpanded = true }) { Text("展开键盘修改金额") }
             }
 
-            // ── 日期 ──
-            Row(
-                Modifier.fillMaxWidth().clickable { showDatePicker = true }.padding(vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("日期", style = MaterialTheme.typography.bodyMedium)
-                Text(formatTime(occurredAt), color = MaterialTheme.colorScheme.primary)
-            }
-
-            // ── 资金账户（转账/信用卡还款两个）──
-            if (kind == EditorKind.TRANSFER || (kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD)) {
-                Text("转出账户", fontWeight = FontWeight.Medium)
-                AccountChips(accounts.filter { it.type == AccountType.ASSET.name && !it.archived }, accountId) { accountId = it.id }
-                Text("转入账户", fontWeight = FontWeight.Medium)
-                val toTarget = if (kind == EditorKind.TRANSFER) accounts.filter { !it.archived } else accounts.filter { it.type == AccountType.CREDIT.name && !it.archived }
-                AccountChips(toTarget, toAccountId) { toAccountId = it.id }
-            } else {
-                Text("实际资金账户", fontWeight = FontWeight.Medium)
-                AccountChips(accounts.filter { !it.archived }, accountId) { accountId = it.id }
-            }
-
-            // ── 支付渠道（REQ 流水§5，与账户分开）──
-            Text("支付渠道", fontWeight = FontWeight.Medium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                channelOptions.forEach { c ->
-                    FilterChip(selected = channel == c, onClick = { channel = c }, label = { Text(c) })
+            // ── 日期与时间：新增、编辑共用同一组入口 ──
+            Text("日期与时间", fontWeight = FontWeight.Medium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showDatePicker = true }, modifier = Modifier.weight(1f)) {
+                    Text(formatTime(occurredAt).substringBefore(' '))
                 }
+                OutlinedButton(onClick = { showTimePicker = true }, modifier = Modifier.weight(1f)) {
+                    Text(formatTime(occurredAt).substringAfter(' '))
+                }
+            }
+
+            // ── 资金账户 / 支付渠道：普通新增流水与编辑流水共用同一排两列控件 ──
+            if (kind == EditorKind.TRANSFER || (kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD)) {
+                val fromTargets = accounts.filter { it.type == AccountType.ASSET.name && !it.archived }
+                val toTargets = if (kind == EditorKind.TRANSFER) {
+                    accounts.filter { !it.archived }
+                } else {
+                    accounts.filter { it.type == AccountType.CREDIT.name && !it.archived }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    AccountDropdownField(
+                        label = "转出账户",
+                        accounts = fromTargets,
+                        selectedAccountId = accountId,
+                        onAccountSelected = { accountId = it },
+                        modifier = Modifier.weight(1f)
+                    )
+                    AccountDropdownField(
+                        label = "转入账户",
+                        accounts = toTargets,
+                        selectedAccountId = toAccountId,
+                        onAccountSelected = { toAccountId = it },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                PaymentChannelDropdownField(
+                    selectedChannel = channel,
+                    customChannelSelected = customChannelSelected,
+                    onChannelSelected = { channel = it },
+                    onCustomChannelSelected = { customChannelSelected = it }
+                )
+                if (customChannelSelected) {
+                    OutlinedTextField(
+                        value = channel,
+                        onValueChange = { channel = it },
+                        label = { Text("自定义支付渠道") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            } else {
+                AccountChannelFields(
+                    accounts = accounts,
+                    selectedAccountId = accountId,
+                    selectedChannel = channel,
+                    customChannelSelected = customChannelSelected,
+                    onAccountSelected = { accountId = it },
+                    onChannelSelected = { channel = it },
+                    onCustomChannelSelected = { customChannelSelected = it }
+                )
             }
 
             // ── 商户 / 收入来源（REQ 商户库§4/编辑器§18）──
@@ -435,6 +568,7 @@ fun TransactionEditorScreen(
                     childrenOf = childrenOf,
                     selectedCategoryId = categoryId,
                     onSelect = { categoryId = it.id },
+                    onClearSelection = { categoryId = null },
                     onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true },
                     onReorder = { viewModel.reorderCategories(it) }
                 )
@@ -443,10 +577,9 @@ fun TransactionEditorScreen(
             // ── 必要性（REQ 分类§2：默认来自二级分类，单笔可改）──
             if (kind == EditorKind.EXPENSE) {
                 Text("必要性", fontWeight = FontWeight.Medium)
-                val defaultNec = selectedCategory?.defaultNecessary
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = necessity == true || (necessity == null && defaultNec == true), onClick = { necessity = true }, label = { Text("必要") })
-                    FilterChip(selected = necessity == false || (necessity == null && defaultNec == false), onClick = { necessity = false }, label = { Text("非必要") })
+                    FilterChip(selected = effectiveNecessity, onClick = { necessity = true }, label = { Text("必要") })
+                    FilterChip(selected = !effectiveNecessity, onClick = { necessity = false }, label = { Text("非必要") })
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { isReimbursable = !isReimbursable }) {
                     Icon(if (isReimbursable) Icons.Filled.Check else Icons.Filled.Close, contentDescription = null)
@@ -460,7 +593,11 @@ fun TransactionEditorScreen(
                 Text("贷款计划", fontWeight = FontWeight.Medium)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     loanPlans.filter { it.status == "ACTIVE" }.forEach { plan ->
-                        FilterChip(selected = loanPlanId == plan.id, onClick = { loanPlanId = plan.id }, label = { Text(plan.id.take(12)) })
+                        FilterChip(
+                            selected = loanPlanId == plan.id,
+                            onClick = { loanPlanId = plan.id },
+                            label = { Text(loanPlanDisplayName(plan, accounts)) }
+                        )
                     }
                 }
                 loanSuggestion?.let { (plan, inst) ->
@@ -502,6 +639,13 @@ fun TransactionEditorScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            if (editingTransaction != null) {
+                OutlinedButton(
+                    onClick = { confirmDelete = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("删除流水", color = MaterialTheme.colorScheme.error) }
+            }
+
             // ── 证据 + 余额校验预览（待确认模式，REQ 归并§6/§17-18）──
             if (pendingItem != null) {
                 EvidenceSectionInEditor(pendingItem, ignoredItems, viewModel)
@@ -513,12 +657,12 @@ fun TransactionEditorScreen(
     }
 
     if (showDatePicker) {
-        val state = rememberDatePickerState(initialSelectedDateMillis = occurredAt)
+        val state = rememberDatePickerState(initialSelectedDateMillis = datePickerMillis(occurredAt))
         DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
             confirmButton = {
                 TextButton(onClick = {
-                    state.selectedDateMillis?.let { occurredAt = it }
+                    state.selectedDateMillis?.let { occurredAt = replaceLocalDate(occurredAt, it) }
                     showDatePicker = false
                 }) { Text("确定") }
             },
@@ -526,13 +670,40 @@ fun TransactionEditorScreen(
         ) { DatePicker(state = state) }
     }
 
-    if (showCategoryManage) {
-        CategoryManageDialog(
-            categories = categories,
-            catKind = catKind,
-            onDismiss = { showCategoryManage = false },
-            onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true; showCategoryManage = false },
-            viewModel = viewModel
+    if (showTimePicker) {
+        val localTime = Instant.ofEpochMilli(occurredAt).atZone(ZoneId.systemDefault()).toLocalTime()
+        val state = rememberTimePickerState(
+            initialHour = localTime.hour,
+            initialMinute = localTime.minute,
+            is24Hour = true
+        )
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("选择时间") },
+            text = { TimePicker(state) },
+            confirmButton = {
+                TextButton(onClick = {
+                    occurredAt = replaceLocalTime(occurredAt, state.hour, state.minute)
+                    showTimePicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("取消") } }
+        )
+    }
+
+    if (confirmDelete && editingTransaction != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除这条流水？") },
+            text = { Text("删除后会重新计算关联账户余额。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteTransaction(editingTransaction.id)
+                    confirmDelete = false
+                    onDone()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } }
         )
     }
 
@@ -544,9 +715,43 @@ fun TransactionEditorScreen(
             onDismiss = { showNewCategory = false },
             onCreate = { name, shortName, parentId, iconKey, defaultNecessary ->
                 viewModel.addCategoryEntity(name, shortName, parentId, iconKey, defaultNecessary, catKind)
+                pendingCategoryName = name.trim()
                 showNewCategory = false
             }
         )
+    }
+}
+
+@Composable
+internal fun ManagedTransactionDetailSheet(
+    transaction: TransactionEntity,
+    accountName: String,
+    onDismiss: () -> Unit
+) {
+    val type = runCatching { TransactionType.valueOf(transaction.type) }.getOrNull()
+    val typeLabel = when (type) {
+        TransactionType.FEE -> "手续费"
+        TransactionType.LOAN_DISBURSEMENT -> "借款到账"
+        TransactionType.LOAN_PAYMENT -> "贷款还款"
+        TransactionType.LOAN_PREPAYMENT -> "提前还款"
+        TransactionType.REIMBURSEMENT -> "报销到账"
+        else -> transaction.type
+    }
+    Sheet(title = "流水详情", onDismiss = onDismiss) {
+        Text(
+            "${typeLabel}由对应业务流程联动生成，不能在普通流水编辑器中修改。请前往贷款、报销或相关业务入口调整。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        Text("金额：${formatMoney(transaction.amountCents)}")
+        Text("资金账户：$accountName")
+        Text("分类：${transaction.category}")
+        Text("日期与时间：${formatTime(transaction.occurredAt)}")
+        transaction.merchant?.let { Text("商户/来源：$it") }
+        transaction.note?.let { Text("备注：$it") }
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("关闭") }
     }
 }
 
@@ -613,15 +818,6 @@ private fun doSave(
 // ── 组件 ──
 
 @Composable
-private fun AccountChips(accounts: List<AccountEntity>, selectedId: String, onSelect: (AccountEntity) -> Unit) {
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        accounts.forEach { a ->
-            FilterChip(selected = selectedId == a.id, onClick = { onSelect(a) }, label = { Text(a.name) })
-        }
-    }
-}
-
-@Composable
 private fun MerchantField(
     value: String,
     onValueChange: (String) -> Unit,
@@ -652,16 +848,18 @@ private fun MerchantField(
 /** 一级宫格（每行 5 个，大字体 4 个），点击在其行下方原地展开二级面板（REQ 编辑器§3/§25/§28）；长按拖动排序（REQ 编辑器§8）。 */
 @OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun CategoryGrid(
+internal fun CategoryGrid(
     parents: List<CategoryEntity>,
     childrenOf: (String?) -> List<CategoryEntity>,
     selectedCategoryId: String?,
     onSelect: (CategoryEntity) -> Unit,
+    onClearSelection: () -> Unit = {},
     onAddChild: (String) -> Unit,
-    onReorder: (List<String>) -> Unit
+    onReorder: (List<String>) -> Unit,
+    showAddChild: Boolean = true,
+    selectParentOnExpand: Boolean = false
 ) {
-    val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale
-    val perRow = if (fontScale > 1.15f) 4 else 5
+    val perRow = 4
     var expandedParent by remember { mutableStateOf<String?>(null) }
     // 拖动排序的本地顺序；数据源变化（改名/新增）时重新对齐
     var order by remember(parents) { mutableStateOf(parents) }
@@ -681,8 +879,8 @@ private fun CategoryGrid(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 row.forEach { parent ->
                     // 收入分类库的种子是一级且无二级：选中即一级本身；有二级的一级仍以二级命中高亮
-                    val selected = selectedCategoryId == parent.id ||
-                        (selectedCategoryId != null && selectedCategoryId.startsWith("${parent.id}-"))
+                    val parentChildren = childrenOf(parent.id)
+                    val selected = selectedCategoryId == parent.id || parentChildren.any { it.id == selectedCategoryId }
                     val dropTarget = remember(parent.id) {
                         object : DragAndDropTarget {
                             var onItemDropped: ((String, String) -> Unit)? = null
@@ -701,8 +899,12 @@ private fun CategoryGrid(
                                 // 消耗普通点击，导致分类永远选不中、确认按钮持续禁用。
                                 detectTapGestures(
                                     onTap = {
-                                        if (childrenOf(parent.id).isEmpty()) onSelect(parent)
-                                        else expandedParent = if (expandedParent == parent.id) null else parent.id
+                                        if (parentChildren.isEmpty()) onSelect(parent)
+                                        else {
+                                            if (selectedCategoryId != null && !selected) onClearSelection()
+                                            if (selectParentOnExpand) onSelect(parent)
+                                            expandedParent = if (expandedParent == parent.id) null else parent.id
+                                        }
                                     },
                                     onLongPress = {
                                         draggingId = parent.id
@@ -738,6 +940,7 @@ private fun CategoryGrid(
                         Text(parent.shortName, style = MaterialTheme.typography.labelSmall, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                     }
                 }
+                repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
             }
             // 二级面板插在点中的一级所在行正下方（REQ 编辑器§28）
             row.firstOrNull { it.id == expandedParent }?.let { parent ->
@@ -759,9 +962,11 @@ private fun CategoryGrid(
                         if (children.size > 9) {
                             FilterChip(selected = false, onClick = { showAll = !showAll }, label = { Text(if (showAll) "收起" else "更多") })
                         }
-                        // 新增二级：固定末尾（REQ 编辑器§9）
-                        OutlinedButton(onClick = { onAddChild(parent.id) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
-                            Text("＋新增", style = MaterialTheme.typography.labelSmall)
+                        if (showAddChild) {
+                            // 新增二级：固定末尾（REQ 编辑器§9）
+                            OutlinedButton(onClick = { onAddChild(parent.id) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
+                                Text("＋新增", style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
@@ -790,9 +995,24 @@ private fun CalculatorKeypad(expr: String, onExpr: (String) -> Unit) {
                 }
             }
         }
-        OutlinedButton(onClick = { onExpr("") }, modifier = Modifier.fillMaxWidth().padding(2.dp)) { Text("清空") }
+        Row(Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { onExpr("") }, modifier = Modifier.weight(1f).padding(2.dp)) { Text("清空") }
+            Button(
+                onClick = { calculatorEqualsExpression(expr)?.let(onExpr) },
+                enabled = calculatorEqualsExpression(expr) != null,
+                modifier = Modifier.weight(1f).padding(2.dp)
+            ) { Text("＝") }
+        }
     }
 }
+
+internal fun calculatorEqualsExpression(expr: String): String? =
+    AmountExpression.evaluate(expr)?.let { value ->
+        runCatching { java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString() }.getOrNull()
+    }
+
+internal fun loanPlanDisplayName(plan: LoanPlanEntity, accounts: List<AccountEntity>): String =
+    accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款计划"
 
 @Composable
 private fun EvidenceSectionInEditor(
@@ -871,46 +1091,128 @@ private fun BalancePreviewInEditor(
 
 // ── 分类管理（REQ 编辑器§20-23）──
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 internal fun CategoryManageDialog(
     categories: List<CategoryEntity>,
     catKind: String,
     onDismiss: () -> Unit,
+    onAddParent: () -> Unit,
     onAddChild: (String) -> Unit,
-    viewModel: LedgerViewModel
+    onUpdate: (String, String?, String?, String?, String?) -> Unit,
+    onArchiveOrDelete: (String) -> Unit,
+    onMerge: (String, String) -> Unit
 ) {
     var renameTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var mergeSource by remember { mutableStateOf<CategoryEntity?>(null) }
-    var mergeTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var moveTarget by remember { mutableStateOf<CategoryEntity?>(null) }
+    var selectedParentId by remember { mutableStateOf<String?>(null) }
+    var childActionTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     val kindCats = categories.filter { it.kind == catKind }
+    val selectedParent = kindCats.firstOrNull { it.id == selectedParentId && it.parentId == null }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (catKind == "INCOME") "收入分类管理" else "分类管理") },
+        title = {
+            Text(
+                selectedParent?.name
+                    ?: if (catKind == "INCOME") "收入分类管理" else "消费分类管理"
+            )
+        },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("一级分类", fontWeight = FontWeight.Bold)
-                kindCats.filter { it.parentId == null }.forEach { parent ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${parent.name}（${parent.shortName}）")
-                        Row {
-                            TextButton(onClick = { renameTarget = parent }) { Text("改名") }
-                            TextButton(onClick = { mergeSource = parent }) { Text("合并") }
-                            TextButton(onClick = { viewModel.archiveOrDeleteCategory(parent.id) }) { Text(if (parent.isArchived) "恢复" else "归档") }
-                            TextButton(onClick = { onAddChild(parent.id) }) { Text("＋二级") }
+                if (selectedParent == null) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("一级分类", fontWeight = FontWeight.Bold)
+                            Text("点进分类后管理二级分类", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(onClick = onAddParent) { Text("＋一级分类") }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    kindCats.filter { it.parentId == null }
+                        .sortedWith(compareBy<CategoryEntity> { it.isArchived }.thenBy { it.sortOrder })
+                        .forEach { parent ->
+                            val childCount = kindCats.count { it.parentId == parent.id && !it.isArchived }
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                    .clickable { selectedParentId = parent.id }
+                                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    Modifier.size(38.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(11.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(IconLibrary.byKey(parent.iconKey), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(parent.name, fontWeight = FontWeight.Medium)
+                                    Text(
+                                        if (parent.isArchived) "已归档" else "$childCount 个二级分类",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                } else {
+                    TextButton(onClick = { selectedParentId = null }) { Text("‹ 全部一级分类") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(44.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(13.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(IconLibrary.byKey(selectedParent.iconKey), contentDescription = null, modifier = Modifier.size(26.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(selectedParent.name, fontWeight = FontWeight.Bold)
+                            Text(selectedParent.shortName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                }
-                HorizontalDivider()
-                Text("二级分类", fontWeight = FontWeight.Bold)
-                kindCats.filter { it.parentId != null }.forEach { child ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${child.name}${if (child.isArchived) "（已归档）" else ""}")
-                        Row {
-                            TextButton(onClick = { renameTarget = child }) { Text("改名") }
-                            TextButton(onClick = { mergeSource = child }) { Text("合并") }
-                            TextButton(onClick = { moveTarget = child }) { Text("归属") }
-                            TextButton(onClick = { viewModel.archiveOrDeleteCategory(child.id) }) { Text(if (child.isArchived) "恢复" else "归档") }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { renameTarget = selectedParent }) { Text("编辑一级") }
+                        TextButton(onClick = { mergeSource = selectedParent }) { Text("合并") }
+                        TextButton(onClick = { onArchiveOrDelete(selectedParent.id) }) { Text(if (selectedParent.isArchived) "恢复" else "归档") }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("二级分类", fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { onAddChild(selectedParent.id) }) { Text("＋二级分类") }
+                    }
+                    val children = kindCats.filter { it.parentId == selectedParent.id }
+                        .sortedWith(compareBy<CategoryEntity> { it.isArchived }.thenBy { it.sortOrder })
+                    if (children.isEmpty()) {
+                        Text("暂无二级分类", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    children.forEach { child ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                                .clickable { childActionTarget = child }
+                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(child.name)
+                                if (child.isArchived) Text("已归档", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text("管理 ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
@@ -919,9 +1221,32 @@ internal fun CategoryManageDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = {}
     )
+    childActionTarget?.let { child ->
+        AlertDialog(
+            onDismissRequest = { childActionTarget = null },
+            title = { Text(child.name) },
+            text = {
+                Column {
+                    TextButton(onClick = { renameTarget = child; childActionTarget = null }, modifier = Modifier.fillMaxWidth()) { Text("编辑名称") }
+                    TextButton(onClick = { moveTarget = child; childActionTarget = null }, modifier = Modifier.fillMaxWidth()) { Text("调整所属一级分类") }
+                    TextButton(onClick = { mergeSource = child; childActionTarget = null }, modifier = Modifier.fillMaxWidth()) { Text("合并到其他二级分类") }
+                    TextButton(
+                        onClick = { onArchiveOrDelete(child.id); childActionTarget = null },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (child.isArchived) "恢复分类" else "归档分类") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { childActionTarget = null }) { Text("取消") } }
+        )
+    }
     renameTarget?.let { target ->
-        RenameCategoryDialog(target, onDismiss = { renameTarget = null }) { name, shortName, iconKey ->
-            viewModel.updateCategoryEntity(target.id, name, shortName, null, iconKey)
+        RenameCategoryDialog(
+            target = target,
+            inheritedIconKey = target.parentId?.let { parentId -> kindCats.firstOrNull { it.id == parentId }?.iconKey },
+            onDismiss = { renameTarget = null }
+        ) { name, shortName, iconKey ->
+            onUpdate(target.id, name, shortName, null, iconKey)
             renameTarget = null
         }
     }
@@ -936,7 +1261,7 @@ internal fun CategoryManageDialog(
                     if (candidates.isEmpty()) Text("没有可移动的一级分类", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     candidates.forEach { p ->
                         Row(Modifier.fillMaxWidth().clickable {
-                            viewModel.updateCategoryEntity(child.id, null, null, p.id)
+                            onUpdate(child.id, null, null, p.id, p.iconKey)
                             moveTarget = null
                         }.padding(8.dp)) { Text(p.name) }
                     }
@@ -955,7 +1280,7 @@ internal fun CategoryManageDialog(
                 Column {
                     targets.forEach { t ->
                         Row(Modifier.fillMaxWidth().clickable {
-                            viewModel.mergeCategoryEntity(source.id, t.id)
+                            onMerge(source.id, t.id)
                             mergeSource = null
                         }.padding(8.dp)) { Text(t.name) }
                     }
@@ -969,38 +1294,47 @@ internal fun CategoryManageDialog(
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun RenameCategoryDialog(target: CategoryEntity, onDismiss: () -> Unit, onSave: (String, String, String) -> Unit) {
+private fun RenameCategoryDialog(
+    target: CategoryEntity,
+    inheritedIconKey: String?,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit
+) {
     var name by remember { mutableStateOf(target.name) }
     var shortName by remember { mutableStateOf(target.shortName) }
-    var iconKey by remember { mutableStateOf(target.iconKey) }
+    var iconKey by remember { mutableStateOf(inheritedIconKey ?: target.iconKey) }
     var search by remember { mutableStateOf("") }
+    val isPrimary = target.parentId == null
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("改名/换图标") },
+        title = { Text(if (isPrimary) "改名/换图标" else "编辑二级分类") },
         text = {
             Column {
                 OutlinedTextField(name, { name = it }, label = { Text("完整名称") })
                 OutlinedTextField(shortName, { shortName = it.take(2) }, label = { Text("两字简称") })
-                // 换图标（REQ 编辑器§20）
-                OutlinedTextField(search, { search = it }, label = { Text("搜索图标") })
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconLibrary.search(search).take(12).forEach { entry ->
-                        Column(
-                            Modifier.clickable { iconKey = entry.key }.padding(4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                entry.icon,
-                                contentDescription = entry.key,
-                                modifier = Modifier.size(28.dp),
-                                tint = if (iconKey == entry.key) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                if (isPrimary) {
+                    CategoryIconPicker(
+                        selectedIconKey = iconKey,
+                        search = search,
+                        onSearchChange = { search = it },
+                        onSelect = { iconKey = it }
+                    )
+                } else {
+                    Text(
+                        "二级分类沿用所属一级分类图标",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onSave(name, shortName, iconKey) }) { Text("保存") } },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (name.isNotBlank()) onSave(name, shortName, categoryIconKeyForEdit(target, inheritedIconKey, iconKey))
+                }
+            ) { Text("保存") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
@@ -1020,6 +1354,7 @@ internal fun NewCategoryDialog(
     var necessary by remember { mutableStateOf<Boolean?>(null) }
     var search by remember { mutableStateOf("") }
     val isIncome = catKind == "INCOME"
+    val isSecondary = parentId != null
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (parentId == null) "新增一级分类" else "新增二级分类") },
@@ -1034,29 +1369,98 @@ internal fun NewCategoryDialog(
                         FilterChip(selected = necessary == false, onClick = { necessary = false }, label = { Text("默认非必要") })
                     }
                 }
-                OutlinedTextField(search, { search = it }, label = { Text("搜索图标") })
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconLibrary.search(search).take(12).forEach { entry ->
-                        Column(
-                            Modifier.clickable { iconKey = entry.key }.padding(4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                entry.icon,
-                                contentDescription = entry.key,
-                                modifier = Modifier.size(28.dp),
-                                tint = if (iconKey == entry.key) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                if (!isSecondary) {
+                    CategoryIconPicker(
+                        selectedIconKey = iconKey,
+                        search = search,
+                        onSearchChange = { search = it },
+                        onSelect = { iconKey = it }
+                    )
+                } else {
+                    Text(
+                        "二级分类沿用所属一级分类图标",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                if (name.isNotBlank()) onCreate(name.trim(), shortName.ifBlank { name.take(2) }, parentId, iconKey, necessary)
+                if (name.isNotBlank()) {
+                    onCreate(
+                        name.trim(),
+                        shortName.ifBlank { name.take(2) },
+                        parentId,
+                        newCategoryIconKey(parentId, parents, iconKey),
+                        necessary
+                    )
+                }
             }) { Text("创建") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
+
+@Composable
+private fun CategoryIconPicker(
+    selectedIconKey: String,
+    search: String,
+    onSearchChange: (String) -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val visibleIcons = IconLibrary.search(search)
+    OutlinedTextField(
+        value = search,
+        onValueChange = onSearchChange,
+        label = { Text("搜索图标（可选）") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Text(
+        if (search.isBlank()) "全部图标 · ${visibleIcons.size}" else "找到 ${visibleIcons.size} 个图标",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+    )
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(6),
+        modifier = Modifier.fillMaxWidth().height(232.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        items(visibleIcons, key = { it.key }) { entry ->
+            val selected = selectedIconKey == entry.key
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .background(
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .clickable { onSelect(entry.key) },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    entry.icon,
+                    contentDescription = entry.key,
+                    modifier = Modifier.size(27.dp),
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+internal fun newCategoryIconKey(
+    parentId: String?,
+    parents: List<CategoryEntity>,
+    requestedIconKey: String
+): String = parentId?.let { id -> parents.firstOrNull { it.id == id }?.iconKey }
+    ?: requestedIconKey
+
+/** 一级可换图标；二级保存时始终回写所属一级图标，避免脱离继承规则。 */
+internal fun categoryIconKeyForEdit(
+    target: CategoryEntity,
+    inheritedIconKey: String?,
+    requestedIconKey: String
+): String = target.parentId?.let { inheritedIconKey ?: target.iconKey } ?: requestedIconKey

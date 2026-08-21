@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -64,6 +65,7 @@ fun AccountDetailScreen(
     onReconcile: () -> Unit,
     onBack: () -> Unit
 ) {
+    BackHandler(onBack = onBack)
     var checkpoints by remember { mutableStateOf<List<BalanceCheckpointEntity>>(emptyList()) }
     var adjustments by remember { mutableStateOf<List<BalanceAdjustmentEntity>>(emptyList()) }
     LaunchedEffect(account.id) {

@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,6 +43,7 @@ fun ReimbursementScreen(
     reimbursableTxs: List<TransactionEntity>,
     onBack: () -> Unit
 ) {
+    BackHandler(onBack = onBack)
     val zone = ZoneId.systemDefault()
     val monthStart = YearMonth.now().atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
     val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1

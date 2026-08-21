@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
@@ -28,6 +27,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -38,6 +38,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
@@ -58,15 +59,17 @@ import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
-import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.IconLibrary
+import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatMoneyCompact
+import com.assetsking.ui.format.formatDailyNetChange
+import com.assetsking.ui.format.formatClockTime
+import com.assetsking.ui.layout.calendarCellIndex
 import com.assetsking.ui.format.formatSignedMoney
-import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.theme.ExpenseRed
 import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.TextSecondaryLight
@@ -103,6 +106,18 @@ private fun dayLabel(day: LocalDate): String = when {
     else -> "${day.monthValue}月${day.dayOfMonth}日"
 }
 
+internal fun matchesCategoryFilter(
+    transactionCategory: String,
+    filterCategory: String?,
+    categories: List<CategoryEntity>
+): Boolean {
+    if (filterCategory == null || transactionCategory == filterCategory) return true
+    val parent = categories.firstOrNull {
+        it.name == filterCategory && it.parentId == null && !it.isArchived
+    } ?: return false
+    return categories.firstOrNull { it.name == transactionCategory && !it.isArchived }?.parentId == parent.id
+}
+
 /**
  * 流水页（REQ 流水列表与详情 §1-22）：月度摘要卡、连续列表倒序、月历净变化、
  * 搜索与多条件筛选、长按多选批量操作、点击编辑。
@@ -112,7 +127,6 @@ private fun dayLabel(day: LocalDate): String = when {
 fun TransactionsScreen(
     state: LedgerUiState,
     categories: List<CategoryEntity>,
-    merchants: List<MerchantEntity>,
     model: LedgerViewModel,
     onOpenEditor: () -> Unit,
     onEditTransaction: (TransactionEntity) -> Unit,
@@ -133,8 +147,6 @@ fun TransactionsScreen(
     var bulkDelete by remember { mutableStateOf(false) }
     var editingTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
-    // 双视图（REQ 流水商户库分类库入口 §1）：流水记录 / 商户与分类库
-    var viewMode by remember { mutableStateOf("list") }
     // 时间范围（REQ 流水§1）：MONTH=按月 / LAST3=近三月 / CUSTOM=自定义起止
     var rangeMode by remember { mutableStateOf("MONTH") }
     var customStart by remember { mutableStateOf<LocalDate?>(null) }
@@ -149,6 +161,8 @@ fun TransactionsScreen(
     var fCategory by remember { mutableStateOf<String?>(null) }
     var fNecessity by remember { mutableStateOf<Boolean?>(null) }
     var fChannel by remember { mutableStateOf<String?>(null) }
+    var fAccountId by remember { mutableStateOf<String?>(null) }
+    var fMerchant by remember { mutableStateOf("") }
     var fMinCents by remember { mutableStateOf("") }
     var fMaxCents by remember { mutableStateOf("") }
 
@@ -193,9 +207,11 @@ fun TransactionsScreen(
     val maxCents = fMaxCents.toDoubleOrNull()?.times(100)?.toLong()
     val filtered = rangeTxs.filter { tx ->
         (fTypes.isEmpty() || tx.type in fTypes) &&
-            (fCategory == null || tx.category == fCategory) &&
+            matchesCategoryFilter(tx.category, fCategory, categories) &&
             (fNecessity == null || tx.necessity == fNecessity) &&
             (fChannel == null || tx.channel == fChannel) &&
+            (fAccountId == null || tx.accountId == fAccountId) &&
+            (fMerchant.isBlank() || tx.merchant?.contains(fMerchant, ignoreCase = true) == true) &&
             (minCents == null || tx.amountCents >= minCents) &&
             (maxCents == null || tx.amountCents <= maxCents) &&
             (dayFilter == null || Instant.ofEpochMilli(tx.occurredAt).atZone(zone).toLocalDate() == dayFilter) &&
@@ -207,23 +223,6 @@ fun TransactionsScreen(
     }.sortedByDescending { it.occurredAt }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (viewMode == "library") {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("商户与分类库", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                TextButton(onClick = { viewMode = "list" }) { Text("返回流水") }
-            }
-            MerchantCategoryLibrary(
-                merchants = merchants,
-                categories = categories,
-                viewModel = model
-            )
-            return@Column
-        }
-
         // ── 月度摘要卡（REQ 流水§16/§19）：白卡、紧凑层级、与效果图一致 ──
         GlassCard(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -294,7 +293,7 @@ fun TransactionsScreen(
                 Icon(
                     Icons.Filled.List,
                     contentDescription = "筛选",
-                    tint = if (fTypes.isNotEmpty() || fCategory != null || fNecessity != null || fChannel != null || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = if (fTypes.isNotEmpty() || fCategory != null || fNecessity != null || fChannel != null || fAccountId != null || fMerchant.isNotBlank() || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -325,13 +324,29 @@ fun TransactionsScreen(
             )
         }
         if (multiSelect) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("已选择 ${selected.size} 笔", fontWeight = FontWeight.Bold)
-                Row {
-                    TextButton(onClick = { bulkCategory = true }) { Text("改分类") }
-                    TextButton(onClick = { bulkNecessity = true }) { Text("改必要性") }
-                    TextButton(onClick = { bulkDelete = true }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("已选择 ${selected.size} 笔", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
                     TextButton(onClick = { multiSelect = false; selected.clear() }) { Text("取消") }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { bulkCategory = true },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("改分类", maxLines = 1) }
+                    OutlinedButton(
+                        onClick = { bulkNecessity = true },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("改必要性", maxLines = 1) }
+                    OutlinedButton(
+                        onClick = { bulkDelete = true },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("删除", color = MaterialTheme.colorScheme.error, maxLines = 1)
+                    }
                 }
             }
         }
@@ -432,6 +447,11 @@ fun TransactionsScreen(
     if (showFilter) {
         FilterDialog(
             categories = categories,
+            accounts = state.accounts,
+            channels = state.transactions.mapNotNull { it.channel?.takeIf(String::isNotBlank) }.distinct(),
+            defaultMonth = month,
+            customStart = customStart,
+            customEnd = customEnd,
             range = when {
                 rangeMode == "LAST3" -> "LAST3"
                 rangeMode == "CUSTOM" -> "CUSTOM"
@@ -439,28 +459,35 @@ fun TransactionsScreen(
                 else -> "THIS_MONTH"
             },
             fTypes = fTypes, fCategory = fCategory, fNecessity = fNecessity, fChannel = fChannel,
+            fAccountId = fAccountId, fMerchant = fMerchant,
             fMinCents = fMinCents, fMaxCents = fMaxCents,
-            onApply = { pickedRange, t, c, n, ch, min, max ->
+            onApply = { pickedRange, t, c, n, ch, accountId, merchant, min, max, pickedStart, pickedEnd ->
                 when (pickedRange) {
                     "THIS_MONTH" -> { rangeMode = "MONTH"; month = YearMonth.now() }
                     "LAST_MONTH" -> { rangeMode = "MONTH"; month = YearMonth.now().minusMonths(1) }
                     "LAST3" -> rangeMode = "LAST3"
                     "CUSTOM" -> rangeMode = "CUSTOM"
                 }
+                customStart = pickedStart
+                customEnd = pickedEnd
                 dayFilter = null
-                fTypes = t; fCategory = c; fNecessity = n; fChannel = ch; fMinCents = min; fMaxCents = max
+                fTypes = t; fCategory = c; fNecessity = n; fChannel = ch; fAccountId = accountId; fMerchant = merchant; fMinCents = min; fMaxCents = max
                 showFilter = false
             },
-            onOpenLibrary = { showFilter = false; viewMode = "library" },
-            onClear = { fTypes = emptySet(); fCategory = null; fNecessity = null; fChannel = null; fMinCents = ""; fMaxCents = ""; showFilter = false },
+            onClear = { fTypes = emptySet(); fCategory = null; fNecessity = null; fChannel = null; fAccountId = null; fMerchant = ""; fMinCents = ""; fMaxCents = ""; showFilter = false },
             onDismiss = { showFilter = false }
         )
     }
     if (bulkCategory) {
-        BulkCategoryDialog(categories = categories, onPick = { catName ->
-            selected.forEach { model.setTransactionCategoryName(it, catName) }
-            selected.clear(); multiSelect = false; bulkCategory = false
-        }, onDismiss = { bulkCategory = false })
+        BulkCategoryDialog(
+            categories = categories,
+            onPick = { catName ->
+                selected.forEach { model.setTransactionCategoryName(it, catName) }
+                selected.clear(); multiSelect = false; bulkCategory = false
+            },
+            onAddCategory = model::addCategoryEntity,
+            onDismiss = { bulkCategory = false }
+        )
     }
     if (bulkNecessity) {
         AlertDialog(
@@ -557,7 +584,7 @@ private fun TransactionListRow(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    formatTime(tx.occurredAt),
+                    formatClockTime(tx.occurredAt),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -587,7 +614,7 @@ private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>, on
     val zone = ZoneId.systemDefault()
     fun at(day: Int): Long = month.atDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
     val daysInMonth = month.lengthOfMonth()
-    val firstDay = month.atDay(1).dayOfWeek.value % 7 // 周一=0
+    val firstDay = calendarCellIndex(month, 1)
     val netByDay = monthTxs.groupBy {
         Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate().dayOfMonth
     }.mapValues { (_, txs) ->
@@ -607,16 +634,33 @@ private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>, on
                 repeat(7) { dow ->
                     val day = week * 7 + dow - firstDay + 1
                     Box(
-                        Modifier.weight(1f).height(56.dp).padding(2.dp)
-                            .clickable(enabled = day in 1..daysInMonth) { if (day in 1..daysInMonth) onDayClick(day) }
+                        Modifier
+                            .weight(1f)
+                            .height(56.dp)
+                            .padding(2.dp)
+                            .clickable(enabled = day in 1..daysInMonth) {
+                                if (day in 1..daysInMonth) onDayClick(day)
+                            },
+                        contentAlignment = Alignment.TopCenter
                     ) {
                         if (day in 1..daysInMonth) {
                             val net = netByDay[day]
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("$day", style = MaterialTheme.typography.labelSmall)
+                            Column(
+                                Modifier.fillMaxWidth().padding(top = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    "$day",
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
                                 if (net != null && net != 0L) {
                                     Text(
-                                        "${if (net > 0) "+" else "−"}${net / 100}",
+                                        formatDailyNetChange(net),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textAlign = TextAlign.Center,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = if (net > 0) FlowGreen else FlowRed,
                                         maxLines = 1
@@ -665,14 +709,20 @@ internal fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, 
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FilterDialog(
     categories: List<CategoryEntity>,
+    accounts: List<AccountEntity>,
+    channels: List<String>,
+    defaultMonth: YearMonth,
+    customStart: LocalDate?,
+    customEnd: LocalDate?,
     range: String,
     fTypes: Set<String>, fCategory: String?, fNecessity: Boolean?, fChannel: String?,
+    fAccountId: String?, fMerchant: String,
     fMinCents: String, fMaxCents: String,
-    onApply: (String, Set<String>, String?, Boolean?, String?, String, String) -> Unit,
-    onOpenLibrary: () -> Unit,
+    onApply: (String, Set<String>, String?, Boolean?, String?, String?, String, String, String, LocalDate?, LocalDate?) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -681,13 +731,16 @@ private fun FilterDialog(
     var category by remember { mutableStateOf(fCategory) }
     var necessity by remember { mutableStateOf(fNecessity) }
     var channel by remember { mutableStateOf(fChannel) }
+    var accountId by remember { mutableStateOf(fAccountId) }
+    var merchant by remember { mutableStateOf(fMerchant) }
     var min by remember { mutableStateOf(fMinCents) }
     var max by remember { mutableStateOf(fMaxCents) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("筛选") },
-        text = {
-            Column {
+    var pickedStart by remember { mutableStateOf(customStart ?: defaultMonth.atDay(1)) }
+    var pickedEnd by remember { mutableStateOf(customEnd ?: defaultMonth.atEndOfMonth()) }
+    var showCustomStartPicker by remember { mutableStateOf(false) }
+    var showCustomEndPicker by remember { mutableStateOf(false) }
+    val customRangeValid = pickedRange != "CUSTOM" || !pickedStart.isAfter(pickedEnd)
+    Sheet(title = "筛选", onDismiss = onDismiss) {
                 Text("数据范围", fontWeight = FontWeight.Medium)
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     listOf(
@@ -704,10 +757,26 @@ private fun FilterDialog(
                         )
                     }
                 }
-                TextButton(onClick = onOpenLibrary) { Text("打开商户与分类库") }
+                if (pickedRange == "CUSTOM") {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = { showCustomStartPicker = true }, modifier = Modifier.weight(1f)) {
+                            Text("开始 $pickedStart", maxLines = 1)
+                        }
+                        OutlinedButton(onClick = { showCustomEndPicker = true }, modifier = Modifier.weight(1f)) {
+                            Text("结束 $pickedEnd", maxLines = 1)
+                        }
+                    }
+                    if (!customRangeValid) {
+                        Text("开始日期不能晚于结束日期", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
                 Text("交易类型", fontWeight = FontWeight.Medium)
-                Row {
-                    listOf("支出" to "EXPENSE", "收入" to "INCOME", "退款" to "REFUND", "转账还款" to "LOAN_PAYMENT").forEach { (label, t) ->
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    listOf(
+                        "支出" to "EXPENSE", "收入" to "INCOME", "退款" to "REFUND",
+                        "手续费" to "FEE", "报销到账" to "REIMBURSEMENT",
+                        "借款到账" to "LOAN_DISBURSEMENT", "贷款还款" to "LOAN_PAYMENT", "提前还款" to "LOAN_PREPAYMENT"
+                    ).forEach { (label, t) ->
                         FilterChip(
                             selected = t in types,
                             onClick = { types = if (t in types) types - t else types + t },
@@ -717,175 +786,158 @@ private fun FilterDialog(
                     }
                 }
                 Text("分类", fontWeight = FontWeight.Medium)
-                Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState())) {
-                    categories.filter { it.parentId == null }.forEach { c ->
-                        FilterChip(selected = category == c.name, onClick = { category = if (category == c.name) null else c.name }, label = { Text(c.shortName) }, modifier = Modifier.padding(2.dp))
-                    }
-                }
+                TextButton(onClick = { category = null }) { Text(if (category == null) "不限分类 ✓" else "不限分类") }
+                CategoryGrid(
+                    parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == "EXPENSE" },
+                    childrenOf = { parentId -> categories.filter { it.parentId == parentId && !it.isArchived && it.kind == "EXPENSE" } },
+                    selectedCategoryId = categories.firstOrNull { it.name == category && !it.isArchived }?.id,
+                    onSelect = { category = it.name },
+                    onAddChild = {},
+                    onReorder = {},
+                    showAddChild = false,
+                    selectParentOnExpand = true
+                )
                 Text("必要性", fontWeight = FontWeight.Medium)
                 Row {
                     FilterChip(selected = necessity == true, onClick = { necessity = if (necessity == true) null else true }, label = { Text("必要") }, modifier = Modifier.padding(2.dp))
                     FilterChip(selected = necessity == false, onClick = { necessity = if (necessity == false) null else false }, label = { Text("非必要") }, modifier = Modifier.padding(2.dp))
                 }
-                Text("支付渠道", fontWeight = FontWeight.Medium)
-                Row {
-                    listOf("微信支付", "支付宝", "银行短信").forEach { ch ->
-                        FilterChip(selected = channel == ch, onClick = { channel = if (channel == ch) null else ch }, label = { Text(ch) }, modifier = Modifier.padding(2.dp))
-                    }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SelectDropdownField(
+                        label = "支付渠道",
+                        selectedLabel = channel ?: "不限渠道",
+                        options = listOf("" to "不限渠道") + channels.map { it to it },
+                        onSelected = { channel = it.ifBlank { null } },
+                        modifier = Modifier.weight(1f)
+                    )
+                    SelectDropdownField(
+                        label = "资金账户",
+                        selectedLabel = accounts.firstOrNull { it.id == accountId }?.name ?: "不限账户",
+                        options = listOf("" to "不限账户") + accounts.filter { !it.archived }.map { it.id to it.name },
+                        onSelected = { accountId = it.ifBlank { null } },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
+                OutlinedTextField(
+                    value = merchant,
+                    onValueChange = { merchant = it },
+                    label = { Text("商户/来源包含") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
                 Text("金额区间", fontWeight = FontWeight.Medium)
                 Row {
                     OutlinedTextField(min, { min = it }, label = { Text("最低") }, modifier = Modifier.weight(1f).padding(2.dp), singleLine = true)
                     OutlinedTextField(max, { max = it }, label = { Text("最高") }, modifier = Modifier.weight(1f).padding(2.dp), singleLine = true)
                 }
-            }
-        },
-        confirmButton = {
-            Row {
-                TextButton(onClick = onClear) { Text("清空") }
-                TextButton(onClick = { onApply(pickedRange, types, category, necessity, channel, min, max) }) { Text("应用") }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
-}
-
-@Composable
-private fun BulkCategoryDialog(categories: List<CategoryEntity>, onPick: (String) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("批量改分类") },
-        text = {
-            Column {
-                categories.filter { it.parentId != null && !it.isArchived && it.kind == "EXPENSE" }.groupBy { it.parentId }.forEach { (parentId, children) ->
-                    val parent = categories.firstOrNull { it.id == parentId }
-                    Text(parent?.name ?: "其他", fontWeight = FontWeight.Bold)
-                    Row {
-                        children.take(4).forEach { c ->
-                            FilterChip(selected = false, onClick = { onPick(c.name) }, label = { Text(c.shortName) }, modifier = Modifier.padding(2.dp))
-                        }
-                    }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) { Text("清空") }
+                    Button(
+                        onClick = { onApply(pickedRange, types, category, necessity, channel, accountId, merchant.trim(), min, max, pickedStart, pickedEnd) },
+                        enabled = customRangeValid,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("应用") }
                 }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-    )
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("取消") }
+    }
+    if (showCustomStartPicker) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = pickedStart.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showCustomStartPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let {
+                        pickedStart = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showCustomStartPicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showCustomStartPicker = false }) { Text("取消") } }
+        ) { DatePicker(state = pickerState) }
+    }
+    if (showCustomEndPicker) {
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = pickedEnd.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showCustomEndPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let {
+                        pickedEnd = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate()
+                    }
+                    showCustomEndPicker = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showCustomEndPicker = false }) { Text("取消") } }
+        ) { DatePicker(state = pickerState) }
+    }
 }
 
-/** 双视图第二页：商户与分类库集中管理（REQ 流水商户库分类库入口 §2-3）。 */
 @Composable
-private fun MerchantCategoryLibrary(
-    merchants: List<MerchantEntity>,
+private fun BulkCategoryDialog(
     categories: List<CategoryEntity>,
-    viewModel: LedgerViewModel
+    onPick: (String) -> Unit,
+    onAddCategory: (String, String, String?, String, Boolean?, String) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    var merchantSearch by remember { mutableStateOf("") }
-    var mergeSource by remember { mutableStateOf<MerchantEntity?>(null) }
-    var showCategoryManage by remember { mutableStateOf(false) }
-    var showIncomeCategoryManage by remember { mutableStateOf(false) }
+    val parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == "EXPENSE" }
+    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
     var newCategoryParentId by remember { mutableStateOf<String?>(null) }
     var showNewCategory by remember { mutableStateOf(false) }
-    var newCategoryKind by remember { mutableStateOf("EXPENSE") }
-
-    fun aliasesOf(json: String): List<String> = runCatching {
-        org.json.JSONArray(json).let { arr -> (0 until arr.length()).map { arr.getString(it) } }
-    }.getOrDefault(emptyList())
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("交易对象库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-        Text("标准商户/收入来源 + 原名别名 + 学习规则", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(
-            merchantSearch, { merchantSearch = it },
-            label = { Text("搜索商户/别名") },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-            singleLine = true
-        )
-        val shown = merchants.filter { m ->
-            merchantSearch.isBlank() || m.id.contains(merchantSearch) || m.aliasesJson.contains(merchantSearch)
-        }
-        if (shown.isEmpty()) Text("暂无商户", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        shown.forEach { m ->
-            val aliases = aliasesOf(m.aliasesJson)
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(m.id, fontWeight = FontWeight.Medium)
-                    Text(
-                        listOfNotNull(
-                            m.learnedType?.let { typeLabel(it) },
-                            m.learnedAccountId?.let { id -> "账户" },
-                            m.learnedCategory?.takeIf { it.isNotBlank() },
-                            if (aliases.isNotEmpty()) "别名 ${aliases.joinToString("、")}" else null
-                        ).joinToString(" · ").ifBlank { "未学习规则" },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                TextButton(onClick = { mergeSource = m }) { Text("合并", style = MaterialTheme.typography.labelSmall) }
-            }
-        }
-        HorizontalDivider(Modifier.padding(vertical = 10.dp))
-        Text("分类库", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-        Row {
-            TextButton(onClick = { showCategoryManage = true }) { Text("管理消费分类") }
-            TextButton(onClick = { showIncomeCategoryManage = true }) { Text("管理收入分类") }
+    var pendingCategoryName by remember { mutableStateOf<String?>(null) }
+    val selectedCategory = categories.firstOrNull { it.id == selectedCategoryId && !it.isArchived }
+    androidx.compose.runtime.LaunchedEffect(categories, pendingCategoryName) {
+        val name = pendingCategoryName ?: return@LaunchedEffect
+        categories.firstOrNull { it.name == name && it.kind == "EXPENSE" && !it.isArchived }?.let {
+            selectedCategoryId = it.id
+            pendingCategoryName = null
         }
     }
-
-    // 合并对象（REQ 商户库§8）：选目标，原名进别名、流水与学习规则迁移
-    mergeSource?.let { source ->
-        val targets = merchants.filter { it.id != source.id }
-        AlertDialog(
-            onDismissRequest = { mergeSource = null },
-            title = { Text("把「${source.id}」合并到") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    if (targets.isEmpty()) Text("没有其他商户", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    targets.forEach { t ->
-                        Row(Modifier.fillMaxWidth().clickable {
-                            viewModel.mergeMerchants(t.id, listOf(source.id))
-                            mergeSource = null
-                        }.padding(8.dp)) { Text(t.id) }
-                    }
-                }
+    Sheet(title = "批量改分类", onDismiss = onDismiss) {
+        Text(
+            "先选择分类，确认后才会修改已勾选的流水",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        CategoryGrid(
+            parents = parents,
+            childrenOf = { parentId ->
+                categories.filter { it.parentId == parentId && !it.isArchived && it.kind == "EXPENSE" }
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { mergeSource = null }) { Text("取消") } }
+            selectedCategoryId = selectedCategoryId,
+            onSelect = { selectedCategoryId = it.id },
+            onClearSelection = { selectedCategoryId = null },
+            onAddChild = { parentId ->
+                newCategoryParentId = parentId
+                showNewCategory = true
+            },
+            onReorder = {},
+            showAddChild = true
         )
-    }
-
-    if (showCategoryManage) {
-        CategoryManageDialog(
-            categories = categories,
-            catKind = "EXPENSE",
-            onDismiss = { showCategoryManage = false },
-            onAddChild = { parentId -> newCategoryParentId = parentId; newCategoryKind = "EXPENSE"; showNewCategory = true; showCategoryManage = false },
-            viewModel = viewModel
-        )
-    }
-    if (showIncomeCategoryManage) {
-        CategoryManageDialog(
-            categories = categories,
-            catKind = "INCOME",
-            onDismiss = { showIncomeCategoryManage = false },
-            onAddChild = { parentId -> newCategoryParentId = parentId; newCategoryKind = "INCOME"; showNewCategory = true; showIncomeCategoryManage = false },
-            viewModel = viewModel
-        )
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("取消") }
+            Button(
+                onClick = { selectedCategory?.let { onPick(it.name) } },
+                enabled = selectedCategory != null,
+                modifier = Modifier.weight(1f)
+            ) { Text("确认修改") }
+        }
     }
     if (showNewCategory) {
-        val parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == newCategoryKind }
         NewCategoryDialog(
             parentId = newCategoryParentId,
             parents = parents,
-            catKind = newCategoryKind,
+            catKind = "EXPENSE",
             onDismiss = { showNewCategory = false },
             onCreate = { name, shortName, parentId, iconKey, defaultNecessary ->
-                viewModel.addCategoryEntity(name, shortName, parentId, iconKey, defaultNecessary, newCategoryKind)
+                onAddCategory(name, shortName, parentId, iconKey, defaultNecessary, "EXPENSE")
+                pendingCategoryName = name.trim()
                 showNewCategory = false
             }
         )

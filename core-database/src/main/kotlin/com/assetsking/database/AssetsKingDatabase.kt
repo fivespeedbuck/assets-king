@@ -15,13 +15,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AccountEntity::class, TransactionEntity::class, TransferEntity::class,
         RawNotificationEntity::class, BudgetEntity::class, LoanPlanEntity::class,
         RecurringRuleEntity::class, SnapshotEntity::class,
-        CustomCategoryEntity::class,
         CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class,
         ReimbursementLinkEntity::class,
         CategoryEntity::class, MerchantEntity::class
     ],
-    version = 21,
+    version = 22,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -33,7 +32,6 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun loanPlanDao(): LoanPlanDao
     abstract fun recurringRuleDao(): RecurringRuleDao
     abstract fun snapshotDao(): SnapshotDao
-    abstract fun customCategoryDao(): CustomCategoryDao
     abstract fun creditCardInstallmentDao(): CreditCardInstallmentDao
     abstract fun windfallDao(): WindfallDao
     abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
@@ -112,6 +110,13 @@ abstract class AssetsKingDatabase : RoomDatabase() {
         private val MIGRATION_20_21 = object : Migration(20, 21) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE accounts ADD COLUMN startDateEpochDay INTEGER")
+            }
+        }
+
+        /** v21→v22：旧版无层级自定义分类已由一级/二级分类库完整替代。 */
+        private val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS custom_categories")
             }
         }
 
@@ -228,7 +233,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22).build().also { instance = it }
         }
     }
 }

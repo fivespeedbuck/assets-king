@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
@@ -29,11 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
-import com.assetsking.app.RecordMode
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CreditCardInstallmentEntity
-import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RecurringRuleEntity
@@ -49,7 +48,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val budgets by model.budgets.collectAsStateWithLifecycle(initialValue = emptyList<BudgetEntity>())
     val loanPlans by model.loanPlans.collectAsStateWithLifecycle(initialValue = emptyList<LoanPlanEntity>())
     val recurringRules by model.recurringRules.collectAsStateWithLifecycle(initialValue = emptyList<RecurringRuleEntity>())
-    val customCategories by model.customCategories.collectAsStateWithLifecycle(initialValue = emptyList<CustomCategoryEntity>())
     val categories by model.categories.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.CategoryEntity>())
     val merchants by model.merchants.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.MerchantEntity>())
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
@@ -66,21 +64,21 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val smsSenderWhitelist by model.smsSenderWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
     val context = LocalContext.current
-    var showSheet by remember { mutableStateOf(false) }
-    var recordInitialMode by remember { mutableStateOf(RecordMode.EXPENSE) }
-    var recordInitialPlanId by remember { mutableStateOf<String?>(null) }
-    var showPending by remember { mutableStateOf(false) }
     var showPendingBox by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
+    var editorInitialLoanPlanId by remember { mutableStateOf<String?>(null) }
     var showBills by remember { mutableStateOf(false) }
     var showReimbursement by remember { mutableStateOf(false) }
     var addingAccountType by remember { mutableStateOf<AccountType?>(null) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var accountDetail by remember { mutableStateOf<AccountEntity?>(null) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
+    var detailTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
-    var searchQuery by remember { mutableStateOf("") }
+    // 只有“从页面内容进入另一个主区”的动作记录来源；用户直接点底部导航仍视为切换一级页面。
+    // 这样统计下钻→查看流水、首页卡片→统计/贷款都能按返回手势回到来源页。
+    var previousTab by remember { mutableStateOf<Int?>(null) }
     var showReconciliation by remember { mutableStateOf(false) }
     // 统计页下钻流水（REQ 统计§3/§7/§20）：月份+分类带进流水页筛选，消费一次后清空
     var txDrillMonth by remember { mutableStateOf<java.time.YearMonth?>(null) }
@@ -89,6 +87,36 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val navSurface = MaterialTheme.colorScheme.surfaceContainer
     val navOutline = MaterialTheme.colorScheme.outlineVariant
     val navPrimary = MaterialTheme.colorScheme.primary
+
+    BackHandler(
+        enabled = showEditor || showPendingBox || showBills || showReimbursement || accountDetail != null ||
+            detailTransaction != null || previousTab != null
+    ) {
+        when {
+            showEditor -> {
+                showEditor = false
+                editorPendingItem = null
+                editingTransaction = null
+                editorInitialLoanPlanId = null
+            }
+            detailTransaction != null -> detailTransaction = null
+            accountDetail != null -> accountDetail = null
+            showPendingBox -> showPendingBox = false
+            showReimbursement -> showReimbursement = false
+            showBills -> showBills = false
+            previousTab != null -> {
+                selectedTab = previousTab!!
+                previousTab = null
+            }
+        }
+    }
+
+    fun openTabFromContent(tab: Int) {
+        if (selectedTab != tab) {
+            previousTab = selectedTab
+            selectedTab = tab
+        }
+    }
     val navPrimaryContainer = MaterialTheme.colorScheme.primaryContainer
     val navOnSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -110,7 +138,10 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 listOf("首页", "统计", "流水", "贷款", "设置").forEachIndexed { idx, label ->
                     NavigationBarItem(
                         selected = selectedTab == idx,
-                        onClick = { selectedTab = idx },
+                        onClick = {
+                            selectedTab = idx
+                            previousTab = null
+                        },
                         // 贴底扁平导航（REQ 视觉§8）：当前项小底块+主题色，其余中性次要色
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = navPrimary,
@@ -156,6 +187,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 FloatingActionButton(
                     onClick = {
                         editorPendingItem = null
+                        editingTransaction = null
+                        editorInitialLoanPlanId = null
                         showEditor = true
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -176,8 +209,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 moduleOrder = moduleOrder,
                 onShowPending = { showPendingBox = true },
                 onShowReconciliation = { showReconciliation = true },
-                onGotoStats = { selectedTab = 1 },
-                onGotoLoans = { selectedTab = 3 },
+                onGotoStats = { openTabFromContent(1) },
+                onGotoLoans = { openTabFromContent(3) },
                 onGotoBills = { showBills = true },
                 onGotoReimbursement = { showReimbursement = true },
                 onEditAccount = { accountDetail = it },
@@ -191,7 +224,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     repository = repository,
                     freeSpendingCents = freeSpendingCents,
                     onGotoTransactions = { m, cat ->
-                        txDrillMonth = m; txDrillCategory = cat; selectedTab = 2
+                        txDrillMonth = m
+                        txDrillCategory = cat
+                        openTabFromContent(2)
                     }
                 )
             }
@@ -199,13 +234,24 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 TransactionsScreen(
                     state = state,
                     categories = categories,
-                    merchants = merchants,
                     model = model,
                     onOpenEditor = {
                         editorPendingItem = null
+                        editingTransaction = null
+                        editorInitialLoanPlanId = null
                         showEditor = true
                     },
-                    onEditTransaction = { editingTransaction = it },
+                    onEditTransaction = { transaction ->
+                        val type = runCatching { com.assetsking.model.TransactionType.valueOf(transaction.type) }.getOrNull()
+                        if (type != null && isOrdinaryEditableTransaction(type)) {
+                            editorPendingItem = null
+                            editingTransaction = transaction
+                            editorInitialLoanPlanId = null
+                            showEditor = true
+                        } else {
+                            detailTransaction = transaction
+                        }
+                    },
                     initialFilterMonth = txDrillMonth,
                     initialFilterCategory = txDrillCategory,
                     onDrillConsumed = { txDrillMonth = null; txDrillCategory = null }
@@ -222,9 +268,10 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     onDeleteInstallment = { model.deleteCardInstallment(it) },
                     transactions = state.transactions,
                     onRecordPayment = { plan ->
-                        recordInitialMode = RecordMode.LOAN_PAYMENT
-                        recordInitialPlanId = plan.id
-                        showSheet = true
+                        editorPendingItem = null
+                        editingTransaction = null
+                        editorInitialLoanPlanId = plan.id
+                        showEditor = true
                     },
                     onPrepay = { cashId, planId, principalCents, note ->
                         model.addLoanPrepayment(cashId, planId, principalCents, note)
@@ -241,13 +288,15 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 SettingsScreen(
                     budgets = budgets, repository = repository,
                     recurringRules = recurringRules, accounts = state.accounts,
-                    customCategories = customCategories,
+                    categories = categories,
                     onSaveBudget = { model.saveBudget(it) },
                     onDeleteBudget = { model.deleteBudget(it) },
                     onSaveRecurring = { model.saveRecurringRule(it) },
                     onDeleteRecurring = { model.deleteRecurringRule(it) },
-                    onAddCustomCategory = { model.addCustomCategory(it) },
-                    onDeleteCustomCategory = { model.deleteCustomCategory(it) },
+                    onAddCategory = model::addCategoryEntity,
+                    onUpdateCategory = model::updateCategoryEntity,
+                    onArchiveOrDeleteCategory = model::archiveOrDeleteCategory,
+                    onMergeCategory = model::mergeCategoryEntity,
                     monthlyIncomeCents = monthlyIncomeCents,
                     onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
                     listenerStatus = listenerStatus,
@@ -270,38 +319,6 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 )
             }
         }
-    }
-
-    // ── Global Sheets ──
-    if (showSheet) {
-        NewRecordSheet(
-            state = state,
-            categorize = model::categorize,
-            onSaveTransaction = { aid, amount, mode, catStr, merchant, note, occurredAt, isReimbursable ->
-                model.addTransaction(aid, amount, mode, catStr, merchant, note, occurredAt, isReimbursable)
-                showSheet = false
-            },
-            onSaveTransfer = { from, to, amount, note, occurredAt ->
-                model.addTransfer(from, to, amount, note, occurredAt)
-                showSheet = false
-            },
-            onSaveLoanDisbursement = { aid, amount, planId, note, occurredAt ->
-                model.addLoanDisbursement(aid, amount, planId, note, occurredAt)
-                showSheet = false
-            },
-            onSaveLoanPayment = { aid, planId, total, principal, interest, fee, note, occurredAt ->
-                model.addLoanPayment(aid, planId, total, principal, interest, fee, note, occurredAt)
-                showSheet = false
-            },
-            onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit ->
-                model.addAccount(name, type, balance, card, stmtDay, dueDay, limit)
-            },
-            onDismiss = { showSheet = false },
-            loanPlans = loanPlans,
-            customCategoryNames = customCategories.map { it.name },
-            initialMode = recordInitialMode,
-            initialPlanId = recordInitialPlanId
-        )
     }
 
     addingAccountType?.let { initialType ->
@@ -345,6 +362,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             listenerStatus = listenerStatus,
             onOpenEditor = { item ->
                 editorPendingItem = item
+                editingTransaction = null
+                editorInitialLoanPlanId = null
                 showEditor = true
             },
             onBack = { showPendingBox = false }
@@ -355,6 +374,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     if (showEditor) {
         TransactionEditorScreen(
             pendingItem = editorPendingItem,
+            editingTransaction = editingTransaction,
+            initialLoanPlanId = editorInitialLoanPlanId,
             accounts = state.accounts,
             categories = categories,
             merchants = merchants,
@@ -365,16 +386,34 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             ignoredItems = state.ignoredItems,
             viewModel = model,
             repository = repository,
-            onDone = { showEditor = false },
-            onBack = { showEditor = false }
+            onDone = {
+                showEditor = false
+                editorPendingItem = null
+                editingTransaction = null
+                editorInitialLoanPlanId = null
+            },
+            onBack = {
+                showEditor = false
+                editorPendingItem = null
+                editingTransaction = null
+                editorInitialLoanPlanId = null
+            }
         )
     }
 
     editingAccount?.let { account ->
         EditAccountSheet(
             account = account,
-            onSave = { model.updateAccount(it); editingAccount = null },
-            onArchive = { model.archiveAccount(it); editingAccount = null },
+            onSave = {
+                model.updateAccount(it)
+                accountDetail = it
+                editingAccount = null
+            },
+            onArchive = {
+                model.archiveAccount(it)
+                editingAccount = null
+                accountDetail = null
+            },
             onDismiss = { editingAccount = null }
         )
     }
@@ -384,27 +423,17 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         AccountDetailScreen(
             account = account,
             viewModel = model,
-            onEdit = { editingAccount = account; accountDetail = null },
-            onReconcile = { showReconciliation = true; accountDetail = null },
+            onEdit = { editingAccount = account },
+            onReconcile = { showReconciliation = true },
             onBack = { accountDetail = null }
         )
     }
 
-    editingTransaction?.let { tx ->
-        EditTransactionSheet(
+    detailTransaction?.let { tx ->
+        ManagedTransactionDetailSheet(
             transaction = tx,
             accountName = state.accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty(),
-            accounts = state.accounts,
-            onSave = { id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity ->
-                model.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity)
-                editingTransaction = null
-            },
-            onDelete = { model.deleteTransaction(it); editingTransaction = null },
-            onDismiss = { editingTransaction = null },
-            recurringRules = recurringRules,
-            onLinkToRule = { txId, ruleId -> model.linkToRecurringRule(txId, ruleId) },
-            categories = categories,
-            customCategoryNames = customCategories.map { it.name }
+            onDismiss = { detailTransaction = null }
         )
     }
 

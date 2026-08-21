@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.LoanPlanEntity
-import com.assetsking.database.CustomCategoryEntity
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.SnapshotEntity
@@ -39,11 +38,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
-
-enum class RecordMode(val label: String) {
-    EXPENSE("支出"), INCOME("收入"), TRANSFER("转账/还款"), REFUND("退款"),
-    LOAN_DISBURSEMENT("借款到账"), LOAN_PAYMENT("贷款还款")
-}
 
 data class PendingItem(
     val notification: RawNotificationEntity,
@@ -118,7 +112,6 @@ class LedgerViewModel(
     val reimbursable: Flow<List<TransactionEntity>> = repository.reimbursableTransactions
     val recurringRules: Flow<List<RecurringRuleEntity>> = repository.recurringRules
     val snapshots: Flow<List<SnapshotEntity>> = repository.snapshots
-    val customCategories: Flow<List<CustomCategoryEntity>> = repository.customCategories
     val cardInstallments: Flow<List<com.assetsking.database.CreditCardInstallmentEntity>> = repository.cardInstallments
     val windfalls: Flow<List<com.assetsking.database.WindfallEntity>> = repository.windfalls
     /** 一级/二级分类库（REQ 初始分类库） */
@@ -211,10 +204,10 @@ class LedgerViewModel(
     fun updateTransaction(
         id: String, amountCents: Long, type: TransactionType,
         category: String, merchant: String?, note: String?,
-        accountId: String, occurredAt: Long, necessity: Boolean?
+        accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?
     ) {
         viewModelScope.launch {
-            repository.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity)
+            repository.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity, channel)
         }
     }
 
@@ -246,14 +239,6 @@ class LedgerViewModel(
         viewModelScope.launch { repository.linkToRecurringRule(transactionId, ruleId) }
     }
 
-    fun addCustomCategory(name: String) {
-        viewModelScope.launch { repository.addCustomCategory(name) }
-    }
-
-    fun deleteCustomCategory(name: String) {
-        viewModelScope.launch { repository.deleteCustomCategory(name) }
-    }
-
     fun saveRecurringRule(rule: RecurringRuleEntity) {
         viewModelScope.launch { repository.saveRecurringRule(rule) }
     }
@@ -271,23 +256,6 @@ class LedgerViewModel(
                 )
             )
         }
-    }
-
-    fun addTransaction(
-        accountId: String, amount: String, mode: RecordMode,
-        category: String, merchant: String?, note: String?,
-        occurredAt: Long = System.currentTimeMillis(),
-        isReimbursable: Boolean = false
-    ) {
-        val cents = amount.toCentsOrNull() ?: return
-        val type = when (mode) {
-            RecordMode.EXPENSE -> TransactionType.EXPENSE
-            RecordMode.INCOME -> TransactionType.INCOME
-            RecordMode.REFUND -> TransactionType.REFUND
-            // 借款到账/贷款还款走专用方法（联动贷款计划），此路径不处理
-            RecordMode.TRANSFER, RecordMode.LOAN_DISBURSEMENT, RecordMode.LOAN_PAYMENT -> return
-        }
-        viewModelScope.launch { recordTransaction(accountId, cents, type, categoryStr = category, merchant = merchant, note = note, occurredAt = occurredAt, isReimbursable = isReimbursable) }
     }
 
     // ── V5 借款与还款 ──

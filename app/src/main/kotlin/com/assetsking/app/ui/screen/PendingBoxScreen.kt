@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -111,6 +112,7 @@ fun PendingBoxScreen(
     onOpenEditor: (PendingItem) -> Unit,
     onBack: () -> Unit
 ) {
+    BackHandler(onBack = onBack)
     val sorted = remember(items) { items.sortedByDescending { it.notification.postedAt } }
     var multiSelect by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }

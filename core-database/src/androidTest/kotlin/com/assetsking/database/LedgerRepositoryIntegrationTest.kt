@@ -123,6 +123,41 @@ class LedgerRepositoryIntegrationTest {
     }
 
     @Test
+    fun editingTransactionPersistsPaymentChannel() = runBlocking {
+        database.transactionDao().insert(sampleExpense("editable-channel"))
+
+        repository.updateTransaction(
+            id = "editable-channel",
+            amountCents = 1_000L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "测试",
+            note = null,
+            accountId = "cash",
+            occurredAt = System.currentTimeMillis(),
+            necessity = true,
+            channel = "支付宝"
+        )
+
+        assertEquals("支付宝", database.transactionDao().findById("editable-channel")?.channel)
+
+        repository.updateTransaction(
+            id = "editable-channel",
+            amountCents = 1_000L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "测试",
+            note = null,
+            accountId = "cash",
+            occurredAt = System.currentTimeMillis(),
+            necessity = true,
+            channel = null
+        )
+
+        assertEquals(null, database.transactionDao().findById("editable-channel")?.channel)
+    }
+
+    @Test
     fun repeatedReimbursementIsCappedAtRemainingEligibleAmount() = runBlocking {
         database.transactionDao().insert(
             TransactionEntity(

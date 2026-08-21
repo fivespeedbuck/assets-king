@@ -40,6 +40,31 @@ fun formatSignedMoney(cents: Long, positive: Boolean?): String {
     }
 }
 
+/** 月历每日净变化：小额保留角分，长金额按千/万缩写，确保 7 列窄单元格不裁切。 */
+fun formatDailyNetChange(cents: Long): String {
+    if (cents == 0L) return ""
+    val absolute = kotlin.math.abs(cents)
+    val unsigned = when {
+        absolute >= 1_000_000L -> compactDecimal(absolute, 1_000_000L) + "万"
+        absolute >= 100_000L -> compactDecimal(absolute, 100_000L) + "k"
+        else -> compactDecimal(absolute, 100L)
+    }
+    return if (cents > 0) "+$unsigned" else "−$unsigned"
+}
+
+private fun compactDecimal(value: Long, unit: Long): String {
+    val whole = value / unit
+    val remainder = value % unit
+    val roundedHundredths = (remainder * 100L + unit / 2L) / unit
+    val roundedWhole = whole + roundedHundredths / 100L
+    val decimals = (roundedHundredths % 100L).toInt()
+    return when {
+        decimals == 0 -> roundedWhole.toString()
+        decimals % 10 == 0 -> "$roundedWhole.${decimals / 10}"
+        else -> "$roundedWhole.${decimals.toString().padStart(2, '0')}"
+    }
+}
+
 /**
  * 大金额「整数突出、小数弱化」（REQ 首页UI§15）：整元不显示 `.00`，存在角分时小数部分缩小。
  * 返回 (带千分位的整数部分, 两位小数部分?)；小数为 0 时小数部分为 null。

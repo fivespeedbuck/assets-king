@@ -41,7 +41,7 @@ import com.assetsking.app.BuildConfig
 import com.assetsking.app.UpdateChecker
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
-import com.assetsking.database.CustomCategoryEntity
+import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.WindfallEntity
@@ -52,7 +52,6 @@ import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.categoryLabel
-import com.assetsking.ui.format.categoryLabelOrName
 import com.assetsking.ui.format.formatMoney
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,13 +76,15 @@ fun SettingsScreen(
     repository: LedgerRepository,
     recurringRules: List<RecurringRuleEntity>,
     accounts: List<AccountEntity>,
-    customCategories: List<CustomCategoryEntity>,
+    categories: List<CategoryEntity> = emptyList(),
     onSaveBudget: (BudgetEntity) -> Unit,
     onDeleteBudget: (String) -> Unit,
     onSaveRecurring: (RecurringRuleEntity) -> Unit,
     onDeleteRecurring: (String) -> Unit,
-    onAddCustomCategory: (String) -> Unit,
-    onDeleteCustomCategory: (String) -> Unit,
+    onAddCategory: (String, String, String?, String, Boolean?, String) -> Unit = { _, _, _, _, _, _ -> },
+    onUpdateCategory: (String, String?, String?, String?, String?) -> Unit = { _, _, _, _, _ -> },
+    onArchiveOrDeleteCategory: (String) -> Unit = {},
+    onMergeCategory: (String, String) -> Unit = { _, _ -> },
     monthlyIncomeCents: Long = 0,
     onSetMonthlyIncome: (Long) -> Unit = {},
     listenerStatus: ListenerStatus = ListenerStatus.OK,
@@ -109,7 +110,10 @@ fun SettingsScreen(
     val reconcilePref = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
     val currentInterval = reconcilePref.getLong("reconciliation_interval_ms", 7 * 24 * 60 * 60 * 1000L)
     var reconcileDays by remember { mutableStateOf((currentInterval / (24 * 60 * 60 * 1000L)).toInt()) }
-    var newCatName by remember { mutableStateOf("") }
+    var categoryManageKind by remember { mutableStateOf<String?>(null) }
+    var showNewCategory by remember { mutableStateOf(false) }
+    var newCategoryParentId by remember { mutableStateOf<String?>(null) }
+    var newCategoryKind by remember { mutableStateOf("EXPENSE") }
     var showWindfall by remember { mutableStateOf(false) }
     var backupMsg by remember { mutableStateOf("") }
     var smsSenderInput by remember(smsSenderWhitelist) {
@@ -602,25 +606,20 @@ fun SettingsScreen(
         // ── Custom Categories ──
         item {
             GlassCard {
-                Text("自定义分类", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text("分类管理", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "一级分类按组管理；点进一级分类后再维护它的二级分类。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FormField(value = newCatName, onValueChange = { newCatName = it }, label = "新分类名", modifier = Modifier.weight(1f))
-                    TextButton(onClick = {
-                        if (newCatName.isNotBlank()) {
-                            onAddCustomCategory(newCatName.trim())
-                            newCatName = ""
-                        }
-                    }) { Text("添加") }
-                }
-                if (customCategories.isEmpty()) {
-                    Text("暂无自定义分类", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                } else {
-                    customCategories.forEach { cat ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("· ${cat.name}", style = MaterialTheme.typography.bodyMedium)
-                            TextButton(onClick = { onDeleteCustomCategory(cat.name) }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-                        }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { categoryManageKind = "EXPENSE" }, modifier = Modifier.weight(1f)) {
+                        Text("消费分类")
+                    }
+                    OutlinedButton(onClick = { categoryManageKind = "INCOME" }, modifier = Modifier.weight(1f)) {
+                        Text("收入分类")
                     }
                 }
             }
@@ -706,6 +705,42 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    categoryManageKind?.let { kind ->
+        CategoryManageDialog(
+            categories = categories,
+            catKind = kind,
+            onDismiss = { categoryManageKind = null },
+            onAddParent = {
+                newCategoryParentId = null
+                newCategoryKind = kind
+                showNewCategory = true
+                categoryManageKind = null
+            },
+            onAddChild = { parentId ->
+                newCategoryParentId = parentId
+                newCategoryKind = kind
+                showNewCategory = true
+                categoryManageKind = null
+            },
+            onUpdate = onUpdateCategory,
+            onArchiveOrDelete = onArchiveOrDeleteCategory,
+            onMerge = onMergeCategory
+        )
+    }
+
+    if (showNewCategory) {
+        NewCategoryDialog(
+            parentId = newCategoryParentId,
+            parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == newCategoryKind },
+            catKind = newCategoryKind,
+            onDismiss = { showNewCategory = false },
+            onCreate = { name, shortName, parentId, iconKey, defaultNecessary ->
+                onAddCategory(name, shortName, parentId, iconKey, defaultNecessary, newCategoryKind)
+                showNewCategory = false
+            }
+        )
     }
 
     // 新版本说明弹窗（REQ 设置§13）：展示版本说明，用户确认后跳转浏览器下载 APK
