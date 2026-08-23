@@ -28,11 +28,18 @@ fun GlassCard(
     val containerColor = MaterialTheme.colorScheme.surfaceContainer.let { color ->
         if (LocalPrivacyEnabled.current) color.copy(alpha = 0.72f) else color
     }
+    val privacyEnabled = LocalPrivacyEnabled.current
     Box(
         modifier = modifier
             .clip(CardShape)
             .background(containerColor)
-            .border(1.dp, MaterialTheme.colorScheme.outline, CardShape)
+            .then(
+                if (privacyEnabled) {
+                    Modifier.privacyGothicBorder()
+                } else {
+                    Modifier.border(1.dp, MaterialTheme.colorScheme.outline, CardShape)
+                }
+            )
             .then(contentPadding)
     ) {
         Column { content() }

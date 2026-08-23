@@ -65,6 +65,8 @@ val ThemePrimaryWarmSoft = Color(0xFFFBF5E9)
 val ThemePrimaryWarmSoftText = Color(0xFF8A671C)
 
 val ThemePrimaryLongNest = Color(0xFFC9A24B)         // 哑光古金占位（龙巢最终色值由 Codex 定）
+val PrivacyGothicBorderSilver = Color(0xFFD9E0E3)   // 隐秘卡片暗银/雾白主线
+val PrivacyGothicBorderMist = Color(0xFF9DA8AE)      // 隐秘卡片切角与内线
 
 /** 全局资金语义映射：页面只提供交易类型，不再各自决定现金流颜色。 */
 fun transactionCashFlowColor(type: String): Color = when (type) {
