@@ -4,6 +4,9 @@ build/
 **/build/
 .build-output/
 local.properties
+*.jks
+*.keystore
+keystore.properties
 .idea/
 *.iml
 .externalNativeBuild/

@@ -1,7 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val recoverySigningPropertiesFile = rootProject.file("release-signing/keystore.properties")
+val recoverySigningProperties = Properties().apply {
+    if (recoverySigningPropertiesFile.exists()) {
+        recoverySigningPropertiesFile.inputStream().use(::load)
+    }
 }
 
 android {
@@ -9,18 +18,27 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.assetsking.app"
+        // 恢复分支的所有变体都必须与正式包隔离；Release 也不得产出 com.assetsking.app。
+        applicationId = "com.assetsking.app.recovery"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.1.0-recovery"
     }
 
     buildTypes {
         debug {
             // 真机验收版与用户现有安装并存，避免 UI/迁移回归误触正式账本数据。
-            applicationIdSuffix = ".recovery"
-            versionNameSuffix = "-recovery"
+        }
+        release {
+            if (recoverySigningPropertiesFile.exists()) {
+                signingConfig = signingConfigs.create("recoveryRelease") {
+                    storeFile = rootProject.file(recoverySigningProperties.getProperty("storeFile"))
+                    storePassword = recoverySigningProperties.getProperty("storePassword")
+                    keyAlias = recoverySigningProperties.getProperty("keyAlias")
+                    keyPassword = recoverySigningProperties.getProperty("keyPassword")
+                }
+            }
         }
     }
 

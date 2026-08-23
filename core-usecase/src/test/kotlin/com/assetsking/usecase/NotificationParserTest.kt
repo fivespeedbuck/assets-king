@@ -10,6 +10,21 @@ import kotlin.test.assertTrue
  * 不用手编的理想文本。原文来自 `adb shell dumpsys notification --noredact`。
  */
 class NotificationParserTest {
+    @Test
+    fun guangfaStatementExtractsFullBillAndNeverModelsMinimumPayment() {
+        val parsed = CreditStatementNotificationParser.parse(
+            content = "【广发银行】您尾号3304广发信用卡06月人民币账单金额1,570.44元，最低还款116.00元，还款到期07月15日。点 n.95508.com/x 即可极速办理账单分期，以批核为准。",
+            title = null
+        )
+
+        requireNotNull(parsed)
+        assertEquals(157_044L, parsed.statementAmountCents)
+        assertEquals("3304", parsed.cardTail)
+        assertEquals(6, parsed.statementMonth)
+        assertEquals(7, parsed.dueMonth)
+        assertEquals(15, parsed.dueDay)
+    }
+
 
     // ── 真实样本：宁波银行短信（com.android.mms.service）──
     // 这条曾经整条被丢掉：没有 ¥ 也没有「元」，「支出」后面隔着一个括号，
@@ -101,6 +116,23 @@ class NotificationParserTest {
     }
 
     @Test
+    fun `微信支付消息通道真机样本`() {
+        val p = NotificationParser.parse(content = "已支付¥19.80", title = "微信支付")
+        assertEquals(1980L, p.amountCents)
+        assertEquals(true, p.isExpense)
+    }
+
+    @Test
+    fun `美团订单支付成功真机样本`() {
+        val p = NotificationParser.parse(
+            content = "您的美团订单已支付成功，点击查看详情>",
+            title = "您已成功付款25.30元"
+        )
+        assertEquals(2530L, p.amountCents)
+        assertEquals(true, p.isExpense)
+    }
+
+    @Test
     fun `支付宝格式带银行`() {
         val p = NotificationParser.parse(
             content = "支付成功 30.00元 付款方式：宁波银行储蓄卡(3721)",
@@ -108,6 +140,31 @@ class NotificationParserTest {
         )
         assertEquals(3000L, p.amountCents)
         assertEquals("宁波银行", p.bankHint)
+    }
+
+    @Test
+    fun `招商银行短信提取在后商户`() {
+        val first = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月23日20:21在支付宝-李杰快捷支付10.00元，余额3458.36",
+            title = "95555"
+        )
+        val second = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月23日20:03在支付宝-四川链动万商科技有限公司快捷支付22.66元，余额3468.36",
+            title = "95555"
+        )
+        assertEquals("支付宝-李杰", first.merchant)
+        assertEquals("支付宝-四川链动万商科技有限公司", second.merchant)
+    }
+
+    @Test
+    fun `云闪付广发信用卡真机样本`() {
+        val p = NotificationParser.parse(
+            content = "您尾号为3304的银行卡于22日20时26分消费12.42元",
+            title = "支付助手：付款成功"
+        )
+        assertEquals(1242L, p.amountCents)
+        assertEquals(true, p.isExpense)
+        assertEquals("3304", p.cardTail)
     }
 
     @Test
@@ -122,6 +179,17 @@ class NotificationParserTest {
         val p = NotificationParser.parse(content = "退款9.90元已到账", title = null)
         assertEquals(990L, p.amountCents)
         assertEquals(false, p.isExpense)
+    }
+
+    @Test
+    fun `拼多多微信退款真机样本`() {
+        val p = NotificationParser.parse(
+            content = "尊敬的用户，您的2.87元退款已退款成功。钱款已退回至您的微信账户中。",
+            title = "退款成功通知"
+        )
+        assertEquals(287L, p.amountCents)
+        assertEquals(false, p.isExpense)
+        assertEquals(true, p.isRefund)
     }
 
     // ── 噪音：抓不到金额就必须返回 null，否则每条聊天/验证码都进待确认箱 ──
@@ -166,6 +234,15 @@ class NotificationParserTest {
             "【广发银行】您尾号3304信用卡已办8937.78元24期总账分期，使用消费额度8937.78元，消费额度剩余24948.54元。"
         )
         bills.forEach { assertNull(NotificationParser.parse(it, null).amountCents, "不该记账：$it") }
+    }
+
+    @Test
+    fun `广发分期条款短信不是第二笔消费`() {
+        val terms = "【广发银行】您尾号3304广发信用卡分期已受理，本金 人民币2679.00元，分24期入账，" +
+            "每期应还本金111.63元、每期分期利息8.04元，近似折算年化利率6.77%，" +
+            "实际金额以账单列示为准。分期后可用消费额度13675.00元。"
+
+        assertNull(NotificationParser.parse(terms, "106980095508").amountCents)
     }
 
     // ── 钱真的动了的，一条都不能被上面的否决误杀 ──
@@ -239,6 +316,42 @@ class NotificationParserTest {
         )
         assertEquals(100L, p.amountCents, "交易金额是 1.00")
         assertEquals(65709L, p.balanceCents, "余额是 657.09，两个数不能串")
+        assertEquals("3721", p.cardTail)
+    }
+
+    @Test
+    fun `支付宝自动扣款真机样本提取商户`() {
+        val parsed = NotificationParser.parse(
+            content = "你在上海格物致品网络科技有限公司有一笔40.00元的免密/自动扣款支付，点此查看详情。",
+            title = "交易提醒"
+        )
+
+        assertEquals(4_000L, parsed.amountCents)
+        assertEquals("上海格物致品网络科技有限公司", parsed.merchant)
+        assertEquals(true, parsed.isExpense)
+    }
+
+    @Test
+    fun `微信零钱全部提现以银行实际到账净额为准`() {
+        val p = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月22日20:38收款325.09元，余额3872.12，备注：财付通-陈扬-微信零钱提现",
+            title = "招商银行"
+        )
+        assertEquals(32_509L, p.amountCents)
+        assertEquals(false, p.isExpense)
+        assertEquals(387_212L, p.balanceCents)
+        assertEquals("3683", p.cardTail)
+    }
+
+    @Test
+    fun `支付宝提现以银行实际到账净额为准`() {
+        val p = NotificationParser.parse(
+            content = "【宁波银行】您尾号3721账户收入（网络支付回提）人民币19.90，余额46.03。",
+            title = "宁波银行"
+        )
+        assertEquals(1_990L, p.amountCents)
+        assertEquals(false, p.isExpense)
+        assertEquals(4_603L, p.balanceCents)
         assertEquals("3721", p.cardTail)
     }
 

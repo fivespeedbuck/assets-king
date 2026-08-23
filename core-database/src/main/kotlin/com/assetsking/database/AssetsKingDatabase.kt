@@ -15,12 +15,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AccountEntity::class, TransactionEntity::class, TransferEntity::class,
         RawNotificationEntity::class, BudgetEntity::class, LoanPlanEntity::class,
         RecurringRuleEntity::class, SnapshotEntity::class,
-        CreditCardInstallmentEntity::class, WindfallEntity::class, MonthDebtAnchorEntity::class,
+        CreditCardInstallmentEntity::class,
+        CreditCardInstallmentAllocationEntity::class,
+        CreditCardInstallmentScheduleEntity::class,
+        CreditCardInstallmentPaymentMatchEntity::class,
+        CreditCardInstallmentAuditEventEntity::class,
+        WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class,
         ReimbursementLinkEntity::class,
         CategoryEntity::class, MerchantEntity::class
     ],
-    version = 22,
+    version = 24,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -33,6 +38,10 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun recurringRuleDao(): RecurringRuleDao
     abstract fun snapshotDao(): SnapshotDao
     abstract fun creditCardInstallmentDao(): CreditCardInstallmentDao
+    abstract fun creditCardInstallmentAllocationDao(): CreditCardInstallmentAllocationDao
+    abstract fun creditCardInstallmentScheduleDao(): CreditCardInstallmentScheduleDao
+    abstract fun creditCardInstallmentPaymentMatchDao(): CreditCardInstallmentPaymentMatchDao
+    abstract fun creditCardInstallmentAuditDao(): CreditCardInstallmentAuditDao
     abstract fun windfallDao(): WindfallDao
     abstract fun monthDebtAnchorDao(): MonthDebtAnchorDao
     abstract fun balanceCheckpointDao(): BalanceCheckpointDao
@@ -117,6 +126,48 @@ abstract class AssetsKingDatabase : RoomDatabase() {
         private val MIGRATION_21_22 = object : Migration(21, 22) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("DROP TABLE IF EXISTS custom_categories")
+            }
+        }
+
+        /**
+         * v22→v23：信用卡既有消费事后分期。
+         * 旧预览行没有原流水证据，只标 LEGACY_UNLINKED；绝不猜测关联、绝不改余额或流水。
+         */
+        internal val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN installmentType TEXT NOT NULL DEFAULT 'POST_PURCHASE_INSTALLMENT'")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN installmentCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN nextDueDateEpochDay INTEGER")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN status TEXT NOT NULL DEFAULT 'LEGACY_UNLINKED'")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN scheduleRevision INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN createdAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE credit_card_installments SET installmentCount = periodsRemaining WHERE installmentCount = 0")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `credit_card_installment_allocations` (`planId` TEXT NOT NULL, `transactionId` TEXT NOT NULL, `allocatedPrincipalCents` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`planId`, `transactionId`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_allocations_planId` ON `credit_card_installment_allocations` (`planId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_allocations_transactionId` ON `credit_card_installment_allocations` (`transactionId`)")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `credit_card_installment_schedules` (`id` TEXT NOT NULL, `planId` TEXT NOT NULL, `revision` INTEGER NOT NULL, `number` INTEGER NOT NULL, `dueDateEpochDay` INTEGER NOT NULL, `principalDueCents` INTEGER NOT NULL, `expectedInterestCents` INTEGER NOT NULL, `expectedFeeCents` INTEGER NOT NULL, `expectedUnclassifiedChargeCents` INTEGER NOT NULL, `principalPaidCents` INTEGER NOT NULL, `interestPaidCents` INTEGER NOT NULL, `feePaidCents` INTEGER NOT NULL, `status` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_schedules_planId` ON `credit_card_installment_schedules` (`planId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_credit_card_installment_schedules_planId_revision_number` ON `credit_card_installment_schedules` (`planId`, `revision`, `number`)")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `credit_card_installment_payment_matches` (`transferId` TEXT NOT NULL, `scheduleId` TEXT NOT NULL, `planId` TEXT NOT NULL, `paymentCents` INTEGER NOT NULL, `principalCents` INTEGER NOT NULL, `status` TEXT NOT NULL, `source` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `resolvedAt` INTEGER, PRIMARY KEY(`transferId`, `scheduleId`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_payment_matches_transferId` ON `credit_card_installment_payment_matches` (`transferId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_payment_matches_scheduleId` ON `credit_card_installment_payment_matches` (`scheduleId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_payment_matches_planId` ON `credit_card_installment_payment_matches` (`planId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_payment_matches_status` ON `credit_card_installment_payment_matches` (`status`)")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `credit_card_installment_audit_events` (`id` TEXT NOT NULL, `planId` TEXT NOT NULL, `eventType` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `source` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_audit_events_planId` ON `credit_card_installment_audit_events` (`planId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_card_installment_audit_events_occurredAt` ON `credit_card_installment_audit_events` (`occurredAt`)")
+            }
+        }
+
+        /** v23→v24：账单分期记录账期起点；只加可空列，不触碰既有计划与流水。 */
+        internal val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE credit_card_installments ADD COLUMN statementCycleStartEpochDay INTEGER")
             }
         }
 
@@ -233,7 +284,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24).build().also { instance = it }
         }
     }
 }

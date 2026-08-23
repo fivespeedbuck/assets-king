@@ -58,8 +58,9 @@ fun isListenerEnabled(context: Context): Boolean =
     NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
 
 fun hasSmsPermission(context: Context): Boolean =
-    ContextCompat.checkSelfPermission(context, Manifest.permission.RECEIVE_SMS) ==
-        PackageManager.PERMISSION_GRANTED
+    listOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS).all { permission ->
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
 
 /**
  * 短信读取权限状态，与监听授权一样只在 ON_RESUME 时重读（REQ 监听§14）。

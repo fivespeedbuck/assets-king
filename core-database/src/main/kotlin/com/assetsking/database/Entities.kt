@@ -136,7 +136,7 @@ data class SnapshotEntity(
     val netWorth: Long
 )
 
-// V5 信用卡分期：只做展示与未来预测，绝不进 totalDebt（已在卡 balance 内）
+// 信用卡分期：已有卡负债的还款条款，绝不再次进入 totalDebt（已在卡 balance 内）。
 @Entity(tableName = "credit_card_installments", indices = [Index("cardAccountId")])
 data class CreditCardInstallmentEntity(
     @PrimaryKey val id: String,
@@ -147,7 +147,85 @@ data class CreditCardInstallmentEntity(
     val monthlyPaymentCents: Long,     // 每期还款（含利息）
     val feeCentsPerPeriod: Long = 0,
     val periodsRemaining: Int,
-    val startDateEpochDay: Long
+    val startDateEpochDay: Long,
+    val installmentType: String = "POST_PURCHASE_INSTALLMENT",
+    val installmentCount: Int = periodsRemaining,
+    val nextDueDateEpochDay: Long? = null,
+    /** 仅账单分期使用：记录被转换账单的账期起点，防止同一期账单被重复纳入。 */
+    val statementCycleStartEpochDay: Long? = null,
+    val status: String = "ACTIVE",    // ACTIVE / CANCELLED / COMPLETED / LEGACY_UNLINKED
+    val scheduleRevision: Int = 1,
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0
+)
+
+/** 原消费本金到分期计划的不可删除分配；是否有效由对应 plan.status 决定。 */
+@Entity(
+    tableName = "credit_card_installment_allocations",
+    primaryKeys = ["planId", "transactionId"],
+    indices = [Index("planId"), Index("transactionId")]
+)
+data class CreditCardInstallmentAllocationEntity(
+    val planId: String,
+    val transactionId: String,
+    val allocatedPrincipalCents: Long,
+    val createdAt: Long
+)
+
+/** 逐期计划只是未来义务；只有实际费用与实际 Transfer 才改变账务。 */
+@Entity(
+    tableName = "credit_card_installment_schedules",
+    indices = [Index("planId"), Index(value = ["planId", "revision", "number"], unique = true)]
+)
+data class CreditCardInstallmentScheduleEntity(
+    @PrimaryKey val id: String,
+    val planId: String,
+    val revision: Int,
+    val number: Int,
+    val dueDateEpochDay: Long,
+    val principalDueCents: Long,
+    val expectedInterestCents: Long,
+    val expectedFeeCents: Long,
+    val expectedUnclassifiedChargeCents: Long = 0,
+    val principalPaidCents: Long = 0,
+    val interestPaidCents: Long = 0,
+    val feePaidCents: Long = 0,
+    val status: String = "UPCOMING"   // UPCOMING / PAID / CANCELLED
+)
+
+/**
+ * 真实信用卡还款 Transfer 到预测期次的匹配记录。
+ * PENDING 只表示待用户选择；只有 AUTO_MATCHED / USER_CONFIRMED 才推进本金。
+ */
+@Entity(
+    tableName = "credit_card_installment_payment_matches",
+    primaryKeys = ["transferId", "scheduleId"],
+    indices = [Index("transferId"), Index("scheduleId"), Index("planId"), Index("status")]
+)
+data class CreditCardInstallmentPaymentMatchEntity(
+    val transferId: String,
+    val scheduleId: String,
+    val planId: String,
+    val paymentCents: Long,
+    val principalCents: Long,
+    val status: String,                // PENDING / AUTO_MATCHED / USER_CONFIRMED / REJECTED / REVERSED
+    val source: String,                // AUTO / USER
+    val createdAt: Long,
+    val resolvedAt: Long? = null
+)
+
+/** 只追加、不更新、不删除的分期审计事件。 */
+@Entity(
+    tableName = "credit_card_installment_audit_events",
+    indices = [Index("planId"), Index("occurredAt")]
+)
+data class CreditCardInstallmentAuditEventEntity(
+    @PrimaryKey val id: String,
+    val planId: String,
+    val eventType: String,             // CREATED / TERMS_ADJUSTED / CANCELLED / PAYMENT_MATCHED
+    val occurredAt: Long,
+    val source: String,
+    val payloadJson: String
 )
 
 // V5 年终奖 Windfall：EXPECTED 不算现金；RECEIVED 才入账

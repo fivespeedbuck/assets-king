@@ -51,7 +51,9 @@ class SmsReceiver : BroadcastReceiver() {
 
         // goAsync：把接收器生命周期从 onReceive 结束延长到落库完成，防进程刚收到就又被杀
         val pendingResult = goAsync()
+        val statusRevision = AssetsNotificationListenerService.captureRuntimeStatusRevision()
         scope.launch {
+            var saved = false
             try {
                 repository.saveRawNotification(
                     RawNotificationEntity(
@@ -64,11 +66,15 @@ class SmsReceiver : BroadcastReceiver() {
                         receivedAt = System.currentTimeMillis()
                     )
                 )
+                saved = true
                 app.processPending.invoke()
-                PendingNotifier.scheduleDebounced(context.applicationContext, scope)
             } catch (_: Exception) {
-                // ponytail: 静默失败比广播崩溃好
+                AssetsNotificationListenerService.reportIngestionFailure(statusRevision)
             } finally {
+                if (saved) {
+                    // 处理失败时 NEW 仍是需要用户知道的本地证据。
+                    PendingNotifier.scheduleDebounced(context.applicationContext, scope)
+                }
                 pendingResult.finish()
             }
         }

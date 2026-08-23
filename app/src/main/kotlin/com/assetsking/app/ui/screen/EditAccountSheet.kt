@@ -68,9 +68,9 @@ fun EditAccountSheet(
 
         if (account.type == com.assetsking.model.AccountType.CREDIT.name) {
             Spacer(Modifier.height(8.dp))
-            FormField(value = statementDue, onValueChange = { statementDue = it.filter { c -> c.isDigit() || c == '.' } }, label = "本期待还（账单原始金额，还款后勿重录，已还部分系统自动扣）", isAmount = true)
+            FormField(value = statementDue, onValueChange = { statementDue = it.filter { c -> c.isDigit() || c == '.' } }, label = "本期账单金额", isAmount = true)
             Spacer(Modifier.height(8.dp))
-            FormField(value = pending, onValueChange = { pending = it.filter { c -> c.isDigit() || c == '.' } }, label = "Pending 未入账（单独展示，不计总负债）", isAmount = true)
+            FormField(value = pending, onValueChange = { pending = it.filter { c -> c.isDigit() || c == '.' } }, label = "待入账金额（暂不计入欠款）", isAmount = true)
             Spacer(Modifier.height(8.dp))
             FormField(value = stmtDay, onValueChange = { stmtDay = it.filter(Char::isDigit).take(2) }, label = "出账日（1-28）")
             Spacer(Modifier.height(8.dp))

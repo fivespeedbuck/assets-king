@@ -19,8 +19,62 @@ class NotificationMergeTest {
     }
 
     @Test
+    fun `real wechat and meituan payment notifications merge as one expense`() {
+        val wechat = NotificationParser.parse(content = "已支付¥19.80", title = "微信支付")
+        val meituan = NotificationParser.parse(
+            content = "您的美团订单已支付成功，点击查看详情>",
+            title = "您已成功付款19.80元"
+        )
+
+        assertTrue(NotificationMerge.isDuplicate(wechat, 100_000, meituan, 101_000))
+    }
+
+    @Test
+    fun `alipay expense and cgb pos installment notice are one purchase`() {
+        val alipay = NotificationParser.parse("你有一笔2679.00元的支出，点此查看详情。", "交易提醒")
+        val cgb = NotificationParser.parse(
+            "您尾号3304广发信用卡的分期已受理，本金2679.00元将使用信用额，使用的额度在每月还款后逐期释放。",
+            "POS分期消费短信"
+        )
+
+        assertTrue(
+            NotificationMerge.isDuplicateAcrossSources(
+                "com.eg.android.AlipayGphone", alipay, 100_000,
+                "com.cs_credit_bank", cgb, 101_000
+            )
+        )
+    }
+
+    @Test
+    fun `identical transactions from same app with different notification keys are not duplicates`() {
+        val first = NotificationParser.parse("你有一笔2679.00元的支出，点此查看详情。", "交易提醒")
+        val second = NotificationParser.parse("你有一笔2679.00元的支出，点此查看详情。", "交易提醒")
+
+        assertFalse(
+            NotificationMerge.isDuplicateAcrossSources(
+                "com.eg.android.AlipayGphone", first, 100_000,
+                "com.eg.android.AlipayGphone", second, 140_000
+            )
+        )
+    }
+
+    @Test
     fun `different direction is not duplicate`() {
         assertFalse(NotificationMerge.isDuplicate(notif(3500, true), 100_000, notif(3500, false), 100_000 + 60_000))
+    }
+
+    @Test
+    fun `same amount topups from different cards are two real transfers`() {
+        val wechatTopUp = NotificationParser.parse(
+            "【招商银行】您账户3683于08月22日20:47在财付通-微信支付-微信零钱充值账户快捷支付5.00元，余额3867.12",
+            "招商银行"
+        )
+        val alipayTopUp = NotificationParser.parse(
+            "【宁波银行】您尾号3721账户支出（网络支付充值）人民币5.00，余额41.03。",
+            "宁波银行"
+        )
+
+        assertFalse(NotificationMerge.isDuplicate(wechatTopUp, 100_000, alipayTopUp, 112_000))
     }
 
     @Test
@@ -71,6 +125,40 @@ class NotificationMergeTest {
         // 补扫重读收件箱：id 前缀不同、receivedAt 差 7 天，但指纹相同、postedAt 相同 → 判重
         val fp = NotificationMerge.contentFingerprint("95555", "尾号3721支出24.98元，余额657.09元")
         assertTrue(NotificationMerge.isSameEvidence(fp, 1_000_000L, fp, 1_000_000L))
+    }
+
+    @Test
+    fun `same app same text but different system notification keys are two real events`() {
+        val fp = NotificationMerge.contentFingerprint("交易提醒", "你有一笔2679.00元的支出，点此查看详情。")
+        assertFalse(
+            NotificationMerge.isSameEvidence(
+                "com.eg.android.AlipayGphone",
+                "0|com.eg.android.AlipayGphone|-29999935|null|10326:100000",
+                fp,
+                100_000,
+                "com.eg.android.AlipayGphone",
+                "0|com.eg.android.AlipayGphone|-29999932|null|10326:140000",
+                fp,
+                140_000
+            )
+        )
+    }
+
+    @Test
+    fun `same app same system notification key repost is one evidence`() {
+        val fp = NotificationMerge.contentFingerprint("交易提醒", "支出40.00元")
+        assertTrue(
+            NotificationMerge.isSameEvidence(
+                "com.eg.android.AlipayGphone",
+                "0|com.eg.android.AlipayGphone|-29999941|null|10326:100000",
+                fp,
+                100_000,
+                "com.eg.android.AlipayGphone",
+                "0|com.eg.android.AlipayGphone|-29999941|null|10326:101000",
+                fp,
+                101_000
+            )
+        )
     }
 
     @Test

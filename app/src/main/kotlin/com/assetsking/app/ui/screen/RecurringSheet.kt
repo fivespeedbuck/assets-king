@@ -29,6 +29,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.RecurringRuleEntity
+import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyFakeDateTime
+import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.ChipRow
@@ -37,6 +40,7 @@ import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import java.util.Calendar
 import java.util.UUID
 
@@ -48,8 +52,10 @@ fun RecurringRulesSection(
     rules: List<RecurringRuleEntity>,
     accounts: List<AccountEntity>,
     onSave: (RecurringRuleEntity) -> Unit,
-    onDelete: (String) -> Unit
+    onDelete: (String) -> Unit,
+    fixedType: TransactionType? = null
 ) {
+    val privacyEnabled = LocalPrivacyEnabled.current
     var showSheet by remember { mutableStateOf(false) }
     var editingRule by remember { mutableStateOf<RecurringRuleEntity?>(null) }
 
@@ -63,7 +69,7 @@ fun RecurringRulesSection(
     if (rules.isEmpty()) {
         Text("暂无周期性账单", color = MaterialTheme.colorScheme.onSurfaceVariant)
     } else {
-        rules.forEach { rule ->
+        rules.forEachIndexed { index, rule ->
             val account = accounts.firstOrNull { it.id == rule.accountId }
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -71,9 +77,12 @@ fun RecurringRulesSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
-                    Text(rule.merchant ?: "周期性${rule.type}", fontWeight = FontWeight.Medium)
                     Text(
-                        "${account?.name ?: "?"} · ${formatMoney(rule.amountCents)} · ${intervals.first { it.first == rule.interval }.second} · 下次 ${formatTime(rule.nextRunAt)}",
+                        rule.merchant?.let { if (privacyEnabled) privacyObfuscatedText(it, 2500 + index) else it } ?: "周期性${rule.type}",
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "${account?.name?.let { if (privacyEnabled) privacyObfuscatedText(it, 2520 + index) else it } ?: "?"} · ${if (privacyEnabled) privacyFakeAmount(2540 + index) else formatMoney(rule.amountCents)} · ${intervals.first { it.first == rule.interval }.second} · 下次 ${if (privacyEnabled) privacyFakeDateTime(2560 + index) else formatTime(rule.nextRunAt)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -91,6 +100,7 @@ fun RecurringRulesSection(
         RecurringRuleSheet(
             existing = editingRule,
             accounts = accounts,
+            fixedType = fixedType,
             onSave = { onSave(it); showSheet = false; editingRule = null },
             onDismiss = { showSheet = false; editingRule = null }
         )
@@ -102,6 +112,7 @@ fun RecurringRulesSection(
 private fun RecurringRuleSheet(
     existing: RecurringRuleEntity?,
     accounts: List<AccountEntity>,
+    fixedType: TransactionType?,
     onSave: (RecurringRuleEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -109,7 +120,7 @@ private fun RecurringRuleSheet(
     var amount by remember { mutableStateOf(existing?.let { "%.2f".format(it.amountCents / 100.0) } ?: "") }
     var type by remember {
         mutableStateOf(
-            existing?.let { runCatching { TransactionType.valueOf(it.type) }.getOrDefault(TransactionType.EXPENSE) }
+            fixedType ?: existing?.let { runCatching { TransactionType.valueOf(it.type) }.getOrDefault(TransactionType.EXPENSE) }
                 ?: TransactionType.EXPENSE
         )
     }
@@ -150,7 +161,11 @@ private fun RecurringRuleSheet(
 
         Spacer(Modifier.height(8.dp))
         Text("类型", fontWeight = FontWeight.Medium)
-        ChipRow(items = recurringTypes, selected = recurringTypes.first { it.first == type }, onSelected = { type = it.first }, label = { it.second }, id = { it.first.name })
+        if (fixedType == null) {
+            ChipRow(items = recurringTypes, selected = recurringTypes.first { it.first == type }, onSelected = { type = it.first }, label = { it.second }, id = { it.first.name })
+        } else {
+            Text("类型：支出", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
 
         Spacer(Modifier.height(8.dp))
         Text("分类", fontWeight = FontWeight.Medium)

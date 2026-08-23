@@ -5,6 +5,7 @@ import com.assetsking.model.LoanInstallment
 import com.assetsking.model.LoanPlan
 import com.assetsking.model.Money
 import kotlin.math.pow
+import kotlin.math.roundToLong
 
 data class LoanCostSummary(
     val totalPrincipal: Money,
@@ -12,12 +13,6 @@ data class LoanCostSummary(
     val totalFees: Money,
     val totalRepayment: Money,
     val annualizedRate: Double?
-)
-
-data class EarlyRepaymentResult(
-    val savedInterest: Long,
-    val newRemainingMonths: Int,
-    val newTotalRepayment: Long
 )
 
 object LoanCalculator {
@@ -49,11 +44,16 @@ object LoanCalculator {
         } else {
             principalCents * monthlyRate * (1 + monthlyRate).pow(months) / ((1 + monthlyRate).pow(months) - 1)
         }
+        val roundedPayment = monthlyPayment.roundToLong()
         val result = mutableListOf<LoanInstallment>()
-        var remaining = principalCents.toDouble()
+        var remaining = principalCents
         for (i in 1..months) {
-            val interest = (remaining * monthlyRate).toLong()
-            val principal = (monthlyPayment - interest).toLong().coerceAtMost(remaining.toLong())
+            val interest = (remaining * monthlyRate).roundToLong()
+            val principal = if (i == months) {
+                remaining
+            } else {
+                (roundedPayment - interest).coerceIn(0L, remaining)
+            }
             remaining -= principal
             result.add(LoanInstallment(
                 number = i,
@@ -78,7 +78,7 @@ object LoanCalculator {
         val result = mutableListOf<LoanInstallment>()
         var remaining = principalCents
         for (i in 1..months) {
-            val interest = (remaining * monthlyRate).toLong()
+            val interest = (remaining * monthlyRate).roundToLong()
             val principal = if (i == months) remaining else monthlyPrincipal
             remaining -= principal
             result.add(LoanInstallment(
@@ -100,7 +100,7 @@ object LoanCalculator {
     ): List<LoanInstallment> {
         if (principalCents <= 0 || months <= 0) return emptyList()
         val monthlyRate = annualRateBps / 100.0 / 100.0 / 12.0
-        val monthlyInterest = (principalCents * monthlyRate).toLong()
+        val monthlyInterest = (principalCents * monthlyRate).roundToLong()
         val result = mutableListOf<LoanInstallment>()
         for (i in 1..months) {
             result.add(
@@ -118,34 +118,6 @@ object LoanCalculator {
             )
         }
         return result
-    }
-
-    /** 提前还款节省计算 */
-    fun earlyRepaymentSavings(
-        remainingPrincipalCents: Long,
-        annualRateBps: Int,
-        remainingMonths: Int,
-        extraPaymentCents: Long
-    ): EarlyRepaymentResult {
-        val monthlyRate = annualRateBps / 100.0 / 100.0 / 12.0
-        val oldSchedule = equalPaymentSchedule(remainingPrincipalCents, annualRateBps, remainingMonths, 0)
-        val oldTotal = oldSchedule.sumOf { it.total.cents }
-        val newPrincipal = remainingPrincipalCents - extraPaymentCents
-        if (newPrincipal <= 0) return EarlyRepaymentResult(oldTotal, 0, extraPaymentCents)
-        val newMonths = remainingMonths.coerceAtMost(
-            if (monthlyRate == 0.0) remainingMonths
-            else kotlin.math.ceil(
-                kotlin.math.ln(1 - newPrincipal * monthlyRate / (oldSchedule.firstOrNull()?.total?.cents?.toDouble() ?: 1.0))
-                / kotlin.math.ln(1 + monthlyRate)
-            ).toInt().coerceAtLeast(1)
-        )
-        val newSchedule = equalPaymentSchedule(newPrincipal, annualRateBps, newMonths, 0)
-        val newTotal = newSchedule.sumOf { it.total.cents }
-        return EarlyRepaymentResult(
-            savedInterest = oldTotal - newTotal - extraPaymentCents,
-            newRemainingMonths = newMonths,
-            newTotalRepayment = newTotal
-        )
     }
 
     private fun annualizedRate(principal: Long, startDay: Long, installments: List<LoanInstallment>): Double? {

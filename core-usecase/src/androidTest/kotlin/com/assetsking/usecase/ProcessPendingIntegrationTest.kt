@@ -127,6 +127,44 @@ class ProcessPendingIntegrationTest {
         assertEquals("IGNORED", database.rawNotificationDao().findById("rescan-new-id")?.status)
     }
 
+    @Test
+    fun guangfaStatementUpdatesBillStateOnceAndNeverCreatesATransaction() = runBlocking {
+        database.accountDao().upsert(
+            AccountEntity(
+                id = "cgb",
+                name = "广发信用卡",
+                type = AccountType.CREDIT.name,
+                balanceCents = 0L,
+                cardTail = "3304",
+                statementDay = 26,
+                dueDay = 10,
+                statementOriginalDueCents = 99L
+            )
+        )
+        val content = "【广发银行】您尾号3304广发信用卡06月人民币账单金额1,570.44元，最低还款116.00元，还款到期07月15日。点 n.95508.com/x 即可极速办理账单分期，以批核为准。"
+        val postedAt = System.currentTimeMillis()
+        val fingerprint = ContentFingerprint.of("95508", content)
+        database.rawNotificationDao().insert(
+            rawNotification("statement-1", content).copy(postedAt = postedAt, contentFingerprint = fingerprint)
+        )
+        database.rawNotificationDao().insert(
+            rawNotification("statement-2", content).copy(postedAt = postedAt + 1_000L, contentFingerprint = fingerprint)
+        )
+
+        assertEquals(0, ProcessPendingUseCase(repository).invoke())
+
+        val account = requireNotNull(database.accountDao().find("cgb"))
+        assertEquals(157_044L, account.statementOriginalDueCents)
+        assertEquals(26, account.statementDay)
+        assertEquals(15, account.dueDay)
+        assertTrue(database.transactionDao().all().isEmpty())
+        assertEquals("IGNORED", database.rawNotificationDao().findById("statement-1")?.status)
+        assertTrue(
+            database.rawNotificationDao().findById("statement-2")?.processingNote
+                ?.contains("内容相同") == true
+        )
+    }
+
     private fun rawNotification(id: String, content: String) = RawNotificationEntity(
         id = id,
         packageName = "sms",

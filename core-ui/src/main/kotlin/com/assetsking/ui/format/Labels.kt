@@ -1,6 +1,7 @@
 package com.assetsking.ui.format
 
 import com.assetsking.model.TransactionCategory
+import com.assetsking.model.TransactionType
 
 fun categoryLabel(category: TransactionCategory): String = when (category) {
     TransactionCategory.UNCATEGORIZED -> "未分类"
@@ -16,6 +17,22 @@ fun categoryLabel(category: TransactionCategory): String = when (category) {
     TransactionCategory.FINANCIAL_FEES -> "金融费用"
     TransactionCategory.OTHER -> "其他"
 }
+
+fun categoryLabel(storedCategory: String): String =
+    runCatching { TransactionCategory.valueOf(storedCategory) }
+        .getOrNull()
+        ?.let(::categoryLabel)
+        ?: storedCategory
+
+fun transactionCategoryLabel(transactionType: String, storedCategory: String): String? =
+    if (
+        transactionType == TransactionType.REIMBURSEMENT.name &&
+        storedCategory == TransactionCategory.UNCATEGORIZED.name
+    ) {
+        null
+    } else {
+        categoryLabel(storedCategory)
+    }
 
 fun accountTypeLabel(type: String): String = when (type) {
     "ASSET" -> "资产账户"

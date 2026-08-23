@@ -16,8 +16,18 @@ class V5MetricsTest {
         balance: Long = 4_000_000,
         statementOriginalDue: Long = 600_000,
         dueDay: Int? = 20,
-        type: String = "CREDIT"
-    ) = V5AccountInput(id, type, balance, statementOriginalDue, pendingCents = 0, statementDay = 8, dueDay = dueDay)
+        type: String = "CREDIT",
+        statementConverted: Long = 0
+    ) = V5AccountInput(
+        id,
+        type,
+        balance,
+        statementOriginalDue,
+        pendingCents = 0,
+        statementDay = 8,
+        dueDay = dueDay,
+        statementInstallmentConvertedCents = statementConverted
+    )
 
     private fun installment(
         due: LocalDate,
@@ -86,6 +96,50 @@ class V5MetricsTest {
             cardTransfers = listOf(V5CardTransferInput("cgb", 300_000))
         )
         assertEquals(0, overpaid.cardRepayPartCents)
+    }
+
+    @Test
+    fun `statement installment reduces current due without changing total card debt`() {
+        val m = metrics(
+            accounts = listOf(
+                card(balance = 300_000, statementOriginalDue = 300_000, statementConverted = 240_000)
+            )
+        )
+
+        assertEquals(60_000, m.cardRepayPartCents)
+        assertEquals(300_000, m.cardDebtCents)
+        assertEquals(300_000, m.totalDebtCents)
+    }
+
+    @Test
+    fun `remaining statement due never exceeds the current credit balance`() {
+        val m = metrics(
+            accounts = listOf(card(balance = 120_000, statementOriginalDue = 600_000))
+        )
+
+        assertEquals(120_000, m.cardRepayPartCents)
+        assertEquals(120_000, m.cardRemainingDueByCard.getValue("cgb"))
+    }
+
+    @Test
+    fun `card installment schedules enter must repay and due windows exactly once`() {
+        val m = metrics(
+            accounts = listOf(card(balance = 900_000, statementOriginalDue = 600_000, statementConverted = 400_000)),
+            month = V5MonthFlow(
+                incomeActualCents = 0L,
+                feeMonthCents = 0L,
+                newBorrowingCents = 0L,
+                cardInstallmentDueCents = 100_000L,
+                cardInstallmentDue7Cents = 100_000L,
+                cardInstallmentDue30Cents = 100_000L
+            )
+        )
+
+        assertEquals(200_000L, m.cardRepayPartCents)
+        assertEquals(100_000L, m.cardInstallmentRepayPartCents)
+        assertEquals(300_000L, m.mustRepayCents)
+        assertEquals(300_000L, m.due7DaysCents)
+        assertEquals(300_000L, m.due30DaysCents)
     }
 
     // ── V5 §63 Case 5：利息/手续费是真实成本，未来利息不算 ──

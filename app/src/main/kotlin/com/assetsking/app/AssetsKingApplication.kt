@@ -15,11 +15,15 @@ import com.assetsking.usecase.RecordTransactionUseCase
 import com.assetsking.usecase.RecordTransferUseCase
 import com.assetsking.usecase.SeedAccountsUseCase
 import com.assetsking.usecase.UpdateCategoryUseCase
+import com.assetsking.ui.privacy.PrivacyMode
 import java.util.concurrent.TimeUnit
 
 class AssetsKingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        PrivacyMode.setEnabled(
+            getSharedPreferences("app_prefs", MODE_PRIVATE).getBoolean("privacy_mode", false)
+        )
         // 监听保活：60 秒闹钟心跳（第一道）+ 15 分钟 WorkManager（兜底）。
         // KEEP：已存在同名单个周期任务就不重建，避免每次开 App 重置计时。
         ListenerHeartbeatReceiver.schedule(this)

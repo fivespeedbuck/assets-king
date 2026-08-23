@@ -23,6 +23,17 @@ class EditCategoryPresentationTest {
         assertEquals(false, isCustomPaymentChannel("支付宝"))
         assertEquals(false, isCustomPaymentChannel(""))
         assertEquals(true, isCustomPaymentChannel("数字人民币"))
+        assertEquals(false, shouldUseCustomPaymentChannelEditor("数字人民币", setOf("数字人民币")))
+        assertEquals(true, shouldUseCustomPaymentChannelEditor("抖音支付", emptySet()))
+    }
+
+    @Test
+    fun loanAccountsNeverAppearAsFundingAccounts() {
+        val cash = AccountEntity("cash", "招商银行", "ASSET", 1_000L)
+        val card = AccountEntity("card", "广发信用卡", "CREDIT", 2_000L)
+        val loan = AccountEntity("loan", "招行消费贷", "LOAN", 3_000L)
+
+        assertEquals(listOf("cash", "card"), fundingAccounts(listOf(cash, card, loan)).map { it.id })
     }
 
     @Test

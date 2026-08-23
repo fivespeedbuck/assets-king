@@ -36,7 +36,12 @@ object PendingNotifier {
         debounceJob = scope.launch {
             delay(DEBOUNCE_MS)
             val app = context.applicationContext as? AssetsKingApplication ?: return@launch
-            val count = runCatching { app.repository.pendingNotifications.first().size }.getOrDefault(0)
+            val count = runCatching {
+                actionableEvidenceCount(
+                    pendingCount = app.repository.pendingNotifications.first().size,
+                    unprocessedCount = app.repository.unprocessedNotifications.first()
+                )
+            }.getOrDefault(0)
             if (count > 0) notify(context, count)
         }
     }
@@ -48,7 +53,12 @@ object PendingNotifier {
      */
     suspend fun ensureNotified(context: Context) {
         val app = context.applicationContext as? AssetsKingApplication ?: return
-        val count = runCatching { app.repository.pendingNotifications.first().size }.getOrDefault(0)
+        val count = runCatching {
+            actionableEvidenceCount(
+                pendingCount = app.repository.pendingNotifications.first().size,
+                unprocessedCount = app.repository.unprocessedNotifications.first()
+            )
+        }.getOrDefault(0)
         if (count > 0 && app.repository.lastNotifiedPendingCount() != count) {
             notify(context, count)
         }
@@ -57,7 +67,6 @@ object PendingNotifier {
     private fun notify(context: Context, count: Int) {
         runCatching {
             val app = context.applicationContext as? AssetsKingApplication
-            app?.repository?.markPendingNotified(count)
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_PENDING, "待确认账目", NotificationManager.IMPORTANCE_DEFAULT)
@@ -69,13 +78,18 @@ object PendingNotifier {
             )
             val notif = Notification.Builder(context, CHANNEL_PENDING)
                 .setContentTitle("资产大王")
-                .setContentText("有 $count 笔账目待确认")
+                .setContentText("有 $count 笔账目待处理")
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setContentIntent(tap)
                 .setAutoCancel(true)
                 .setVisibility(Notification.VISIBILITY_PRIVATE) // 锁屏隐藏内容
                 .build()
             NotificationManagerCompat.from(context).notify(NOTIF_ID, notif)
+            // 只有系统实际接受通知后才记已提醒；权限/系统异常时保留下一次补发机会。
+            app?.repository?.markPendingNotified(count)
         }
     }
 }
+
+internal fun actionableEvidenceCount(pendingCount: Int, unprocessedCount: Int): Int =
+    pendingCount.coerceAtLeast(0) + unprocessedCount.coerceAtLeast(0)

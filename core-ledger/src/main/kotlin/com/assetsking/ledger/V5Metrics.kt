@@ -14,7 +14,9 @@ data class V5AccountInput(
     val statementOriginalDueCents: Long, // 本期待还【原始账单金额】：还款后不重录，系统按账期扣已还
     val pendingCents: Long,         // 仅展示，不计总负债
     val statementDay: Int?,
-    val dueDay: Int?
+    val dueDay: Int?,
+    /** 本账期已转换为账单分期的本金；只重排偿还时间，不改变 balanceCents。 */
+    val statementInstallmentConvertedCents: Long = 0
 )
 
 data class V5InstallmentInput(
@@ -80,7 +82,10 @@ data class V5MonthFlow(
     val feeMonthCents: Long,        // 本月 FEE 流水之和
     val newBorrowingCents: Long,    // 本月 LOAN_DISBURSEMENT 之和
     val optionalSpentCents: Long = 0, // 本月已发生非必要消费（按设置的非必要分类聚合）
-    val todayOptionalSpentCents: Long = 0 // 今日已发生非必要消费（对应「今日上限」）
+    val todayOptionalSpentCents: Long = 0, // 今日已发生非必要消费（对应「今日上限」）
+    val cardInstallmentDueCents: Long = 0,
+    val cardInstallmentDue7Cents: Long = 0,
+    val cardInstallmentDue30Cents: Long = 0
 )
 
 // ── 输出 ──
@@ -100,6 +105,7 @@ data class V5Metrics(
     val mustRepayCents: Long,
     val cardRepayPartCents: Long,
     val loanRepayPartCents: Long,
+    val cardInstallmentRepayPartCents: Long,
     val feeRepayPartCents: Long,
     val monthlySurvivalGapCents: Long,
     val incomeActualCents: Long,
@@ -164,7 +170,15 @@ fun computeV5Metrics(
     /** 统一口径：卡的当前剩余应还 = 原始账单 − 本账期已转入该卡。
      *  mustRepay / 未来7天 / 未来30天 / 卡详情 全部消费这一个结果，禁止另起公式 */
     fun remainingStatementDue(a: V5AccountInput): Long =
-        maxOf(0, a.statementOriginalDueCents - (transferredByCard[a.id] ?: 0))
+        minOf(
+            a.balanceCents.coerceAtLeast(0),
+            maxOf(
+                0,
+            a.statementOriginalDueCents -
+                (transferredByCard[a.id] ?: 0) -
+                a.statementInstallmentConvertedCents
+            )
+        )
 
     val cardRepayPart = accounts
         .filter { it.type == "CREDIT" }
@@ -176,7 +190,7 @@ fun computeV5Metrics(
             .sumOf { it.totalCents }
     }
     val feeRepayPart = month.feeMonthCents
-    val mustRepay = cardRepayPart + loanRepayPart + feeRepayPart
+    val mustRepay = cardRepayPart + loanRepayPart + month.cardInstallmentDueCents + feeRepayPart
 
     // ── ③④ 资金缺口 / 新增借款（单独统计，不进收入）──
     // 缺口把"已发生的非必要消费"算进去：原本 -3000 又花 80 非必要 → -3080（V5 §44）
@@ -217,14 +231,15 @@ fun computeV5Metrics(
         val loanPart = plans.sumOf { plan ->
             plan.installments
                 .filter { !it.isPaid }
-                .filter { LocalDate.ofEpochDay(it.dueDateEpochDay) in today.plusDays(1)..end }
+                .filter { LocalDate.ofEpochDay(it.dueDateEpochDay) in today..end }
                 .sumOf { it.totalCents }
         }
         val cardPart = accounts.filter { it.type == "CREDIT" && it.dueDay != null }.sumOf { a ->
             val next = nextCardDueDate(today, a.dueDay!!)
             if (!next.isAfter(end)) remainingStatementDue(a) else 0
         }
-        return loanPart + cardPart
+        val cardInstallmentPart = if (days == 7) month.cardInstallmentDue7Cents else month.cardInstallmentDue30Cents
+        return loanPart + cardPart + cardInstallmentPart
     }
     val due7 = dueInWindow(7)
     val due30 = dueInWindow(30)
@@ -272,6 +287,7 @@ fun computeV5Metrics(
         mustRepayCents = mustRepay,
         cardRepayPartCents = cardRepayPart,
         loanRepayPartCents = loanRepayPart,
+        cardInstallmentRepayPartCents = month.cardInstallmentDueCents,
         feeRepayPartCents = feeRepayPart,
         monthlySurvivalGapCents = gap,
         incomeActualCents = month.incomeActualCents,

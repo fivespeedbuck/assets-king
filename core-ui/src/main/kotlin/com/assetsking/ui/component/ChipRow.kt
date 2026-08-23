@@ -18,6 +18,7 @@ fun <T> ChipRow(
     selected: T,
     onSelected: (T) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     label: (T) -> String = { it.toString() },
     id: (T) -> Any = { it.hashCode() }
 ) {
@@ -29,6 +30,7 @@ fun <T> ChipRow(
             FilterChip(
                 selected = item == selected,
                 onClick = { onSelected(item) },
+                enabled = enabled,
                 label = { Text(label(item)) }
             )
         }

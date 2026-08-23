@@ -23,7 +23,7 @@ fun AddAccountSheet(
     onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit,
     onDismiss: () -> Unit
 ) {
-    Sheet(title = "新建账户", onDismiss = onDismiss) {
+    Sheet(title = if (initialType == AccountType.LOAN) "新建贷款账户" else "新建账户", onDismiss = onDismiss) {
         AddAccountForm(
             initialType = initialType,
             onAddAccount = { name, type, balance, tail, statementDay, dueDay, limit ->
@@ -47,18 +47,23 @@ private fun AddAccountForm(
     var dueDay by remember { mutableStateOf("") }
     var creditLimit by remember { mutableStateOf("") }
 
-    ChipRow(
-        items = AccountType.entries,
-        selected = type,
-        onSelected = { type = it },
-        label = {
-            when (it) {
-                AccountType.ASSET -> "资产（储蓄/借记卡）"
-                AccountType.CREDIT -> "信用卡"
-                AccountType.LOAN -> "贷款"
+    if (initialType == AccountType.LOAN) {
+        Text("贷款账户")
+        Text("用于承载消费贷、房贷等普通贷款；不会混入储蓄卡、信用卡或花呗。")
+    } else {
+        ChipRow(
+            items = AccountType.entries,
+            selected = type,
+            onSelected = { type = it },
+            label = {
+                when (it) {
+                    AccountType.ASSET -> "资产（储蓄/借记卡）"
+                    AccountType.CREDIT -> "信用卡"
+                    AccountType.LOAN -> "贷款"
+                }
             }
-        }
-    )
+        )
+    }
     Spacer(Modifier.height(8.dp))
     FormField(value = name, onValueChange = { name = it }, label = "账户名称")
     Spacer(Modifier.height(8.dp))

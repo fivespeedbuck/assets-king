@@ -39,7 +39,83 @@ INSERT INTO budgets(id,category,monthlyLimitCents,month) VALUES
 ('visual-budget-books','书籍资料',15000,'2026-08'),
 ('visual-budget-fitness','运动补剂',10000,'2026-08');
 
--- 工资 + 多分类消费 + 退款 + 报销 + 贷款还款，用于验证所有列表和统计状态。
+-- 过去 11 个完整自然月：每月 1 笔工资 + 6 类正常消费 + 1 笔实际还款。
+-- 加上下面的 2026-08 当前月与两笔趋势专项流水，共形成连续 12 个月、109 条流水；既能让流水页有足够密度，
+-- 又能让统计页 3/6/12 月档位都在真实非零数据上验收。所有事件都早于 2026-08-20
+-- 权威余额检查点，不改变当前账户余额。
+WITH RECURSIVE months(monthOffset, month) AS (
+    SELECT 1, strftime('%Y-%m', date('2026-08-01', '-1 month'))
+    UNION ALL
+    SELECT monthOffset + 1,
+           strftime('%Y-%m', date('2026-08-01', printf('-%d months', monthOffset + 1)))
+    FROM months
+    WHERE monthOffset < 11
+), history(
+    month, monthOffset, suffix, accountId, amountCents, type, category,
+    dayTime, merchant, noteLabel, necessity, channel
+) AS (
+    SELECT month, monthOffset, 'salary', 'cmb',
+           665000 + ((12 - monthOffset) % 4) * 8500,
+           'INCOME', '工资', '05T08:41:00', '公司工资', '工资', 1, '招商银行'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'rent', 'cmb', 150000,
+           'EXPENSE', '房租', '01T09:00:00', '房东', '房租', 1, '微信'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'grocery', 'cmb',
+           30000 + (monthOffset % 5) * 2600,
+           'EXPENSE', '买菜', '07T18:20:00', '盒马鲜生', '日常食材', 1, '支付宝'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'dine', 'nbcb',
+           18000 + (monthOffset % 4) * 2300,
+           'EXPENSE', '堂食', '12T12:26:00', '全家便利店', '工作餐', 1, '微信'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'taxi', 'cgb',
+           6800 + (monthOffset % 5) * 1200,
+           'EXPENSE', '打车', '16T22:08:00', '滴滴出行', '晚间出行', 0, '支付宝'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'phone', 'cmb',
+           6000 + (monthOffset % 4) * 850,
+           'EXPENSE', '手机话费', '21T09:18:00', '中国移动', '手机话费', 1, '支付宝'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'leisure', 'cgb',
+           5600 + (monthOffset % 6) * 900,
+           'EXPENSE',
+           CASE WHEN monthOffset % 2 = 0 THEN '书籍资料' ELSE '电影演出' END,
+           '26T20:10:00',
+           CASE WHEN monthOffset % 2 = 0 THEN '当当网' ELSE '万达影城' END,
+           CASE WHEN monthOffset % 2 = 0 THEN '专业书籍' ELSE '周末电影' END,
+           0, '微信'
+    FROM months
+    UNION ALL
+    SELECT month, monthOffset, 'repayment', 'cmb', 342000,
+           'LOAN_PAYMENT', '贷款还款', '23T09:30:00', '历史贷款', '月度还款', 1, '招商银行'
+    FROM months
+)
+INSERT INTO transactions(
+    id,accountId,amountCents,type,category,occurredAt,merchant,note,status,
+    isReimbursable,recurringRuleId,principalCents,interestCents,feeCents,
+    loanPlanId,refundOfId,reimbursedCents,necessity,channel,notificationId
+)
+SELECT
+    'visual-history-' || suffix || '-' || month,
+    accountId,
+    amountCents,
+    type,
+    category,
+    strftime('%s', month || '-' || dayTime || '+08:00') * 1000,
+    merchant,
+    substr(month, 6, 2) || '月' || noteLabel,
+    'CONFIRMED',
+    0,NULL,0,0,0,NULL,NULL,0,necessity,channel,NULL
+FROM history;
+
+-- 当前月工资 + 多分类消费 + 退款 + 报销 + 贷款还款，用于验证全部列表和统计状态。
 INSERT INTO transactions(id,accountId,amountCents,type,category,occurredAt,merchant,note,status,isReimbursable,recurringRuleId,principalCents,interestCents,feeCents,loanPlanId,refundOfId,reimbursedCents,necessity,channel,notificationId) VALUES
 ('visual-salary','cmb',695095,'INCOME','工资',strftime('%s','2026-08-05T08:41:00+08:00') * 1000,'公司工资','8月工资','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'招商银行',NULL),
 ('visual-interest','cmb',3888,'INCOME','利息收益',strftime('%s','2026-08-18T09:12:00+08:00') * 1000,'招商银行','活期利息','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'招商银行',NULL),
@@ -51,7 +127,9 @@ INSERT INTO transactions(id,accountId,amountCents,type,category,occurredAt,merch
 ('visual-taxi','cgb',12600,'EXPENSE','打车',strftime('%s','2026-08-10T22:08:00+08:00') * 1000,'滴滴出行','加班回家','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,0,'支付宝',NULL),
 ('visual-metro','nbcb',5700,'EXPENSE','地铁',strftime('%s','2026-08-11T08:34:00+08:00') * 1000,'宁波地铁','通勤','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'云闪付',NULL),
 ('visual-cat','cmb',15600,'EXPENSE','猫粮',strftime('%s','2026-08-12T20:02:00+08:00') * 1000,'宠物生活馆','主粮补货','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'微信',NULL),
-('visual-books','cmb',12800,'EXPENSE','书籍资料',strftime('%s','2026-08-13T14:32:00+08:00') * 1000,'当当网','专业书籍','CONFIRMED',1,NULL,0,0,0,NULL,NULL,5000,0,'支付宝',NULL),
+-- 同一笔 128 元书籍垫付拆成 78 元未报销 + 50 元已报销，只增加呈现行，不改变统计总额与现金流口径。
+('visual-books','cmb',7800,'EXPENSE','书籍资料',strftime('%s','2026-08-13T14:32:00+08:00') * 1000,'当当网','专业书籍（待报销）','CONFIRMED',1,NULL,0,0,0,NULL,NULL,0,0,'支付宝',NULL),
+('visual-books-settled','cmb',5000,'EXPENSE','书籍资料',strftime('%s','2026-08-13T14:33:00+08:00') * 1000,'当当网','专业书籍（已报销）','CONFIRMED',1,NULL,0,0,0,NULL,NULL,5000,0,'支付宝',NULL),
 ('visual-reimbursement','cmb',5000,'REIMBURSEMENT','书籍资料',strftime('%s','2026-08-19T16:20:00+08:00') * 1000,'公司报销','书籍报销到账','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'招商银行',NULL),
 ('visual-fitness','cgb',8800,'EXPENSE','运动补剂',strftime('%s','2026-08-14T19:06:00+08:00') * 1000,'迪卡侬','蛋白粉补剂','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,0,'支付宝',NULL),
 ('visual-movie','cgb',7600,'EXPENSE','电影演出',strftime('%s','2026-08-15T20:10:00+08:00') * 1000,'万达影城','周末电影','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,0,'微信',NULL),
@@ -59,10 +137,13 @@ INSERT INTO transactions(id,accountId,amountCents,type,category,occurredAt,merch
 ('visual-electricity','cmb',4120,'EXPENSE','电费',strftime('%s','2026-08-17T11:05:00+08:00') * 1000,'国网电力','8月电费','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'支付宝',NULL),
 ('visual-water','cmb',1940,'EXPENSE','水费',strftime('%s','2026-08-18T11:06:00+08:00') * 1000,'自来水公司','8月水费','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'支付宝',NULL),
 ('visual-daily','nbcb',2200,'EXPENSE','日用品',strftime('%s','2026-08-20T10:16:00+08:00') * 1000,'罗森便利店','纸巾','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,1,'微信',NULL),
-('visual-loan-payment','cmb',342000,'LOAN_PAYMENT','贷款还款',strftime('%s','2026-07-23T09:30:00+08:00') * 1000,'招行消费贷','第1期还款','CONFIRMED',0,NULL,300000,42000,0,'visual-loan',NULL,0,1,'招商银行',NULL);
+-- 当前月实际提前还款：让组成柱稳定出现红色普通支出、紫色还款与蓝色现金结余三段。
+('visual-loan-prepayment-aug','cmb',342000,'LOAN_PREPAYMENT','贷款还款',strftime('%s','2026-08-18T18:30:00+08:00') * 1000,'招行消费贷','提前还款','CONFIRMED',0,NULL,342000,0,0,'visual-loan',NULL,0,1,'招商银行',NULL),
+-- 6 月大额消费：普通支出本身超过当月收入，专门验收无蓝段且明确显示现金赤字。
+('visual-overspend-jun','cgb',520000,'EXPENSE','数码家电',strftime('%s','2026-06-18T15:20:00+08:00') * 1000,'京东商城','电脑购置（赤字月验收）','CONFIRMED',0,NULL,0,0,0,NULL,NULL,0,0,'京东支付',NULL);
 
 INSERT INTO reimbursement_links(reimbursementTxId,expenseTxId,coveredCents)
-VALUES('visual-reimbursement','visual-books',5000);
+VALUES('visual-reimbursement','visual-books-settled',5000);
 
 INSERT INTO transfers(id,fromAccountId,toAccountId,amountCents,occurredAt,note)
 VALUES('visual-transfer-card','cmb','cgb',200000,strftime('%s','2026-08-18T09:15:00+08:00') * 1000,'信用卡还款');

@@ -60,6 +60,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
+import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyFakeCount
+import com.assetsking.app.ui.privacy.privacyFakeDateTime
+import com.assetsking.app.ui.privacy.privacyObfuscatedText
+import com.assetsking.app.ui.privacy.privacyScrambleText
 import com.assetsking.database.AccountEntity
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
@@ -70,6 +75,8 @@ import com.assetsking.ui.format.formatSignedMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.theme.ExpenseRed
 import com.assetsking.ui.theme.IncomeGreen
+import com.assetsking.ui.theme.ReimbursementYellow
+import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.usecase.AccountInference
 import com.assetsking.usecase.PendingConfirmationInput
 import com.assetsking.usecase.PendingConfirmationPolicy
@@ -92,7 +99,8 @@ private fun typeOf(item: PendingItem): TransactionType? =
 
 private fun amountColor(type: TransactionType?): Color = when (type) {
     TransactionType.EXPENSE -> BoxRed
-    TransactionType.INCOME, TransactionType.REFUND, TransactionType.REIMBURSEMENT -> BoxGreen
+    TransactionType.REIMBURSEMENT -> ReimbursementYellow
+    TransactionType.INCOME, TransactionType.REFUND -> BoxGreen
     else -> BoxGray
 }
 
@@ -113,6 +121,7 @@ fun PendingBoxScreen(
     onBack: () -> Unit
 ) {
     BackHandler(onBack = onBack)
+    val privacyEnabled = LocalPrivacyEnabled.current
     val sorted = remember(items) { items.sortedByDescending { it.notification.postedAt } }
     var multiSelect by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
@@ -132,7 +141,17 @@ fun PendingBoxScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (multiSelect) "已选择 ${selected.size} 笔" else "待确认 ${sorted.size} 笔") },
+                title = {
+                    Text(
+                        if (privacyEnabled) {
+                            if (multiSelect) "已选择 ${privacyFakeCount(2101)} 笔" else "待确认 ${privacyFakeCount(2102)} 笔"
+                        } else if (multiSelect) {
+                            "已选择 ${selected.size} 笔"
+                        } else {
+                            "待确认 ${sorted.size} 笔"
+                        }
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = {
                         if (multiSelect) { multiSelect = false; selected.clear() } else onBack()
@@ -196,7 +215,11 @@ fun PendingBoxScreen(
                         Text("待确认已清空", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            if (lastReceivedAt > 0) "最近入库 ${formatTime(lastReceivedAt)}" else "等待第一笔账目",
+                            if (lastReceivedAt > 0) {
+                                "最近入库 ${if (privacyEnabled) privacyFakeDateTime(2103) else formatTime(lastReceivedAt)}"
+                            } else {
+                                "等待第一笔账目"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -236,7 +259,7 @@ fun PendingBoxScreen(
                         lastDay = day
                         item(key = "sep-$day") {
                             Text(
-                                day,
+                                if (privacyEnabled) privacyFakeDateTime(2120 + item.notification.id.hashCode()).substringBefore(' ') else day,
                                 Modifier.padding(top = 8.dp, bottom = 4.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -409,6 +432,8 @@ private fun PendingBoxCard(
     viewModel: LedgerViewModel,
     onConfirmed: () -> Unit
 ) {
+    val privacyEnabled = LocalPrivacyEnabled.current
+    val privacyIndex = item.notification.id.hashCode()
     val parsed = item.parsed
     val amountCents = parsed.amountCents ?: 0L
     val merchant = parsed.merchant
@@ -434,7 +459,7 @@ private fun PendingBoxCard(
                     Checkbox(checked = checked, onCheckedChange = { onToggleSelect() }, enabled = complete)
                 }
                 Text(
-                    formatSignedMoney(
+                    if (privacyEnabled) privacyFakeAmount(2200 + privacyIndex) else formatSignedMoney(
                         amountCents,
                         positive = when (type) {
                             TransactionType.EXPENSE -> false
@@ -448,7 +473,7 @@ private fun PendingBoxCard(
                 )
                 Spacer(Modifier.padding(horizontal = 8.dp))
                 Text(
-                    merchant ?: "待补全",
+                    if (privacyEnabled && merchant != null) privacyObfuscatedText(merchant, 2201 + privacyIndex) else merchant ?: "待补全",
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
@@ -471,20 +496,21 @@ private fun PendingBoxCard(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
-                    "· 分类 ${category?.let(::categoryLabel) ?: "待补全"}",
+                    "· 分类 ${category?.let { if (privacyEnabled) privacyScrambleText(categoryLabel(it), 2202 + privacyIndex) else categoryLabel(it) } ?: "待补全"}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                 )
-                Text("· ${account?.name ?: "未选账户"}", style = MaterialTheme.typography.labelSmall)
-                Text("· ${AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)}", style = MaterialTheme.typography.labelSmall)
-                Text("· ${formatTime(item.notification.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("· ${account?.name?.let { if (privacyEnabled) privacyObfuscatedText(it, 2203 + privacyIndex) else it } ?: "未选账户"}", style = MaterialTheme.typography.labelSmall)
+                val channelLabel = AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)
+                Text("· ${if (privacyEnabled) privacyObfuscatedText(channelLabel, 2204 + privacyIndex) else channelLabel}", style = MaterialTheme.typography.labelSmall)
+                Text("· ${if (privacyEnabled) privacyFakeDateTime(2205 + privacyIndex) else formatTime(item.notification.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val bankBalance = parsed.balanceCents
             val bankTail = parsed.cardTail
             val badges = buildList {
                 if (isCompleting) add("正在补全")
                 if (isRescanned) add("由短信补回")
-                if (bankBalance != null && bankTail != null) add("银行余额 ${formatMoney(bankBalance)}")
+                if (bankBalance != null && bankTail != null) add("银行余额 ${if (privacyEnabled) privacyFakeAmount(2206 + privacyIndex) else formatMoney(bankBalance)}")
             }
             if (badges.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
@@ -555,6 +581,7 @@ private fun TransferPairCard(
     onConfirmed: () -> Unit,
     onSplit: () -> Unit
 ) {
+    val privacyEnabled = LocalPrivacyEnabled.current
     val amount = outItem.parsed.amountCents ?: 0L
     val fromId = inferAccountId(outItem, accounts, merchantLastAccount).orEmpty()
     val toId = inferAccountId(inItem, accounts, merchantLastAccount).orEmpty()
@@ -562,16 +589,20 @@ private fun TransferPairCard(
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("账户转账", Modifier.weight(1f), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Text(formatMoney(amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineSmall, color = BoxGray)
+                Text(if (privacyEnabled) privacyFakeAmount(2301) else formatMoney(amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineSmall, color = BoxGray)
             }
             Text(
-                "${outItem.notification.sourceLabel ?: outItem.notification.packageName} 转出 → ${inItem.notification.sourceLabel ?: inItem.notification.packageName} 转入",
+                if (privacyEnabled) {
+                    "${privacyObfuscatedText(outItem.notification.sourceLabel ?: outItem.notification.packageName, 2302)} 转出 → ${privacyObfuscatedText(inItem.notification.sourceLabel ?: inItem.notification.packageName, 2303)} 转入"
+                } else {
+                    "${outItem.notification.sourceLabel ?: outItem.notification.packageName} 转出 → ${inItem.notification.sourceLabel ?: inItem.notification.packageName} 转入"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text("${formatTime(outItem.notification.postedAt)} · 同额反向自动合并", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${if (privacyEnabled) privacyFakeDateTime(2304) else formatTime(outItem.notification.postedAt)} · 同额反向自动合并", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(

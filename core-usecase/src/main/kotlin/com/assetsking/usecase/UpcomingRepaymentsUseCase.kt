@@ -13,6 +13,9 @@ data class UpcomingRepayment(
     val overdue: Boolean
 )
 
+internal fun sortUpcomingRepayments(items: List<UpcomingRepayment>): List<UpcomingRepayment> =
+    items.sortedWith(compareByDescending<UpcomingRepayment> { it.overdue }.thenBy { it.dueDateEpochDay })
+
 /**
  * 最近还款提醒（REQ 首页信息优先级§8/首页UI§6-7）：到期前 3 天进入窗口，逾期红显。
  * 只统计进行中计划里未还的期次；已还（PAID）不参与。
@@ -33,6 +36,6 @@ class UpcomingRepaymentsUseCase(private val repository: LedgerRepository) {
                     overdue = due < today
                 )
             }
-        }.sortedWith(compareBy({ it.overdue }, { it.dueDateEpochDay }))
+        }.let(::sortUpcomingRepayments)
     }
 }

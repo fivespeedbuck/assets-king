@@ -11,6 +11,7 @@ import com.assetsking.ledger.V5Metrics
 import com.assetsking.ledger.V5MonthFlow
 import com.assetsking.ledger.V5SettingsInput
 import com.assetsking.ledger.V5WindfallInput
+import com.assetsking.ledger.cardStatementCycle
 import com.assetsking.ledger.computeV5Metrics
 import com.assetsking.model.WindfallStatus
 import kotlinx.coroutines.delay
@@ -34,9 +35,11 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         repository.transactions,
         repository.transfers,
         repository.loanPlans,
-        repository.cardInstallments
-    ) { accounts, txs, transfers, plans, installments ->
-        Base(accounts, txs, transfers, plans, installments)
+        combine(repository.cardInstallments, repository.cardInstallmentSchedules) { installments, schedules ->
+            CardInstallmentBase(installments, schedules)
+        }
+    ) { accounts, txs, transfers, plans, cardInstallments ->
+        Base(accounts, txs, transfers, plans, cardInstallments.plans, cardInstallments.schedules)
     }.flatMapLatest { base ->
         combine(
             repository.windfalls,
@@ -46,11 +49,26 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         ) { windfalls, anchors, income, necessary ->
             Config(windfalls, anchors, income, necessary)
         }.flatMapLatest { cfg ->
-            combine(repository.optionalCategories, repository.budgets, dateTick()) { optionalCats, budgets, todayEpochDay ->
-                // 必要生活 = 当月分项预算之和（自动）；没设预算才回退手填值
+            combine(repository.optionalCategories, repository.budgets, repository.categories, dateTick()) { _, budgets, categories, todayEpochDay ->
+                val necessaryByCategory = buildMap<String, Boolean> {
+                    categories.filterNot { it.isArchived }.forEach { category ->
+                        category.defaultNecessary?.let { necessary ->
+                            put(category.id, necessary)
+                            put(category.name, necessary)
+                        }
+                    }
+                }
+                // 必要生活与首页/统计页一致：只汇总标记为必要的当月分项预算。
                 val ym = YearMonth.from(LocalDate.ofEpochDay(todayEpochDay)).toString()
-                val budgetSum = budgets.filter { it.month == ym }.sumOf { it.monthlyLimitCents }
-                build(base, cfg.copy(necessary = if (budgetSum > 0) budgetSum else cfg.necessary), optionalCats, todayEpochDay)
+                val budgetSum = budgets
+                    .filter { it.month == ym && necessaryByCategory[it.category] == true }
+                    .sumOf { it.monthlyLimitCents }
+                build(
+                    base,
+                    cfg.copy(necessary = if (budgetSum > 0) budgetSum else cfg.necessary),
+                    necessaryByCategory,
+                    todayEpochDay
+                )
             }
         }
     }
@@ -60,7 +78,13 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         val transactions: List<TransactionEntity>,
         val transfers: List<TransferEntity>,
         val plans: List<com.assetsking.database.LoanPlanEntity>,
-        val cardInstallments: List<com.assetsking.database.CreditCardInstallmentEntity>
+        val cardInstallments: List<com.assetsking.database.CreditCardInstallmentEntity>,
+        val cardInstallmentSchedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>
+    )
+
+    private data class CardInstallmentBase(
+        val plans: List<com.assetsking.database.CreditCardInstallmentEntity>,
+        val schedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>
     )
 
     private data class Config(
@@ -73,14 +97,14 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
     private fun build(
         base: Base,
         cfg: Config,
-        optionalCategories: Set<String>,
+        necessaryByCategory: Map<String, Boolean>,
         todayEpochDay: Long
     ): V5Metrics {
         val today = LocalDate.ofEpochDay(todayEpochDay)
         val ym = YearMonth.from(today)
         val (monthStart, monthEnd) = monthRange(ym)
 
-        val monthTxs = base.transactions.filter { it.occurredAt in monthStart..monthEnd }
+        val monthTxs = base.transactions.filter { it.status == "CONFIRMED" && it.occurredAt in monthStart..monthEnd }
         // 本月实际收入只统计已确认真实收入（REQ 收入§2/§5）：退款/报销到账/转账不进普通收入。
         // 退款冲减原消费分类由退款关联（M1.3）实现，不是把退款当收入。
         val incomeActual = monthTxs
@@ -92,25 +116,29 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
             .sumOf { it.amountCents }
         // 已发生的非必要消费（按设置勾选的分类）→ 占用自由消费、恶化实际缺口。
         // 已关联退款冲减原消费的必要性额度（REQ 待确认§8）：非必要消费退款 → 释放自由开销。
+        fun isOptional(transaction: TransactionEntity): Boolean =
+            transaction.necessity?.not()
+                ?: necessaryByCategory[transaction.category]?.not()
+                ?: true
         val rawOptionalSpent = monthTxs
-            .filter { it.type == "EXPENSE" && it.category in optionalCategories }
+            .filter { (it.type == "EXPENSE" || it.type == "FEE") && isOptional(it) }
             .sumOf { it.amountCents }
         val optionalRefundOffset = monthTxs
             .filter { it.type == "REFUND" && it.refundOfId != null }
             .sumOf { refund ->
                 monthTxs.firstOrNull {
-                    it.id == refund.refundOfId && it.type == "EXPENSE" && it.category in optionalCategories
+                    it.id == refund.refundOfId && (it.type == "EXPENSE" || it.type == "FEE") && isOptional(it)
                 }?.let { refund.amountCents } ?: 0L
             }
         // 报销到账也冲减自由开销（REQ 报销 §5）
         val optionalReimbursementOffset = monthTxs
-            .filter { it.type == "EXPENSE" && it.category in optionalCategories }
+            .filter { (it.type == "EXPENSE" || it.type == "FEE") && isOptional(it) }
             .sumOf { it.reimbursedCents }
         val optionalSpent = (rawOptionalSpent - optionalRefundOffset - optionalReimbursementOffset).coerceAtLeast(0L)
         // 今日已花（非必要）：对应首页「今日上限」，让用户一眼看到今天还差多少额度
         val todayStart = today.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
         val todayOptionalSpent = monthTxs
-            .filter { it.type == "EXPENSE" && it.category in optionalCategories && it.occurredAt >= todayStart }
+            .filter { (it.type == "EXPENSE" || it.type == "FEE") && isOptional(it) && it.occurredAt >= todayStart }
             .sumOf { it.amountCents }
 
         // 近 3 个月借款均值（清债模拟用；无借款则 0）
@@ -122,29 +150,88 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         }.let { if (it.sum() == 0L) 0L else (it.sum().toDouble() / 3.0).toLong() }
 
         // 方案A：录原始账单金额，已还按【账期窗口】扣减（statementDay 推导，无出账日回退自然月）
+        val activeAccountsById = base.accounts.filterNot { it.archived }.associateBy { it.id }
+        val validLoanPlans = base.plans.filter { plan ->
+            activeAccountsById[plan.accountId]?.type == "LOAN"
+        }
         val cardTransfers = base.accounts
             .filter { it.type == "CREDIT" && !it.archived }
             .mapNotNull { card ->
-                val (s, e) = statementCycle(card, today)
+                val cycle = cardStatementCycle(card.statementDay, today)
                 val transferred = base.transfers
-                    .filter { it.toAccountId == card.id && it.occurredAt in s..e }
+                    .filter {
+                        it.toAccountId == card.id &&
+                            activeAccountsById[it.fromAccountId]?.type == "ASSET" &&
+                            it.occurredAt in cycle.repaymentStartMillis until cycle.repaymentEndMillis
+                    }
                     .sumOf { it.amountCents }
                 if (transferred > 0) V5CardTransferInput(card.id, transferred) else null
             }
 
+        val statementConvertedByCard = base.accounts
+            .filter { it.type == "CREDIT" && !it.archived }
+            .associate { card ->
+                val cycleStartEpochDay = cardStatementCycle(card.statementDay, today).currentStatementEpochDay
+                card.id to base.cardInstallments
+                    .filter {
+                        it.cardAccountId == card.id &&
+                            it.installmentType == "STATEMENT_INSTALLMENT" &&
+                            it.statementCycleStartEpochDay == cycleStartEpochDay &&
+                            it.status != "CANCELLED"
+                    }
+                    .sumOf { it.originalPrincipalCents }
+            }
+
         val anchor = cfg.anchors.firstOrNull { it.yearMonth == ym.toString() }?.totalDebtCents
+
+        val activeCardPlans = base.cardInstallments
+            .filter { plan ->
+                plan.status == "ACTIVE" &&
+                    activeAccountsById[plan.cardAccountId]?.let { it.type == "CREDIT" && it.balanceCents > 0L } == true
+            }
+            .associateBy { it.id }
+        fun cardInstallmentDue(fromExclusive: Long?, throughInclusive: Long): Long =
+            base.cardInstallmentSchedules.sumOf { schedule ->
+                val plan = activeCardPlans[schedule.planId]
+                val eligible = plan != null &&
+                    schedule.revision == plan.scheduleRevision &&
+                    schedule.status == "UPCOMING" &&
+                    schedule.dueDateEpochDay <= throughInclusive &&
+                    (fromExclusive == null || schedule.dueDateEpochDay > fromExclusive)
+                if (!eligible) 0L else {
+                    val expected = schedule.principalDueCents + schedule.expectedInterestCents +
+                        schedule.expectedFeeCents + schedule.expectedUnclassifiedChargeCents
+                    val paid = schedule.principalPaidCents + schedule.interestPaidCents + schedule.feePaidCents
+                    (expected - paid).coerceAtLeast(0L)
+                }
+            }
+        val cardInstallmentMonthDue = cardInstallmentDue(null, ym.atEndOfMonth().toEpochDay())
+        val cardInstallmentDue7 = cardInstallmentDue(todayEpochDay - 1L, today.plusDays(7).toEpochDay())
+        val cardInstallmentDue30 = cardInstallmentDue(todayEpochDay - 1L, today.plusDays(30).toEpochDay())
 
         return computeV5Metrics(
             todayEpochDay = todayEpochDay,
             currentYearMonth = ym.toString(),
             accounts = base.accounts.filter { !it.archived }.map {
-                V5AccountInput(it.id, it.type, it.balanceCents, it.statementOriginalDueCents, it.pendingCents, it.statementDay, it.dueDay)
+                V5AccountInput(
+                    it.id,
+                    it.type,
+                    it.balanceCents,
+                    it.statementOriginalDueCents,
+                    it.pendingCents,
+                    it.statementDay,
+                    it.dueDay,
+                    statementConvertedByCard[it.id] ?: 0L
+                )
             },
-            plans = base.plans.map { repository.v5PlanInput(it) },
+            plans = validLoanPlans.map { repository.v5PlanInput(it) },
             // 审核 BUG-5 修复：过滤已归档卡账户的分期，与上方 accounts 的 !archived 口径一致，
             // 否则已归档卡的分期仍计入 cardInstallmentRemainingCents（展示口径不一致）。
             cardInstallments = base.cardInstallments
-                .filter { ci -> base.accounts.none { it.id == ci.cardAccountId && it.archived } }
+                .filter { ci ->
+                    ci.status == "ACTIVE" &&
+                        activeAccountsById[ci.cardAccountId]?.let { it.type == "CREDIT" && it.balanceCents > 0L } == true
+                }
                 .map {
                     V5CardInstallmentInput(it.cardAccountId, it.remainingPrincipalCents, it.monthlyPaymentCents, it.periodsRemaining)
                 },
@@ -165,22 +252,12 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
                 feeMonthCents = feeMonth,
                 newBorrowingCents = newBorrowing,
                 optionalSpentCents = optionalSpent,
-                todayOptionalSpentCents = todayOptionalSpent
+                todayOptionalSpentCents = todayOptionalSpent,
+                cardInstallmentDueCents = cardInstallmentMonthDue,
+                cardInstallmentDue7Cents = cardInstallmentDue7,
+                cardInstallmentDue30Cents = cardInstallmentDue30
             )
         )
-    }
-
-    /** 信用卡当前账单的还款窗口 [本出账日, 下次出账日)；无出账日回退自然月 */
-    private fun statementCycle(card: AccountEntity, today: LocalDate): Pair<Long, Long> {
-        val stmtDay = card.statementDay ?: return monthRange(YearMonth.from(today))
-        val zone = ZoneId.systemDefault()
-        fun at(day: LocalDate): Long = day.atStartOfDay(zone).toInstant().toEpochMilli()
-        val ym = YearMonth.from(today)
-        // 当前账单的出账日：本月出账日未到则属于上月的账单
-        val thisStmt = ym.atDay(stmtDay.coerceAtMost(ym.lengthOfMonth())).let { d ->
-            if (d.isAfter(today)) d.minusMonths(1) else d
-        }
-        return at(thisStmt) to at(thisStmt.plusMonths(1))
     }
 
     /** 每分钟发射一次当天日期：跨天后 dailySafeSpend 等自然刷新 */

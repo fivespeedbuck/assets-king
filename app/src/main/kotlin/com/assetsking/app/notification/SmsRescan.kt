@@ -1,6 +1,8 @@
 package com.assetsking.app.notification
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.Telephony
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RawNotificationEntity
@@ -8,6 +10,12 @@ import com.assetsking.ledger.SmsSenderWhitelist
 import com.assetsking.usecase.NotificationParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.core.content.ContextCompat
+
+fun hasSmsRecoveryPermissions(context: Context): Boolean =
+    listOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS).all { permission ->
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
 
 data class SmsRescanResult(
     val inserted: Int,

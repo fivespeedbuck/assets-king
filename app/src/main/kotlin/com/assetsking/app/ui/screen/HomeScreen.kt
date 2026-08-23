@@ -2,7 +2,12 @@ package com.assetsking.app.ui.screen
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,14 +27,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
+import com.assetsking.app.R
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CreditCardInstallmentEntity
@@ -43,7 +53,12 @@ import com.assetsking.ui.theme.AssetsKingTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
+fun HomeScreen(
+    model: LedgerViewModel,
+    repository: LedgerRepository,
+    privacyEnabled: Boolean,
+    onTogglePrivacy: () -> Unit
+) {
     val state by model.state.collectAsStateWithLifecycle()
     val budgets by model.budgets.collectAsStateWithLifecycle(initialValue = emptyList<BudgetEntity>())
     val loanPlans by model.loanPlans.collectAsStateWithLifecycle(initialValue = emptyList<LoanPlanEntity>())
@@ -51,13 +66,13 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     val categories by model.categories.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.CategoryEntity>())
     val merchants by model.merchants.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.MerchantEntity>())
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
-    val upcomingRepayments by model.upcomingRepayments.collectAsStateWithLifecycle(initialValue = emptyList())
-    val enabledModules by model.enabledModules.collectAsStateWithLifecycle(initialValue = emptySet<String>())
-    val moduleOrder by model.homeModuleOrder.collectAsStateWithLifecycle(initialValue = emptyList<String>())
     val freeSpendingCents by model.freeSpendingCents.collectAsStateWithLifecycle(initialValue = 50_000L)
-    val themeKey by model.themeKey.collectAsStateWithLifecycle(initialValue = null)
+    val customPaymentChannels by model.customPaymentChannels.collectAsStateWithLifecycle(initialValue = emptySet())
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
+    val cardInstallmentAllocations by model.cardInstallmentAllocations.collectAsStateWithLifecycle(initialValue = emptyList())
+    val cardInstallmentSchedules by model.cardInstallmentSchedules.collectAsStateWithLifecycle(initialValue = emptyList())
+    val cardInstallmentPaymentMatches by model.cardInstallmentPaymentMatches.collectAsStateWithLifecycle(initialValue = emptyList())
     val monthlyIncomeCents by model.monthlyIncomeCents.collectAsStateWithLifecycle(initialValue = 0L)
     val notificationSources by model.notificationSources.collectAsStateWithLifecycle(initialValue = emptyMap<String, String>())
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
@@ -76,6 +91,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var detailTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
+    var settingsAtRoot by remember { mutableStateOf(true) }
     // 只有“从页面内容进入另一个主区”的动作记录来源；用户直接点底部导航仍视为切换一级页面。
     // 这样统计下钻→查看流水、首页卡片→统计/贷款都能按返回手势回到来源页。
     var previousTab by remember { mutableStateOf<Int?>(null) }
@@ -83,6 +99,8 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     // 统计页下钻流水（REQ 统计§3/§7/§20）：月份+分类带进流水页筛选，消费一次后清空
     var txDrillMonth by remember { mutableStateOf<java.time.YearMonth?>(null) }
     var txDrillCategory by remember { mutableStateOf<String?>(null) }
+    var txDrillStart by remember { mutableStateOf<java.time.LocalDate?>(null) }
+    var txDrillEnd by remember { mutableStateOf<java.time.LocalDate?>(null) }
     val listenerStatus = rememberListenerStatus()
     val navSurface = MaterialTheme.colorScheme.surfaceContainer
     val navOutline = MaterialTheme.colorScheme.outlineVariant
@@ -183,7 +201,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         },
         floatingActionButton = {
             // 手动记账入口仅在流水页；贷款新增收进该页标题行，避免 FAB 遮挡长列表。
-            if (selectedTab == 2) {
+            if (selectedTab == 2 && !privacyEnabled) {
                 FloatingActionButton(
                     onClick = {
                         editorPendingItem = null
@@ -196,25 +214,32 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 ) { Icon(Icons.Filled.Add, contentDescription = "新增") }
             }
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = if (privacyEnabled) Color.Transparent else MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground
     ) { padding ->
         when (selectedTab) {
             0 -> HomeTab(
                 padding = padding, state = state, listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
-                context = context, model = model, repository = repository,
-                budgets = budgets, recurringRules = recurringRules,
-                upcomingRepayments = upcomingRepayments,
-                enabledModules = enabledModules,
-                moduleOrder = moduleOrder,
-                onShowPending = { showPendingBox = true },
+                context = context,
+                budgets = budgets, categories = categories, recurringRules = recurringRules,
+                loanPlans = loanPlans,
+                cardInstallments = cardInstallments,
+                cardInstallmentSchedules = cardInstallmentSchedules,
+                freeSpendingCents = freeSpendingCents,
+                privacyEnabled = privacyEnabled,
+                onTogglePrivacy = onTogglePrivacy,
+                onShowPending = {
+                    model.processNotifications()
+                    showPendingBox = true
+                },
                 onShowReconciliation = { showReconciliation = true },
                 onGotoStats = { openTabFromContent(1) },
                 onGotoLoans = { openTabFromContent(3) },
                 onGotoBills = { showBills = true },
                 onGotoReimbursement = { showReimbursement = true },
                 onEditAccount = { accountDetail = it },
-                onAddAccount = { addingAccountType = it }
+                onAddAccount = { if (!privacyEnabled) addingAccountType = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 StatsScreen(
@@ -234,27 +259,39 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                 TransactionsScreen(
                     state = state,
                     categories = categories,
+                    merchants = merchants,
                     model = model,
                     onOpenEditor = {
-                        editorPendingItem = null
-                        editingTransaction = null
-                        editorInitialLoanPlanId = null
-                        showEditor = true
-                    },
-                    onEditTransaction = { transaction ->
-                        val type = runCatching { com.assetsking.model.TransactionType.valueOf(transaction.type) }.getOrNull()
-                        if (type != null && isOrdinaryEditableTransaction(type)) {
+                        if (!privacyEnabled) {
                             editorPendingItem = null
-                            editingTransaction = transaction
+                            editingTransaction = null
                             editorInitialLoanPlanId = null
                             showEditor = true
-                        } else {
-                            detailTransaction = transaction
+                        }
+                    },
+                    onEditTransaction = { transaction ->
+                        if (!privacyEnabled) {
+                            val type = runCatching { com.assetsking.model.TransactionType.valueOf(transaction.type) }.getOrNull()
+                            if (type != null && isOrdinaryEditableTransaction(type)) {
+                                editorPendingItem = null
+                                editingTransaction = transaction
+                                editorInitialLoanPlanId = null
+                                showEditor = true
+                            } else {
+                                detailTransaction = transaction
+                            }
                         }
                     },
                     initialFilterMonth = txDrillMonth,
                     initialFilterCategory = txDrillCategory,
-                    onDrillConsumed = { txDrillMonth = null; txDrillCategory = null }
+                    initialFilterStart = txDrillStart,
+                    initialFilterEnd = txDrillEnd,
+                    onDrillConsumed = {
+                        txDrillMonth = null
+                        txDrillCategory = null
+                        txDrillStart = null
+                        txDrillEnd = null
+                    }
                 )
             }
             3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -262,61 +299,95 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
                     plans = loanPlans, accounts = state.accounts,
                     onSave = { model.saveLoanPlan(it) },
                     onDelete = { model.deleteLoanPlan(it) },
+                    onAddLoanAccount = { if (!privacyEnabled) addingAccountType = AccountType.LOAN },
                     v5 = state.v5,
                     cardInstallments = cardInstallments,
-                    onSaveInstallment = { model.saveCardInstallment(it) },
-                    onDeleteInstallment = { model.deleteCardInstallment(it) },
+                    cardInstallmentAllocations = cardInstallmentAllocations,
+                    cardInstallmentSchedules = cardInstallmentSchedules,
+                    cardInstallmentPaymentMatches = cardInstallmentPaymentMatches,
+                    transfers = state.transfers,
+                    onCreateInstallment = { draft, callback -> model.createCardInstallment(draft, callback) },
+                    onAdjustInstallment = { id, terms, callback -> model.adjustCardInstallment(id, terms, callback) },
+                    onCancelInstallment = { id, callback -> model.cancelCardInstallment(id, callback) },
+                    onConfirmInstallmentPayment = { transferId, scheduleId, principalCents, callback ->
+                        model.confirmCardInstallmentPaymentMatch(transferId, scheduleId, principalCents, callback)
+                    },
+                    onOpenCreditAccount = { account -> if (!privacyEnabled) accountDetail = account },
                     transactions = state.transactions,
                     onRecordPayment = { plan ->
-                        editorPendingItem = null
-                        editingTransaction = null
-                        editorInitialLoanPlanId = plan.id
-                        showEditor = true
+                        if (!privacyEnabled) {
+                            editorPendingItem = null
+                            editingTransaction = null
+                            editorInitialLoanPlanId = plan.id
+                            showEditor = true
+                        }
                     },
-                    onPrepay = { cashId, planId, principalCents, note ->
-                        model.addLoanPrepayment(cashId, planId, principalCents, note)
+                    onPrepay = { cashId, planId, principalCents, feeCents, note ->
+                        model.addLoanPrepayment(cashId, planId, principalCents, feeCents, note)
                     },
                     onSettle = { cashId, planId, principalCents, interestCents, feeCents, note ->
                         model.settleLoanPlan(cashId, planId, principalCents, interestCents, feeCents, note)
                     },
-                    onUpdateInstallment = { planId, number, p, i, f, st ->
-                        model.updateLoanInstallment(planId, number, p, i, f, st)
+                    onUpdateInstallment = { planId, number, dueDay, p, i, f, st ->
+                        model.updateLoanInstallment(planId, number, dueDay, p, i, f, st)
                     }
                 )
             }
             4 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 SettingsScreen(
-                    budgets = budgets, repository = repository,
-                    recurringRules = recurringRules, accounts = state.accounts,
+                    budgets = budgets,
                     categories = categories,
+                    repository = repository,
+                    accounts = state.accounts,
                     onSaveBudget = { model.saveBudget(it) },
                     onDeleteBudget = { model.deleteBudget(it) },
-                    onSaveRecurring = { model.saveRecurringRule(it) },
-                    onDeleteRecurring = { model.deleteRecurringRule(it) },
-                    onAddCategory = model::addCategoryEntity,
-                    onUpdateCategory = model::updateCategoryEntity,
-                    onArchiveOrDeleteCategory = model::archiveOrDeleteCategory,
-                    onMergeCategory = model::mergeCategoryEntity,
                     monthlyIncomeCents = monthlyIncomeCents,
                     onSetMonthlyIncome = { model.setMonthlyIncomeCents(it) },
                     listenerStatus = listenerStatus,
+                    lastReceivedAt = lastReceivedAt,
                     notificationSources = notificationSources,
                     notificationWhitelist = notificationWhitelist,
                     onSetNotificationWhitelist = { model.setNotificationWhitelist(it) },
                     smsSenderWhitelist = smsSenderWhitelist,
                     onSetSmsSenderWhitelist = { model.setSmsSenderWhitelist(it) },
-                    windfalls = windfalls,
-                    currentTotalDebtCents = state.v5?.totalDebtCents ?: 0L,
-                    onSaveWindfall = { model.saveWindfall(it) },
-                    onDeleteWindfall = { model.deleteWindfall(it) },
-                    onMarkWindfallReceived = { id, actualCents, cashAccountId ->
-                        model.markWindfallReceived(id, actualCents, cashAccountId)
-                    },
                     freeSpendingCents = freeSpendingCents,
                     onSetFreeSpending = { model.setFreeSpendingCents(it) },
-                    themeKey = themeKey,
-                    onSetTheme = { model.setThemeKey(it) }
+                    onRootStateChanged = { settingsAtRoot = it }
                 )
+                if (settingsAtRoot && privacyEnabled) {
+                    // 不再叠加第二枚小徽记；透明点击区覆盖隐秘背景原有的大徽记。
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(0.90f)
+                            .aspectRatio(1f)
+                            .padding(bottom = 96.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onTogglePrivacy
+                            )
+                    )
+                } else if (settingsAtRoot) {
+                    // 非隐秘设置页复用同一枚大徽记：低透明紫色背景，同时作为进入入口。
+                    Image(
+                        painter = painterResource(R.drawable.ic_privacy_emblem_fog),
+                        contentDescription = "进入隐秘模式",
+                        contentScale = ContentScale.Fit,
+                        colorFilter = ColorFilter.tint(Color(0xFF7257B6)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(0.90f)
+                            .aspectRatio(1f)
+                            .padding(bottom = 96.dp)
+                            .graphicsLayer { alpha = 0.10f }
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = onTogglePrivacy
+                            )
+                    )
+                }
             }
         }
     }
@@ -340,6 +411,14 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             pendingItems = state.pendingItems,
             accounts = state.accounts,
             viewModel = model,
+            onOpenTransaction = { transaction ->
+                if (!privacyEnabled) {
+                    editorPendingItem = null
+                    editingTransaction = transaction
+                    editorInitialLoanPlanId = null
+                    showEditor = true
+                }
+            },
             onBack = { showBills = false }
         )
     }
@@ -347,7 +426,15 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
     // 报销栏目（REQ 报销§2/§6）：首页待报销模块点击进完整列表
     if (showReimbursement) {
         ReimbursementScreen(
-            reimbursableTxs = state.transactions.filter { it.isReimbursable },
+            transactions = state.transactions,
+            onOpenTransaction = { transaction ->
+                if (!privacyEnabled) {
+                    editorPendingItem = null
+                    editingTransaction = transaction
+                    editorInitialLoanPlanId = null
+                    showEditor = true
+                }
+            },
             onBack = { showReimbursement = false }
         )
     }
@@ -361,17 +448,19 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             lastReceivedAt = lastReceivedAt,
             listenerStatus = listenerStatus,
             onOpenEditor = { item ->
-                editorPendingItem = item
-                editingTransaction = null
-                editorInitialLoanPlanId = null
-                showEditor = true
+                if (!privacyEnabled) {
+                    editorPendingItem = item
+                    editingTransaction = null
+                    editorInitialLoanPlanId = null
+                    showEditor = true
+                }
             },
             onBack = { showPendingBox = false }
         )
     }
 
     // 统一编辑器（M4）：手动记账与待确认复用，覆盖在最上层
-    if (showEditor) {
+    if (showEditor && !privacyEnabled) {
         TransactionEditorScreen(
             pendingItem = editorPendingItem,
             editingTransaction = editingTransaction,
@@ -381,8 +470,9 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
             merchants = merchants,
             loanPlans = loanPlans,
             transactions = state.transactions,
-            reimbursableTxs = reimbursable,
+            reimbursableTxs = outstandingReimbursements(reimbursable),
             merchantLastAccount = state.merchantLastAccount,
+            savedPaymentChannels = customPaymentChannels,
             ignoredItems = state.ignoredItems,
             viewModel = model,
             repository = repository,
@@ -401,7 +491,7 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         )
     }
 
-    editingAccount?.let { account ->
+    if (!privacyEnabled) editingAccount?.let { account ->
         EditAccountSheet(
             account = account,
             onSave = {
@@ -423,13 +513,17 @@ fun HomeScreen(model: LedgerViewModel, repository: LedgerRepository) {
         AccountDetailScreen(
             account = account,
             viewModel = model,
-            onEdit = { editingAccount = account },
-            onReconcile = { showReconciliation = true },
+            transactions = state.transactions,
+            statementRemainingCents = state.v5?.cardRemainingDueByCard?.get(account.id)
+                ?: account.statementOriginalDueCents,
+            onOpenTransaction = { transaction -> if (!privacyEnabled) detailTransaction = transaction },
+            onEdit = { if (!privacyEnabled) editingAccount = account },
+            onReconcile = { if (!privacyEnabled) showReconciliation = true },
             onBack = { accountDetail = null }
         )
     }
 
-    detailTransaction?.let { tx ->
+    if (!privacyEnabled) detailTransaction?.let { tx ->
         ManagedTransactionDetailSheet(
             transaction = tx,
             accountName = state.accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty(),

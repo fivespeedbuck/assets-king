@@ -4,6 +4,7 @@ import com.assetsking.database.LedgerRepository
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.TransactionCategory
+import com.assetsking.model.AccountType
 import kotlinx.coroutines.flow.first
 
 /**
@@ -30,15 +31,92 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         val seen = repository.pendingNotifications.first().toMutableList()
         val linked = repository.linkedNotifications.first()
         val ignored = repository.ignoredNotifications.first()
+        val statementEvidence = mutableListOf<RawNotificationEntity>()
+        val accounts = repository.accounts.first().toMutableList()
 
         var processed = 0
         for (notification in newNotifications) {
-            val parsed = NotificationParser.parse(notification.content, notification.title)
+            val creditStatement = CreditStatementNotificationParser.parse(
+                notification.content,
+                notification.title
+            )
+            if (creditStatement != null) {
+                val duplicateStatement = (seen + linked + ignored + statementEvidence).firstOrNull { other ->
+                    other.id != notification.id &&
+                        NotificationMerge.isSameEvidence(
+                            notification.packageName,
+                            notification.id,
+                            notification.contentFingerprint,
+                            notification.postedAt,
+                            other.packageName,
+                            other.id,
+                            other.contentFingerprint,
+                            other.postedAt
+                        )
+                }
+                if (duplicateStatement != null) {
+                    repository.updateNotificationStatus(notification.id, "IGNORED")
+                    repository.updateNotificationNote(
+                        notification.id,
+                        "与已处理账单证据内容相同 kept=${duplicateStatement.id}"
+                    )
+                    continue
+                }
+
+                val matchedAccounts = accounts.filter {
+                    it.type == AccountType.CREDIT.name && it.cardTail == creditStatement.cardTail
+                }
+                if (matchedAccounts.size == 1) {
+                    val account = matchedAccounts.single()
+                    val updated = account.copy(
+                        statementOriginalDueCents = creditStatement.statementAmountCents,
+                        dueDay = creditStatement.dueDay
+                    )
+                    repository.updateAccount(updated)
+                    accounts[accounts.indexOf(account)] = updated
+                    repository.updateNotificationStatus(notification.id, "IGNORED")
+                    repository.updateNotificationNote(
+                        notification.id,
+                        "已同步${account.name}本期账单金额与还款日；未生成流水"
+                    )
+                } else {
+                    repository.updateNotificationStatus(notification.id, "IGNORED")
+                    repository.updateNotificationNote(
+                        notification.id,
+                        "识别到信用卡账单，但未找到唯一尾号${creditStatement.cardTail}信用账户；未更新"
+                    )
+                }
+                statementEvidence += notification
+                continue
+            }
+
+            var parsed = NotificationParser.parse(notification.content, notification.title)
 
             if (parsed.amountCents == null) {
-                repository.updateNotificationStatus(notification.id, "IGNORED")
-                repository.updateNotificationNote(notification.id, "无法识别金额")
-                continue
+                val raw = notification.toWechatEvidence()
+                val inferredRefund = WechatNotificationEvidence.matchAmountlessRefund(
+                    raw,
+                    seen.map { it.toWechatEvidence() }
+                )
+                when {
+                    inferredRefund != null -> parsed = parsed.copy(
+                        amountCents = inferredRefund.amountCents,
+                        isExpense = false,
+                        isRefund = true
+                    )
+                    WechatNotificationEvidence.shouldKeepAmountless(raw) -> {
+                        repository.updateNotificationStatus(notification.id, "PENDING_CONFIRMATION")
+                        repository.updateNotificationNote(notification.id, "官方通知未提供金额，请补充后确认")
+                        seen += notification
+                        processed++
+                        continue
+                    }
+                    else -> {
+                        repository.updateNotificationStatus(notification.id, "IGNORED")
+                        repository.updateNotificationNote(notification.id, "无法识别金额")
+                        continue
+                    }
+                }
             }
 
             // ── 内容指纹（REQ 监听 §12）：同一条证据以不同 id 重生 ──
@@ -48,7 +126,16 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             val fp = notification.contentFingerprint
             val sameEvidence = (seen + linked + ignored).firstOrNull { other ->
                 other.id != notification.id &&
-                    NotificationMerge.isSameEvidence(fp, notification.postedAt, other.contentFingerprint, other.postedAt)
+                    NotificationMerge.isSameEvidence(
+                        notification.packageName,
+                        notification.id,
+                        fp,
+                        notification.postedAt,
+                        other.packageName,
+                        other.id,
+                        other.contentFingerprint,
+                        other.postedAt
+                    )
             }
             if (sameEvidence != null) {
                 repository.updateNotificationStatus(notification.id, "IGNORED")
@@ -59,9 +146,9 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
             // ── 迟到重复：已确认（LINKED）的同笔通知，不能再生成第二笔账（REQ §81）──
             val confirmedDup = linked.firstOrNull { other ->
-                NotificationMerge.isDuplicate(
-                    parsed, notification.postedAt,
-                    NotificationParser.parse(other.content, other.title), other.postedAt
+                NotificationMerge.isDuplicateAcrossSources(
+                    notification.packageName, parsed, notification.postedAt,
+                    other.packageName, NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (confirmedDup != null) {
@@ -81,9 +168,9 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             // 通知原文里没有任何能区分它们的信息，只能这么取舍：宁可漏记，不要虚增。
             val duplicate = seen.firstOrNull { other ->
                 if (other.id == notification.id) return@firstOrNull false
-                NotificationMerge.isDuplicate(
-                    parsed, notification.postedAt,
-                    NotificationParser.parse(other.content, other.title), other.postedAt
+                NotificationMerge.isDuplicateAcrossSources(
+                    notification.packageName, parsed, notification.postedAt,
+                    other.packageName, NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (duplicate != null) {
@@ -101,9 +188,9 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
             // ── 已忽略判重：用户忽略过的同笔交易，换一个来源再推也不复活 ──
             val ignoredDup = ignored.firstOrNull { other ->
-                NotificationMerge.isDuplicate(
-                    parsed, notification.postedAt,
-                    NotificationParser.parse(other.content, other.title), other.postedAt
+                NotificationMerge.isDuplicateAcrossSources(
+                    notification.packageName, parsed, notification.postedAt,
+                    other.packageName, NotificationParser.parse(other.content, other.title), other.postedAt
                 )
             }
             if (ignoredDup != null) {
@@ -151,6 +238,14 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
     private fun parseMerchant(entity: RawNotificationEntity): String? =
         NotificationParser.parse(entity.content, entity.title).merchant
+
+    private fun RawNotificationEntity.toWechatEvidence() = WechatNotificationEvidence.Raw(
+        id = id,
+        packageName = packageName,
+        title = title,
+        content = content,
+        postedAt = postedAt
+    )
 
     // ponytail: 只跟「待确认 + 已确认 + 已忽略」比，不查已入账的历史流水。跨批次的迟到通知
     // （信用卡退款 1-3 个工作日才到）碰不上对冲，会如实记成一笔退款 —— 那也没错。

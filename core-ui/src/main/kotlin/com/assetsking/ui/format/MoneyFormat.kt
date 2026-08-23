@@ -11,15 +11,18 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import com.assetsking.ui.privacy.PrivacyMode
 import java.text.NumberFormat
 import java.util.Locale
 
 private val currencyFormat = NumberFormat.getCurrencyInstance(Locale.CHINA)
 
-fun formatMoney(cents: Long): String = currencyFormat.format(cents / 100.0)
+fun formatMoney(cents: Long): String =
+    if (PrivacyMode.enabled) PrivacyMode.maskedAmount() else currencyFormat.format(cents / 100.0)
 
 /** 效果图口径：整元省略 .00，有角分时固定两位。 */
 fun formatMoneyCompact(cents: Long): String {
+    if (PrivacyMode.enabled) return PrivacyMode.maskedAmount()
     val (intPart, decPart) = splitMoney(cents)
     val sign = if (cents < 0) "−" else ""
     return buildString {
@@ -32,6 +35,7 @@ fun formatMoneyCompact(cents: Long): String {
 
 /** 单一入口生成带方向的金额，避免调用方手写“−¥”后再拼一个自带 ¥ 的金额。 */
 fun formatSignedMoney(cents: Long, positive: Boolean?): String {
+    if (PrivacyMode.enabled) return PrivacyMode.maskedAmount()
     val unsigned = formatMoneyCompact(kotlin.math.abs(cents)).removePrefix("−")
     return when (positive) {
         true -> "+$unsigned"
@@ -42,6 +46,7 @@ fun formatSignedMoney(cents: Long, positive: Boolean?): String {
 
 /** 月历每日净变化：小额保留角分，长金额按千/万缩写，确保 7 列窄单元格不裁切。 */
 fun formatDailyNetChange(cents: Long): String {
+    if (PrivacyMode.enabled) return PrivacyMode.maskedAmount()
     if (cents == 0L) return ""
     val absolute = kotlin.math.abs(cents)
     val unsigned = when {
@@ -87,6 +92,19 @@ fun BigMoney(
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.headlineMedium
 ) {
+    if (PrivacyMode.enabled) {
+        Text(
+            text = PrivacyMode.maskedAmount(),
+            modifier = modifier,
+            style = style,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip
+        )
+        return
+    }
     val (intPart, decPart) = splitMoney(cents)
     val sign = if (cents < 0) "-" else ""
     val amount = buildAnnotatedString {

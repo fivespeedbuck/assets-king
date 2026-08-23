@@ -6,7 +6,8 @@ import androidx.work.WorkerParameters
 import kotlinx.coroutines.runBlocking
 
 /**
- * 每周自动备份（REQ 备份§2-3）：保留最近 13 份（约三个月），手动备份永不自动删除。
+ * 每日自动备份（REQ 设置§14）：每日最多一份，保留最近 7 份日备份和 3 份月备份；
+ * 手动备份永不自动删除。
  * 备份密码未设置时跳过（备份只属于主动开启备份的用户）。
  */
 class BackupWorker(context: Context, params: WorkerParameters) : Worker(context, params) {

@@ -18,7 +18,8 @@ data class CategorySlice(
 data class MonthlyBar(
     val month: String,     // "2026-08"
     val incomeCents: Long,
-    val expenseCents: Long
+    val expenseCents: Long,
+    val repaymentCents: Long
 )
 
 data class YearlyBar(
@@ -75,6 +76,7 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
 
         // 最近12个月
         val monthlyBars = mutableListOf<MonthlyBar>()
+        val accounts = repository.accountsSnapshot()
         val fmt = SimpleDateFormat("yyyy-MM", Locale.getDefault())
         cal.time = Date(now)
         for (i in 11 downTo 0) {
@@ -90,22 +92,17 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
             val end = cal.timeInMillis
             val monthLabel = fmt.format(Date(start))
             val txs = repository.transactionsInRange(start, end)
-            // 支出 = 支出流水 − 已关联退款 − 已报销覆盖（退款不计收入 REQ 收入§5；报销到账冲减 REQ 报销§5）
-            // 审核 BUG-7 修复：退款冲减需校验原消费在本月窗口内（与上方 categorySlices 口径一致），
-            // 否则跨月退款会把本月支出冲成虚低，导致环形图与趋势图数字不一致。
-            val txIds = txs.mapTo(HashSet()) { it.id }
-            val refundOffset = txs
-                .filter { it.type == TransactionType.REFUND.name && it.refundOfId != null && it.refundOfId in txIds }
-                .sumOf { it.amountCents }
-            val reimbursementOffset = txs
-                .filter { it.type == TransactionType.EXPENSE.name }
-                .sumOf { it.reimbursedCents }
+            val cashFlow = cashFlowSummary(
+                transactions = txs,
+                transfers = repository.transfersInRange(start, end),
+                accounts = accounts
+            )
             monthlyBars.add(
                 MonthlyBar(
                     month = monthLabel,
-                    incomeCents = txs.filter { it.type in incomeTypes }.sumOf { it.amountCents },
-                    expenseCents = (txs.filter { it.type in expenseTypes }.sumOf { it.amountCents }
-                        - refundOffset - reimbursementOffset).coerceAtLeast(0L)
+                    incomeCents = cashFlow.incomeCents,
+                    expenseCents = cashFlow.expenseCents,
+                    repaymentCents = cashFlow.repaymentCents
                 )
             )
         }
@@ -124,9 +121,4 @@ class GetStatsUseCase(private val repository: LedgerRepository) {
         return StatsData(categorySlices, monthlyBars, yearlyBars)
     }
 
-    companion object {
-        // REFUND 不进普通收入（REQ 收入§5）：冲减原消费分类，见上方 refundOffset
-        private val incomeTypes = setOf(TransactionType.INCOME.name)
-        private val expenseTypes = setOf(TransactionType.EXPENSE.name, TransactionType.FEE.name)
-    }
 }

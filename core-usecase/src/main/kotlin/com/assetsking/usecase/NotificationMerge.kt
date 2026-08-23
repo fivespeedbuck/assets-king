@@ -30,15 +30,50 @@ object NotificationMerge {
     fun isSameEvidence(aFp: String, aAt: Long, bFp: String, bAt: Long): Boolean =
         aFp.isNotBlank() && aFp == bFp && abs(aAt - bAt) < DEDUP_WINDOW_MS
 
+    /**
+     * 同一 App 的系统通知 key 不同，表示两次独立发布；即使文案和金额完全相同也不能吞。
+     * 同 key 仅 postTime 变化才是系统补推/更新。不同来源（短信直收 vs 通知镜像）仍按指纹合并。
+     */
+    fun isSameEvidence(
+        aPackage: String,
+        aId: String,
+        aFp: String,
+        aAt: Long,
+        bPackage: String,
+        bId: String,
+        bFp: String,
+        bAt: Long
+    ): Boolean {
+        if (!isSameEvidence(aFp, aAt, bFp, bAt)) return false
+        if (aPackage != bPackage) return true
+        val aKey = notificationKey(aId)
+        val bKey = notificationKey(bId)
+        return aKey == null || bKey == null || aKey == bKey
+    }
+
     /** 同一笔证据被多个 app 各推一条。 */
     fun isDuplicate(a: ParsedNotification, aAt: Long, b: ParsedNotification, bAt: Long): Boolean {
         if (a.amountCents == null || b.amountCents == null) return false
         if (a.amountCents != b.amountCents) return false
         if (a.isExpense == null || a.isExpense != b.isExpense) return false
         if (abs(aAt - bAt) >= DEDUP_WINDOW_MS) return false
+        // 两张不同银行卡在几秒内恰好发生同额交易，仍是两笔真钱。
+        // 真机样本：招商 3683 充值微信零钱 5 元、宁波 3721 充值支付宝 5 元，
+        // 旧逻辑只看同额/同向/时间接近，错误吞掉了其中一笔。
+        if (a.cardTail != null && b.cardTail != null && a.cardTail != b.cardTail) return false
         // 商户一方为空就不冲突；两条都带且不同，才是两笔真消费
         return a.merchant == null || b.merchant == null || a.merchant == b.merchant
     }
+
+    /** 金额/方向判重只用于跨来源证据；同一 App 的两次发布先视为两笔真实事件。 */
+    fun isDuplicateAcrossSources(
+        aPackage: String,
+        a: ParsedNotification,
+        aAt: Long,
+        bPackage: String,
+        b: ParsedNotification,
+        bAt: Long
+    ): Boolean = aPackage != bPackage && isDuplicate(a, aAt, b, bAt)
 
     /** 退款对冲：同额 + 反向 + 24h 内，且其中一方带退款字样。净额为零才抵消。 */
     fun isRefundOffset(a: ParsedNotification, aAt: Long, b: ParsedNotification, bAt: Long): Boolean {
@@ -48,5 +83,11 @@ object NotificationMerge {
         if (a.isExpense == b.isExpense) return false
         if (abs(aAt - bAt) >= OFFSET_WINDOW_MS) return false
         return a.isRefund || b.isRefund
+    }
+
+    private fun notificationKey(id: String): String? {
+        val separator = id.lastIndexOf(':')
+        if (separator <= 0 || id.substring(separator + 1).toLongOrNull() == null) return null
+        return id.substring(0, separator)
     }
 }

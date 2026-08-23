@@ -3,6 +3,7 @@ package com.assetsking.app
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.LoanPlanEntity
@@ -26,6 +27,9 @@ import com.assetsking.usecase.SeedAccountsUseCase
 import com.assetsking.usecase.UpdateCategoryUseCase
 import com.assetsking.usecase.UpcomingRepayment
 import com.assetsking.usecase.UpcomingRepaymentsUseCase
+import com.assetsking.ui.privacy.PrivacyMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +39,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.launch as coroutineLaunch
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -66,6 +70,8 @@ data class LedgerUiState(
     val ignoredItems: List<RawNotificationEntity> = emptyList()
 )
 
+internal fun privacyDataWritesAllowed(): Boolean = !PrivacyMode.enabled
+
 class LedgerViewModel(
     private val seedAccounts: SeedAccountsUseCase,
     private val recordTransaction: RecordTransactionUseCase,
@@ -76,6 +82,14 @@ class LedgerViewModel(
     private val processPending: ProcessPendingUseCase,
     private val repository: com.assetsking.database.LedgerRepository
 ) : ViewModel() {
+    /** UI 发起的所有写操作统一经过这里；隐秘模式只读，系统监听仍可直接在仓储层入库。 */
+    private fun CoroutineScope.launch(block: suspend CoroutineScope.() -> Unit): Job {
+        if (!privacyDataWritesAllowed()) {
+            return Job().also { it.complete() }
+        }
+        return this.coroutineLaunch(block = block)
+    }
+
     // V5 指标在 ViewModel 里算（一个 Flow 发射 → 一套新数字），严禁在 Composable 内现算
     val state = combine(
         repository.accounts,
@@ -113,6 +127,12 @@ class LedgerViewModel(
     val recurringRules: Flow<List<RecurringRuleEntity>> = repository.recurringRules
     val snapshots: Flow<List<SnapshotEntity>> = repository.snapshots
     val cardInstallments: Flow<List<com.assetsking.database.CreditCardInstallmentEntity>> = repository.cardInstallments
+    val cardInstallmentAllocations: Flow<List<com.assetsking.database.CreditCardInstallmentAllocationEntity>> =
+        repository.cardInstallmentAllocations
+    val cardInstallmentSchedules: Flow<List<com.assetsking.database.CreditCardInstallmentScheduleEntity>> =
+        repository.cardInstallmentSchedules
+    val cardInstallmentPaymentMatches: Flow<List<com.assetsking.database.CreditCardInstallmentPaymentMatchEntity>> =
+        repository.cardInstallmentPaymentMatches
     val windfalls: Flow<List<com.assetsking.database.WindfallEntity>> = repository.windfalls
     /** 一级/二级分类库（REQ 初始分类库） */
     val categories: Flow<List<com.assetsking.database.CategoryEntity>> = repository.categories
@@ -124,8 +144,15 @@ class LedgerViewModel(
     val enabledModules: Flow<Set<String>> = repository.enabledModules
     /** 自由开销额度（REQ 统计§12，初始 500 元/月） */
     val freeSpendingCents: Flow<Long> = repository.freeSpendingCents
+    val customPaymentChannels: Flow<Set<String>> = repository.customPaymentChannels
+
+    fun rememberPaymentChannel(channel: String) {
+        if (!privacyDataWritesAllowed()) return
+        repository.rememberPaymentChannel(channel)
+    }
 
     fun setFreeSpendingCents(cents: Long) {
+        if (!privacyDataWritesAllowed()) return
         repository.setFreeSpendingCents(cents)
     }
 
@@ -133,16 +160,19 @@ class LedgerViewModel(
     val themeKey: Flow<String?> = repository.themeKey
 
     fun setThemeKey(key: String) {
+        if (!privacyDataWritesAllowed()) return
         repository.setThemeKey(key)
     }
 
     fun setHomeModules(enabled: Set<String>) {
+        if (!privacyDataWritesAllowed()) return
         repository.setHomeModules(enabled)
     }
 
     val homeModuleOrder: Flow<List<String>> = repository.moduleOrder
 
     fun reorderHomeModules(ordered: List<String>) {
+        if (!privacyDataWritesAllowed()) return
         repository.reorderHomeModules(ordered)
     }
 
@@ -156,7 +186,7 @@ class LedgerViewModel(
 
     init {
         // 首次启动播种分类库；账户种子由既有流程负责，不动
-        viewModelScope.launch { repository.seedDefaultCategoriesIfEmpty() }
+        viewModelScope.coroutineLaunch { repository.seedDefaultCategoriesIfEmpty() }
     }
     val monthlyIncomeCents: Flow<Long> = repository.monthlyIncomeCents
     /** 自动发现的通知来源：包名 → 应用名 */
@@ -204,10 +234,14 @@ class LedgerViewModel(
     fun updateTransaction(
         id: String, amountCents: Long, type: TransactionType,
         category: String, merchant: String?, note: String?,
-        accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?
+        accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?,
+        isReimbursable: Boolean
     ) {
-        viewModelScope.launch {
-            repository.updateTransaction(id, amountCents, type, category, merchant, note, accountId, occurredAt, necessity, channel)
+        viewModelScope.coroutineLaunch {
+            repository.updateTransaction(
+                id, amountCents, type, category, merchant, note,
+                accountId, occurredAt, necessity, channel, isReimbursable
+            )
         }
     }
 
@@ -297,36 +331,99 @@ class LedgerViewModel(
         viewModelScope.launch { repository.markWindfallReceived(id, actualCents, cashAccountId) }
     }
 
-    fun saveCardInstallment(installment: com.assetsking.database.CreditCardInstallmentEntity) {
-        viewModelScope.launch { repository.saveCardInstallment(installment) }
+    fun createCardInstallment(
+        draft: com.assetsking.database.CreditCardInstallmentDraft,
+        onResult: (Result<String>) -> Unit = {}
+    ) {
+        viewModelScope.launch { onResult(runCatching { repository.createCardInstallment(draft) }) }
     }
 
-    fun deleteCardInstallment(id: String) {
-        viewModelScope.launch { repository.deleteCardInstallment(id) }
+    fun adjustCardInstallment(
+        id: String,
+        terms: com.assetsking.database.CreditCardInstallmentTerms,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.launch { onResult(runCatching { repository.adjustCardInstallmentTerms(id, terms) }) }
+    }
+
+    fun cancelCardInstallment(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        viewModelScope.launch { onResult(runCatching { repository.deleteCardInstallment(id) }) }
+    }
+
+    fun confirmCardInstallmentPaymentMatch(
+        transferId: String,
+        scheduleId: String,
+        principalCents: Long,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            onResult(runCatching {
+                repository.confirmCardInstallmentPaymentMatch(transferId, scheduleId, principalCents)
+            })
+        }
+    }
+
+    fun confirmLoanPaymentNotification(
+        notificationId: String,
+        accountId: String,
+        planId: String,
+        totalCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        feeCents: Long,
+        note: String?,
+        bankBalanceCents: Long?,
+        bankCardTail: String?
+    ) {
+        viewModelScope.launch {
+            repository.confirmLoanPaymentNotification(
+                notificationId = notificationId,
+                cashAccountId = accountId,
+                planId = planId,
+                totalCents = totalCents,
+                principalCents = principalCents,
+                interestCents = interestCents,
+                feeCents = feeCents,
+                note = note,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
+        }
     }
 
     fun setMonthlyIncomeCents(cents: Long) {
+        if (!privacyDataWritesAllowed()) return
         repository.setMonthlyIncomeCents(cents)
     }
 
     fun setOptionalCategories(categories: Set<String>) {
+        if (!privacyDataWritesAllowed()) return
         repository.setOptionalCategories(categories)
     }
 
     /** 通知来源开关：只有白名单里的 app 会被读取入库 */
     fun setNotificationWhitelist(packages: Set<String>) {
+        if (!privacyDataWritesAllowed()) return
         repository.setNotificationWhitelist(packages)
     }
 
     /** 银行短信发送方白名单：实时接收与历史补扫共用。 */
     fun setSmsSenderWhitelist(senders: Set<String>) {
+        if (!privacyDataWritesAllowed()) return
         repository.setSmsSenderWhitelist(senders)
     }
 
-    /** 提前还款：只减本金、不当消费、不标普通期次（铁律 3） */
-    fun addLoanPrepayment(cashAccountId: String, planId: String, principalCents: Long, note: String?, occurredAt: Long = System.currentTimeMillis()) {
+    /** 提前还款：本金减余额，手续费仅计入本次实际现金流，不标普通期次（铁律 3） */
+    fun addLoanPrepayment(
+        cashAccountId: String,
+        planId: String,
+        principalCents: Long,
+        feeCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis()
+    ) {
         viewModelScope.launch {
-            repository.addLoanPrepayment(cashAccountId, planId, principalCents, note, occurredAt)
+            repository.addLoanPrepayment(cashAccountId, planId, principalCents, note, occurredAt, feeCents)
         }
     }
 
@@ -367,11 +464,26 @@ class LedgerViewModel(
     fun saveReimbursement(
         accountId: String,
         amountCents: Long,
+        source: String?,
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
         expenseIds: List<String>
     ) {
-        viewModelScope.launch { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds) }
+        viewModelScope.launch { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds, source) }
+    }
+
+    fun updateReimbursement(
+        id: String,
+        accountId: String,
+        amountCents: Long,
+        source: String?,
+        note: String?,
+        occurredAt: Long,
+        expenseIds: List<String>
+    ) {
+        viewModelScope.launch {
+            repository.updateReimbursement(id, accountId, amountCents, source, note, occurredAt, expenseIds)
+        }
     }
 
     fun addCategoryEntity(name: String, shortName: String, parentId: String?, iconKey: String, defaultNecessary: Boolean?, kind: String = "EXPENSE") {
@@ -402,8 +514,23 @@ class LedgerViewModel(
         viewModelScope.launch { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
     }
 
-    fun updateLoanInstallment(planId: String, number: Int, principalCents: Long?, interestCents: Long?, feeCents: Long?, status: String?) {
-        viewModelScope.launch { repository.updateLoanInstallment(planId, number, principalCents, interestCents, feeCents, status) }
+    fun confirmTransferNotification(
+        notificationId: String,
+        fromAccountId: String,
+        toAccountId: String,
+        amountCents: Long,
+        feeCents: Long,
+        note: String?
+    ) {
+        viewModelScope.launch {
+            repository.confirmTransferFromNotification(
+                notificationId, fromAccountId, toAccountId, amountCents, feeCents, note
+            )
+        }
+    }
+
+    fun updateLoanInstallment(planId: String, number: Int, dueDateEpochDay: Long?, principalCents: Long?, interestCents: Long?, feeCents: Long?, status: String?) {
+        viewModelScope.launch { repository.updateLoanInstallment(planId, number, dueDateEpochDay, principalCents, interestCents, feeCents, status) }
     }
 
     suspend fun checkpointsFor(accountId: String) = repository.checkpointsFor(accountId)
@@ -423,7 +550,11 @@ class LedgerViewModel(
 
     /** 批量解析 NEW 通知，触发去重和状态流转 */
     fun processNotifications() {
-        viewModelScope.launch { processPending.invoke() }
+        val statusRevision = AssetsNotificationListenerService.captureRuntimeStatusRevision()
+        viewModelScope.launch {
+            runCatching { processPending.invoke() }
+                .onFailure { AssetsNotificationListenerService.reportIngestionFailure(statusRevision) }
+        }
     }
 
     /** 确认通知 → 创建交易+标记 LINKED + 学习规则 */

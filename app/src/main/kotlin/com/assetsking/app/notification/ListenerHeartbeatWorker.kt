@@ -1,7 +1,6 @@
 package com.assetsking.app.notification
 
 import android.content.Context
-import android.service.notification.NotificationListenerService
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.assetsking.app.ui.screen.isListenerEnabled
@@ -20,11 +19,7 @@ class ListenerHeartbeatWorker(context: Context, params: WorkerParameters) : Work
         // 待确认防丢补发（与监听状态无关）
         runBlocking { runCatching { PendingNotifier.ensureNotified(applicationContext) } }
         if (isListenerEnabled(applicationContext) && !AssetsNotificationListenerService.isConnected) {
-            runCatching {
-                NotificationListenerService.requestRebind(
-                    AssetsNotificationListenerService.componentName(applicationContext)
-                )
-            }
+            AssetsNotificationListenerService.scheduleRebind(applicationContext)
         }
         return Result.success()
     }

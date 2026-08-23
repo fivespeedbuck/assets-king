@@ -141,6 +141,9 @@ interface ReimbursementLinkDao {
     @Query("SELECT * FROM reimbursement_links WHERE reimbursementTxId = :txId")
     suspend fun findByReimbursement(txId: String): List<ReimbursementLinkEntity>
 
+    @Query("SELECT * FROM reimbursement_links WHERE expenseTxId = :txId")
+    suspend fun findByExpense(txId: String): List<ReimbursementLinkEntity>
+
     @Query("DELETE FROM reimbursement_links WHERE reimbursementTxId = :txId")
     suspend fun deleteByReimbursement(txId: String)
 
@@ -202,7 +205,7 @@ interface BalanceAdjustmentDao {
 @Dao
 interface RawNotificationDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(notification: RawNotificationEntity)
+    suspend fun insert(notification: RawNotificationEntity): Long
 
     @Query("SELECT COUNT(*) FROM raw_notifications WHERE status = 'NEW'")
     fun observeUnprocessedCount(): Flow<Int>
@@ -295,14 +298,126 @@ interface CreditCardInstallmentDao {
     @Query("SELECT * FROM credit_card_installments ORDER BY startDateEpochDay DESC")
     fun observeAll(): Flow<List<CreditCardInstallmentEntity>>
 
+    @Query("SELECT * FROM credit_card_installments ORDER BY startDateEpochDay DESC")
+    suspend fun all(): List<CreditCardInstallmentEntity>
+
     @Query("SELECT * FROM credit_card_installments WHERE id = :id")
     suspend fun findById(id: String): CreditCardInstallmentEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(installment: CreditCardInstallmentEntity)
 
-    @Query("DELETE FROM credit_card_installments WHERE id = :id")
-    suspend fun deleteById(id: String)
+    @Query("UPDATE credit_card_installments SET status = :status, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String, updatedAt: Long)
+
+    @Query("UPDATE credit_card_installments SET monthlyPaymentCents = :monthlyPaymentCents, feeCentsPerPeriod = :feeCentsPerPeriod, periodsRemaining = :periodsRemaining, nextDueDateEpochDay = :nextDueDateEpochDay, scheduleRevision = :scheduleRevision, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateTerms(
+        id: String,
+        monthlyPaymentCents: Long,
+        feeCentsPerPeriod: Long,
+        periodsRemaining: Int,
+        nextDueDateEpochDay: Long?,
+        scheduleRevision: Int,
+        updatedAt: Long
+    )
+
+    @Query("UPDATE credit_card_installments SET remainingPrincipalCents = :remainingPrincipalCents, periodsRemaining = :periodsRemaining, nextDueDateEpochDay = :nextDueDateEpochDay, status = :status, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updatePaymentProgress(
+        id: String,
+        remainingPrincipalCents: Long,
+        periodsRemaining: Int,
+        nextDueDateEpochDay: Long?,
+        status: String,
+        updatedAt: Long
+    )
+}
+
+@Dao
+interface CreditCardInstallmentAllocationDao {
+    @Query("SELECT * FROM credit_card_installment_allocations ORDER BY createdAt")
+    fun observeAll(): Flow<List<CreditCardInstallmentAllocationEntity>>
+
+    @Query("SELECT * FROM credit_card_installment_allocations")
+    suspend fun all(): List<CreditCardInstallmentAllocationEntity>
+
+    @Query("SELECT * FROM credit_card_installment_allocations WHERE planId = :planId ORDER BY createdAt")
+    suspend fun findByPlan(planId: String): List<CreditCardInstallmentAllocationEntity>
+
+    @Query("SELECT COUNT(*) FROM credit_card_installment_allocations WHERE transactionId = :transactionId")
+    suspend fun countByTransaction(transactionId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAll(allocations: List<CreditCardInstallmentAllocationEntity>)
+}
+
+@Dao
+interface CreditCardInstallmentScheduleDao {
+    @Query("SELECT * FROM credit_card_installment_schedules ORDER BY dueDateEpochDay, number")
+    fun observeAll(): Flow<List<CreditCardInstallmentScheduleEntity>>
+
+    @Query("SELECT * FROM credit_card_installment_schedules WHERE planId = :planId ORDER BY revision, number")
+    suspend fun findByPlan(planId: String): List<CreditCardInstallmentScheduleEntity>
+
+    @Query("SELECT * FROM credit_card_installment_schedules WHERE id = :id")
+    suspend fun findById(id: String): CreditCardInstallmentScheduleEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAll(schedules: List<CreditCardInstallmentScheduleEntity>)
+
+    @Query("UPDATE credit_card_installment_schedules SET status = 'CANCELLED' WHERE planId = :planId AND status = 'UPCOMING'")
+    suspend fun cancelUpcoming(planId: String)
+
+    @Query("UPDATE credit_card_installment_schedules SET principalPaidCents = :principalPaidCents, status = :status WHERE id = :id")
+    suspend fun updatePaymentProgress(id: String, principalPaidCents: Long, status: String)
+}
+
+@Dao
+interface CreditCardInstallmentPaymentMatchDao {
+    @Query("SELECT * FROM credit_card_installment_payment_matches ORDER BY createdAt, transferId, scheduleId")
+    fun observeAll(): Flow<List<CreditCardInstallmentPaymentMatchEntity>>
+
+    @Query("SELECT * FROM credit_card_installment_payment_matches ORDER BY createdAt, transferId, scheduleId")
+    suspend fun all(): List<CreditCardInstallmentPaymentMatchEntity>
+
+    @Query("SELECT * FROM credit_card_installment_payment_matches WHERE transferId = :transferId ORDER BY createdAt, scheduleId")
+    suspend fun findByTransfer(transferId: String): List<CreditCardInstallmentPaymentMatchEntity>
+
+    @Query("SELECT * FROM credit_card_installment_payment_matches WHERE scheduleId = :scheduleId ORDER BY createdAt, transferId")
+    suspend fun findBySchedule(scheduleId: String): List<CreditCardInstallmentPaymentMatchEntity>
+
+    @Query("SELECT COUNT(*) FROM credit_card_installment_payment_matches WHERE planId = :planId AND status = 'PENDING'")
+    suspend fun countPendingByPlan(planId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAll(matches: List<CreditCardInstallmentPaymentMatchEntity>)
+
+    @Query("UPDATE credit_card_installment_payment_matches SET principalCents = :principalCents, status = :status, source = :source, resolvedAt = :resolvedAt WHERE transferId = :transferId AND scheduleId = :scheduleId")
+    suspend fun resolve(
+        transferId: String,
+        scheduleId: String,
+        principalCents: Long,
+        status: String,
+        source: String,
+        resolvedAt: Long
+    )
+
+    @Query("UPDATE credit_card_installment_payment_matches SET status = 'REJECTED', resolvedAt = :resolvedAt WHERE transferId = :transferId AND scheduleId != :selectedScheduleId AND status = 'PENDING'")
+    suspend fun rejectOtherPending(transferId: String, selectedScheduleId: String, resolvedAt: Long)
+
+    @Query("UPDATE credit_card_installment_payment_matches SET status = 'REVERSED', resolvedAt = :resolvedAt WHERE transferId = :transferId AND status IN ('PENDING', 'AUTO_MATCHED', 'USER_CONFIRMED')")
+    suspend fun reverseByTransfer(transferId: String, resolvedAt: Long)
+}
+
+@Dao
+interface CreditCardInstallmentAuditDao {
+    @Query("SELECT * FROM credit_card_installment_audit_events WHERE planId = :planId ORDER BY occurredAt, id")
+    fun observeByPlan(planId: String): Flow<List<CreditCardInstallmentAuditEventEntity>>
+
+    @Query("SELECT * FROM credit_card_installment_audit_events WHERE planId = :planId ORDER BY occurredAt, id")
+    suspend fun findByPlan(planId: String): List<CreditCardInstallmentAuditEventEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(event: CreditCardInstallmentAuditEventEntity)
 }
 
 @Dao

@@ -5,7 +5,6 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.service.notification.NotificationListenerService
 import com.assetsking.app.ui.screen.isListenerEnabled
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,11 +34,7 @@ class ListenerHeartbeatReceiver : BroadcastReceiver() {
         }
         if (!isListenerEnabled(context)) return
         if (!AssetsNotificationListenerService.isConnected) {
-            runCatching {
-                NotificationListenerService.requestRebind(
-                    AssetsNotificationListenerService.componentName(context)
-                )
-            }
+            AssetsNotificationListenerService.scheduleRebind(context)
         }
     }
 

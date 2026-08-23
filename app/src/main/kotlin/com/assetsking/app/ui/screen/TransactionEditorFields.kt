@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.assetsking.database.AccountEntity
+import com.assetsking.model.AccountType
 import com.assetsking.ui.component.FormField
 
 internal val commonPaymentChannels = listOf("微信", "支付宝", "云闪付", "银行卡", "现金")
@@ -28,12 +29,19 @@ internal val commonPaymentChannels = listOf("微信", "支付宝", "云闪付", 
 internal fun isCustomPaymentChannel(channel: String): Boolean =
     channel.isNotBlank() && channel !in commonPaymentChannels
 
+internal fun shouldUseCustomPaymentChannelEditor(channel: String, savedChannels: Set<String>): Boolean =
+    isCustomPaymentChannel(channel) && channel !in savedChannels
+
+internal fun fundingAccounts(accounts: List<AccountEntity>): List<AccountEntity> =
+    accounts.filter { !it.archived && it.type != AccountType.LOAN.name }
+
 @Composable
 internal fun AccountChannelFields(
     accounts: List<AccountEntity>,
     selectedAccountId: String,
     fallbackAccountName: String = "请选择账户",
     selectedChannel: String,
+    savedChannels: Set<String> = emptySet(),
     customChannelSelected: Boolean,
     onAccountSelected: (String) -> Unit,
     onChannelSelected: (String) -> Unit,
@@ -42,7 +50,7 @@ internal fun AccountChannelFields(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         AccountDropdownField(
             label = "资金账户",
-            accounts = accounts,
+            accounts = fundingAccounts(accounts),
             selectedAccountId = selectedAccountId,
             fallbackAccountName = fallbackAccountName,
             onAccountSelected = onAccountSelected,
@@ -50,6 +58,7 @@ internal fun AccountChannelFields(
         )
         PaymentChannelDropdownField(
             selectedChannel = selectedChannel,
+            savedChannels = savedChannels,
             customChannelSelected = customChannelSelected,
             onChannelSelected = onChannelSelected,
             onCustomChannelSelected = onCustomChannelSelected,
@@ -84,6 +93,7 @@ internal fun AccountDropdownField(
 @Composable
 internal fun PaymentChannelDropdownField(
     selectedChannel: String,
+    savedChannels: Set<String> = emptySet(),
     customChannelSelected: Boolean,
     onChannelSelected: (String) -> Unit,
     onCustomChannelSelected: (Boolean) -> Unit,
@@ -101,6 +111,11 @@ internal fun PaymentChannelDropdownField(
         options = buildList {
             add("" to "未设置")
             commonPaymentChannels.forEach { add(it to it) }
+            savedChannels.asSequence()
+                .map(String::trim)
+                .filter { it.isNotEmpty() && it !in commonPaymentChannels }
+                .sorted()
+                .forEach { add(it to it) }
             add(otherValue to "其他")
         },
         onSelected = { value ->

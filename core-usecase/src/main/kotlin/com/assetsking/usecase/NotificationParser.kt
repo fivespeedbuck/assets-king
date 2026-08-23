@@ -24,6 +24,48 @@ data class ParsedNotification(
 )
 
 /**
+ * 信用卡正式出账证据。它只更新信用账户的账单状态，绝不能生成消费流水。
+ * 最低还款额故意不建字段：资产大王不采用最低还款模型，避免误入账务计算。
+ */
+data class ParsedCreditStatement(
+    val statementAmountCents: Long,
+    val cardTail: String,
+    val statementMonth: Int?,
+    val dueMonth: Int,
+    val dueDay: Int
+)
+
+object CreditStatementNotificationParser {
+    private const val NUM = """([\d,]+(?:\.\d+)?)"""
+    private val amountPattern = Regex("""(?:人民币)?账单金额\s*[¥￥]?\s*$NUM\s*元?""")
+    private val cardTailPattern = Regex("""尾号[为是]?\s*(\d{4})""")
+    private val statementMonthPattern = Regex("""信用卡\s*(\d{1,2})月""")
+    private val dueDatePattern = Regex("""还款到期\s*(\d{1,2})月(\d{1,2})日""")
+
+    fun parse(content: String?, title: String?): ParsedCreditStatement? {
+        val text = listOfNotNull(title, content).joinToString(" ")
+        if (!text.contains("信用卡") || !text.contains("账单金额")) return null
+
+        val amountYuan = amountPattern.find(text)?.groupValues?.getOrNull(1)
+            ?.replace(",", "")?.toDoubleOrNull() ?: return null
+        val cardTail = cardTailPattern.find(text)?.groupValues?.getOrNull(1) ?: return null
+        val dueMatch = dueDatePattern.find(text) ?: return null
+        val dueMonth = dueMatch.groupValues[1].toIntOrNull()?.takeIf { it in 1..12 } ?: return null
+        val dueDay = dueMatch.groupValues[2].toIntOrNull()?.takeIf { it in 1..31 } ?: return null
+        val statementMonth = statementMonthPattern.find(text)?.groupValues?.getOrNull(1)
+            ?.toIntOrNull()?.takeIf { it in 1..12 }
+
+        return ParsedCreditStatement(
+            statementAmountCents = Math.round(amountYuan * 100),
+            cardTail = cardTail,
+            statementMonth = statementMonth,
+            dueMonth = dueMonth,
+            dueDay = dueDay
+        ).takeIf { it.statementAmountCents > 0L }
+    }
+}
+
+/**
  * 从微信/支付宝支付通知原文中提取金额、商户、收支方向、银行。
  * 纯函数，无副作用。
  */
@@ -117,6 +159,11 @@ object NotificationParser {
     private const val NAME = """([^，。；、！\s【】(（]+)"""
 
     private val merchantPatterns = listOf(
+        // 支付宝真机自动扣款：「你在上海格物致品网络科技有限公司有一笔40.00元…」
+        Regex("""你在\s*([^，。；、！【】]{1,40}?)\s*有一笔"""),
+        // 招商银行短信常见写法：「在支付宝-李杰快捷支付10.00元」；商户位于
+        // “在”和“快捷支付/消费/扣款”之间，不能只依赖支付 App 的通知格式。
+        Regex("""在\s*([^，。；、！\s【】(（]+?)\s*(快捷支付|消费|扣款|支付|付款)"""),
         Regex("""收款方[：:]\s*$NAME"""),
         Regex("""商户[：:]\s*$NAME"""),
         Regex("""商户全称[：:]\s*$NAME"""),
@@ -133,9 +180,9 @@ object NotificationParser {
      */
     private val balancePattern = Regex("""余额[为是]?\s*(?:人民币|RMB|CNY)?\s*$NUM""")
 
-    /** 卡号尾 4 位：「尾号3721」（宁波/广发）、「您账户3683」（招行）。 */
+    /** 卡号尾 4 位：「尾号3721 / 尾号为3304」（宁波/云闪付）、「您账户3683」（招行）。 */
     private val cardTailPatterns = listOf(
-        Regex("""尾号(\d{4})"""),
+        Regex("""尾号[为是]?\s*(\d{4})"""),
         Regex("""账户(\d{4})""")
     )
 

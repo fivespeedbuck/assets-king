@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.CardShape
 
 /**
@@ -24,10 +25,13 @@ fun GlassCard(
     contentPadding: Modifier = Modifier.padding(20.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val containerColor = MaterialTheme.colorScheme.surfaceContainer.let { color ->
+        if (LocalPrivacyEnabled.current) color.copy(alpha = 0.72f) else color
+    }
     Box(
         modifier = modifier
             .clip(CardShape)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(containerColor)
             .border(1.dp, MaterialTheme.colorScheme.outline, CardShape)
             .then(contentPadding)
     ) {
