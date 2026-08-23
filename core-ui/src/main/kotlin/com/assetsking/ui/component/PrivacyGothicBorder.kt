@@ -19,8 +19,8 @@ fun Modifier.privacyGothicBorder(): Modifier = drawWithCache {
     val cut = 8.dp.toPx()
     val mainStroke = 0.9.dp.toPx()
     val detailStroke = 0.55.dp.toPx()
-    val mainColor = PrivacyGothicBorderSilver.copy(alpha = 0.48f)
-    val detailColor = PrivacyGothicBorderMist.copy(alpha = 0.28f)
+    val mainColor = PrivacyGothicBorderSilver.copy(alpha = 0.40f)
+    val detailColor = PrivacyGothicBorderMist.copy(alpha = 0.22f)
 
     val outline = gothicCutPath(size.width, size.height, inset, cut)
     val innerOutline = gothicCutPath(
@@ -70,7 +70,7 @@ private fun gothicCornerPath(width: Float, height: Float, inset: Float, cut: Flo
         val top = inset
         val right = width - inset
         val bottom = height - inset
-        val point = cut * 0.54f
+        val point = cut * 0.38f
 
         // 四个克制的内向尖拱，不形成厚重花纹。
         moveTo(left, top + cut)
