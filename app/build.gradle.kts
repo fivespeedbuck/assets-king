@@ -6,10 +6,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val recoverySigningPropertiesFile = rootProject.file("release-signing/keystore.properties")
-val recoverySigningProperties = Properties().apply {
-    if (recoverySigningPropertiesFile.exists()) {
-        recoverySigningPropertiesFile.inputStream().use(::load)
+val formalSigningPropertiesFile = rootProject.file("release-signing/keystore.properties")
+val formalSigningProperties = Properties().apply {
+    if (formalSigningPropertiesFile.exists()) {
+        formalSigningPropertiesFile.inputStream().use(::load)
     }
 }
 
@@ -18,25 +18,23 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        // 恢复分支的所有变体都必须与正式包隔离；Release 也不得产出 com.assetsking.app。
-        applicationId = "com.assetsking.app.recovery"
+        applicationId = "com.assetsking.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0-recovery"
+        versionName = "0.1.0"
     }
 
     buildTypes {
         debug {
-            // 真机验收版与用户现有安装并存，避免 UI/迁移回归误触正式账本数据。
         }
         release {
-            if (recoverySigningPropertiesFile.exists()) {
-                signingConfig = signingConfigs.create("recoveryRelease") {
-                    storeFile = rootProject.file(recoverySigningProperties.getProperty("storeFile"))
-                    storePassword = recoverySigningProperties.getProperty("storePassword")
-                    keyAlias = recoverySigningProperties.getProperty("keyAlias")
-                    keyPassword = recoverySigningProperties.getProperty("keyPassword")
+            if (formalSigningPropertiesFile.exists()) {
+                signingConfig = signingConfigs.create("formalRelease") {
+                    storeFile = rootProject.file(formalSigningProperties.getProperty("storeFile"))
+                    storePassword = formalSigningProperties.getProperty("storePassword")
+                    keyAlias = formalSigningProperties.getProperty("keyAlias")
+                    keyPassword = formalSigningProperties.getProperty("keyPassword")
                 }
             }
         }

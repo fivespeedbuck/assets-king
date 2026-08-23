@@ -80,6 +80,7 @@ fun AssetsKingTheme(
             AppTheme.LONG_NEST -> LongNestScheme
         },
         typography = AssetsKingTypography,
+        shapes = AssetsKingShapes,
         content = content
     )
 }
