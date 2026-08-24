@@ -37,12 +37,6 @@ class EditCategoryPresentationTest {
     }
 
     @Test
-    fun calculatorEqualsKeepsIncompleteExpressionsStable() {
-        assertEquals("15", calculatorEqualsExpression("12+3"))
-        assertEquals(null, calculatorEqualsExpression("12+"))
-    }
-
-    @Test
     fun loanPlanUsesTheLinkedAccountNameInsteadOfItsInternalId() {
         val plan = LoanPlanEntity("visual-loan", "loan-account", 1_000_000, 0, "EQUAL_PAYMENT", "[]")
         val account = AccountEntity("loan-account", "招行消费贷", "LOAN", 700_000)

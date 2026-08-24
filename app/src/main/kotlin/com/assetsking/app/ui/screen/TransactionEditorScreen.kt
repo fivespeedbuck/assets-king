@@ -282,7 +282,6 @@ fun TransactionEditorScreen(
     var balanceResolution by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf<BalanceResolution?>(null)
     }
-    var keypadExpanded by remember { mutableStateOf(pendingItem == null) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -677,13 +676,14 @@ fun TransactionEditorScreen(
                 else -> Unit
             }
 
-            // ── 金额 + 计算键盘（REQ 编辑器§4/§12）──
+            // ── 金额（使用系统小数键盘）──
             OutlinedTextField(
                 value = amountExpr,
                 onValueChange = { amountExpr = it.filter { c -> c.isDigit() || c in ".-+×÷*/" } },
                 label = { Text("金额") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
             )
             Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.CenterStart) {
                 Text(
@@ -696,12 +696,6 @@ fun TransactionEditorScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            if (keypadExpanded) {
-                CalculatorKeypad(expr = amountExpr, onExpr = { amountExpr = it })
-            } else {
-                TextButton(onClick = { keypadExpanded = true }) { Text("展开键盘修改金额") }
-            }
-
             // ── 日期与时间：新增、编辑共用同一组入口 ──
             Text("日期与时间", fontWeight = FontWeight.Medium)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1385,37 +1379,6 @@ internal fun CategoryGrid(
     }
 }
 
-/** 计算键盘（REQ 编辑器§12）：数字 + 小数点 + 四则运算 + 退格/清空 */
-@Composable
-private fun CalculatorKeypad(expr: String, onExpr: (String) -> Unit) {
-    val keys = listOf("7", "8", "9", "÷", "4", "5", "6", "×", "1", "2", "3", "-", ".", "0", "⌫", "+")
-    Column(Modifier.fillMaxWidth()) {
-        keys.chunked(4).forEach { rowKeys ->
-            Row(Modifier.fillMaxWidth()) {
-                rowKeys.forEach { k ->
-                    OutlinedButton(
-                        onClick = {
-                            when (k) {
-                                "⌫" -> onExpr(expr.dropLast(1))
-                                else -> onExpr(expr + k)
-                            }
-                        },
-                        modifier = Modifier.weight(1f).padding(2.dp)
-                    ) { Text(k) }
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { onExpr("") }, modifier = Modifier.weight(1f).padding(2.dp)) { Text("清空") }
-            Button(
-                onClick = { calculatorEqualsExpression(expr)?.let(onExpr) },
-                enabled = calculatorEqualsExpression(expr) != null,
-                modifier = Modifier.weight(1f).padding(2.dp)
-            ) { Text("＝") }
-        }
-    }
-}
-
 internal fun historyTextSuggestions(
     query: String,
     candidates: List<String>,
@@ -1431,11 +1394,6 @@ internal fun historyTextSuggestions(
     val (prefix, contains) = unique.partition { it.startsWith(normalized, ignoreCase = true) }
     return (prefix + contains.filter { it.contains(normalized, ignoreCase = true) }).take(limit)
 }
-
-internal fun calculatorEqualsExpression(expr: String): String? =
-    AmountExpression.evaluate(expr)?.let { value ->
-        runCatching { java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString() }.getOrNull()
-    }
 
 internal fun loanPlanDisplayName(plan: LoanPlanEntity, accounts: List<AccountEntity>): String =
     accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款计划"
