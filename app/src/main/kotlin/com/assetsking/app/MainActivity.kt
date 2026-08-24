@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +32,7 @@ import com.assetsking.ui.theme.AssetsKingTheme
 import com.assetsking.ui.privacy.PrivacyMode
 
 class MainActivity : ComponentActivity() {
+    private var privacyEnabledState: MutableState<Boolean>? = null
     private var pendingPrivacyExit: (() -> Unit)? = null
     private var listenerLaunchRecoveryRequested = false
     private val credentialLauncher = registerForActivityResult(
@@ -45,14 +47,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val freshLaunchPrivacy = savedInstanceState == null
-        if (freshLaunchPrivacy) {
-            PrivacyMode.setEnabled(true)
-            getSharedPreferences("app_prefs", MODE_PRIVATE)
-                .edit()
-                .putBoolean("privacy_mode", true)
-                .apply()
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val initialPrivacy = when {
+            privacyAutoLockTriggered(prefs.getLong(PRIVACY_BACKGROUND_AT, 0L), now) -> true
+            prefs.contains("privacy_mode") -> prefs.getBoolean("privacy_mode", true)
+            else -> true
         }
+        PrivacyMode.setEnabled(initialPrivacy)
+        prefs.edit()
+            .putBoolean("privacy_mode", initialPrivacy)
+            .remove(PRIVACY_BACKGROUND_AT)
+            .apply()
         enableEdgeToEdge()
         setContent {
             val app = application as AssetsKingApplication
@@ -63,11 +69,10 @@ class MainActivity : ComponentActivity() {
             var gate by remember { mutableStateOf<LedgerRepository.MigrationStatus?>(null) }
             LaunchedEffect(Unit) { gate = app.repository.migrationStatus() }
             // 首次配置引导（REQ 监听§15）：一次性引导开权限，完成后不再反复要求
-            val prefs = remember { getSharedPreferences("app_prefs", MODE_PRIVATE) }
             var onboardingDone by remember { mutableStateOf(prefs.getBoolean("onboarding_done", false)) }
-            var privacyEnabled by remember {
-                mutableStateOf(if (freshLaunchPrivacy) true else prefs.getBoolean("privacy_mode", true))
-            }
+            val privacyState = remember { mutableStateOf(initialPrivacy) }
+            privacyEnabledState = privacyState
+            var privacyEnabled by privacyState
             AssetsKingTheme(theme = themeForPrivacy(privacyEnabled)) {
                 PrivacyModeSurface(enabled = privacyEnabled) {
                     when {
@@ -110,6 +115,20 @@ class MainActivity : ComponentActivity() {
      */
     override fun onResume() {
         super.onResume()
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val backgroundedAt = prefs.getLong(PRIVACY_BACKGROUND_AT, 0L)
+        if (backgroundedAt > 0L) {
+            if (privacyAutoLockTriggered(backgroundedAt, System.currentTimeMillis())) {
+                PrivacyMode.setEnabled(true)
+                prefs.edit()
+                    .putBoolean("privacy_mode", true)
+                    .remove(PRIVACY_BACKGROUND_AT)
+                    .apply()
+                privacyEnabledState?.value = true
+            } else {
+                prefs.edit().remove(PRIVACY_BACKGROUND_AT).apply()
+            }
+        }
         if (isListenerEnabled(this)) {
             // 前台起 FGS 保活：进程不再被 vivo 当缓存清掉，监听不掉线
             AssetsNotificationListenerService.startKeepAlive(this)
@@ -124,6 +143,14 @@ class MainActivity : ComponentActivity() {
                 AssetsNotificationListenerService.scheduleRebind(this)
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        getSharedPreferences("app_prefs", MODE_PRIVATE)
+            .edit()
+            .putLong(PRIVACY_BACKGROUND_AT, System.currentTimeMillis())
+            .apply()
     }
 
     private fun authenticatePrivacyExit(onAuthenticated: () -> Unit) {
@@ -170,6 +197,12 @@ class MainActivity : ComponentActivity() {
         )
     }
 }
+
+internal const val PRIVACY_BACKGROUND_AT = "privacy_background_at"
+internal const val PRIVACY_AUTO_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
+
+internal fun privacyAutoLockTriggered(backgroundedAt: Long, now: Long): Boolean =
+    backgroundedAt > 0L && now >= backgroundedAt && now - backgroundedAt >= PRIVACY_AUTO_LOCK_TIMEOUT_MS
 
 internal fun themeForPrivacy(privacyEnabled: Boolean): AppTheme =
     if (privacyEnabled) AppTheme.LONG_NEST else AppTheme.LIGHT_GREEN

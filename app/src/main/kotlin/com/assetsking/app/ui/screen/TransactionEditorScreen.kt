@@ -108,6 +108,7 @@ private enum class IncomeSub(val label: String, val type: TransactionType) {
     REIMBURSEMENT("报销到账", TransactionType.REIMBURSEMENT)
 }
 private enum class RepaySub(val label: String) { CREDIT_CARD("信用卡还款"), LOAN("贷款还款") }
+internal enum class BalanceResolution { NOTIFICATION, CURRENT_LEDGER }
 
 internal data class PendingTransferAccounts(val fromAccountId: String, val toAccountId: String)
 
@@ -274,6 +275,9 @@ fun TransactionEditorScreen(
     var necessity by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.necessity) }
     var isReimbursable by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.isReimbursable ?: false) }
     var note by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.note.orEmpty()) }
+    var balanceResolution by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf<BalanceResolution?>(null)
+    }
     var keypadExpanded by remember { mutableStateOf(pendingItem == null) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
@@ -488,6 +492,13 @@ fun TransactionEditorScreen(
             currentBalanceCents = selectedAccount?.balanceCents,
             bankBalanceCents = parsed?.balanceCents
         )
+    LaunchedEffect(pendingItem?.notification?.id, accountId, amountCents, kind, incomeSub) {
+        balanceResolution = null
+    }
+    val bankBalanceForSave = when (balanceResolution) {
+        BalanceResolution.CURRENT_LEDGER -> null
+        else -> parsed?.balanceCents
+    }
 
     // ── 必填校验（REQ 编辑器§19）──
     val missing = buildList {
@@ -529,7 +540,7 @@ fun TransactionEditorScreen(
             }
         }
         if (accountTailConflict) add("资金账户（银行尾号 ${parsed?.cardTail}）")
-        else if (balanceConflict) add("余额校验")
+        else if (balanceConflict && balanceResolution == null) add("余额对账选择")
     }
 
     Scaffold(
@@ -598,7 +609,7 @@ fun TransactionEditorScreen(
                                     kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
                                     merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
                                     loanPlanId, principalCents ?: 0L, interestCents ?: 0L, feeCents ?: 0L,
-                                    transferFeeCents, expenseIds.value,
+                                    transferFeeCents, expenseIds.value, bankBalanceForSave,
                                     pendingItem, viewModel
                                 )
                             }
@@ -974,7 +985,9 @@ fun TransactionEditorScreen(
                     amountCents,
                     kind,
                     incomeSub,
-                    directionChosen
+                    directionChosen,
+                    balanceResolution,
+                    onBalanceResolution = { balanceResolution = it }
                 )
             }
 
@@ -1119,7 +1132,7 @@ private fun doSave(
     amountCents: Long, occurredAt: Long, accountId: String, toAccountId: String, channel: String,
     merchant: String, category: String, necessity: Boolean?, isReimbursable: Boolean, note: String,
     loanPlanId: String?, principalCents: Long, interestCents: Long, feeCents: Long, transferFeeCents: Long,
-    expenseIds: List<String>, pendingItem: PendingItem?, viewModel: LedgerViewModel
+    expenseIds: List<String>, bankBalanceCents: Long?, pendingItem: PendingItem?, viewModel: LedgerViewModel
 ) {
     when {
         kind == EditorKind.TRANSFER && pendingItem != null ->
@@ -1157,8 +1170,8 @@ private fun doSave(
                     interestCents = interestCents,
                     feeCents = feeCents,
                     note = note,
-                    bankBalanceCents = pendingItem.parsed.balanceCents,
-                    bankCardTail = pendingItem.parsed.cardTail
+                    bankBalanceCents = bankBalanceCents,
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail }
                 )
             } else {
                 viewModel.addLoanPayment(
@@ -1188,8 +1201,8 @@ private fun doSave(
                     category = cat,
                     merchant = merchant.takeIf { it.isNotEmpty() },
                     note = note.takeIf { it.isNotEmpty() },
-                    bankBalanceCents = pendingItem.parsed.balanceCents,
-                    bankCardTail = pendingItem.parsed.cardTail,
+                    bankBalanceCents = bankBalanceCents,
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
                     necessity = necessity,
                     channel = channel
                 )
@@ -1461,7 +1474,9 @@ private fun BalancePreviewInEditor(
     amountCents: Long,
     kind: EditorKind,
     incomeSub: IncomeSub,
-    directionChosen: Boolean
+    directionChosen: Boolean,
+    resolution: BalanceResolution?,
+    onBalanceResolution: (BalanceResolution) -> Unit
 ) {
     val parsed = pendingItem.parsed
     val account = accounts.firstOrNull { it.id == accountId && !it.archived } ?: return
@@ -1497,6 +1512,49 @@ private fun BalancePreviewInEditor(
             fontWeight = FontWeight.Bold,
             color = if (check.matches) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
         )
+        if (!check.matches) {
+            Text(
+                "这笔流水可以继续入库，请选择余额对账口径：",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (resolution == BalanceResolution.NOTIFICATION) {
+                    Button(
+                        onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("以通知余额为准") }
+                } else {
+                    OutlinedButton(
+                        onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("以通知余额为准") }
+                }
+                if (resolution == BalanceResolution.CURRENT_LEDGER) {
+                    Button(
+                        onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("以当前流水为准") }
+                } else {
+                    OutlinedButton(
+                        onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("以当前流水为准") }
+                }
+            }
+            Text(
+                when (resolution) {
+                    BalanceResolution.NOTIFICATION -> "确认后会把银行卡余额重锚到通知余额。"
+                    BalanceResolution.CURRENT_LEDGER -> "确认后保留当前账面余额，由本次流水正常扣减。"
+                    null -> "选定后即可直接确认入库，不必退出去手动改余额。"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

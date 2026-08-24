@@ -152,8 +152,13 @@ class NotificationParserTest {
             content = "【招商银行】您账户3683于08月23日20:03在支付宝-四川链动万商科技有限公司快捷支付22.66元，余额3468.36",
             title = "95555"
         )
-        assertEquals("支付宝-李杰", first.merchant)
-        assertEquals("支付宝-四川链动万商科技有限公司", second.merchant)
+        val wechat = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月23日20:04在微信-瑞幸咖啡快捷支付12.00元，余额3456.36",
+            title = "95555"
+        )
+        assertEquals("李杰", first.merchant)
+        assertEquals("四川链动万商科技有限公司", second.merchant)
+        assertEquals("瑞幸咖啡", wechat.merchant)
     }
 
     @Test

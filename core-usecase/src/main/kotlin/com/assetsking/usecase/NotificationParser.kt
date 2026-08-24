@@ -175,6 +175,12 @@ object NotificationParser {
     )
 
     /**
+     * 银行短信会把支付渠道写在商户名前面，例如「在支付宝-李杰快捷支付」。
+     * 渠道已经由来源包名/银行短信上下文表达，商户字段只保留真正的商户主体。
+     */
+    private val merchantChannelPrefix = Regex("""^(?:支付宝|微信支付|微信)[-－—:：]\s*""")
+
+    /**
      * 银行自报余额：「余额657.09」「余额人民币657.09」「余额为92.36元」。
      * 和交易金额分开抓 —— 交易金额那边是特意排除「余额人民币…」的，这里正好相反。
      */
@@ -226,9 +232,7 @@ object NotificationParser {
 
         // 提取商户
         val merchant = merchantPatterns.firstNotNullOfOrNull { pattern ->
-            pattern.find(text)?.groupValues?.getOrNull(1)
-                ?.trim()
-                ?.takeIf { it.isNotBlank() && it.length < 30 && it !in bankBlacklist }
+            normalizeMerchant(pattern.find(text)?.groupValues?.getOrNull(1))
         }
 
         // 提取银行提示
@@ -275,6 +279,11 @@ object NotificationParser {
             return Math.round(yuan * 100)
         }
         return null
+    }
+
+    private fun normalizeMerchant(raw: String?): String? {
+        val normalized = raw?.trim()?.replace(merchantChannelPrefix, "")?.trim() ?: return null
+        return normalized.takeIf { it.isNotBlank() && it.length < 30 && it !in bankBlacklist }
     }
 
     // 商户正则容易误匹配银行名，过滤掉
