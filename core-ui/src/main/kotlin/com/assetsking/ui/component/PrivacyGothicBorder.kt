@@ -2,6 +2,7 @@ package com.assetsking.ui.component
 
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
@@ -14,17 +15,10 @@ import androidx.compose.ui.unit.dp
 import com.assetsking.ui.theme.PrivacyGothicBorderMist
 import com.assetsking.ui.theme.PrivacyGothicBorderSilver
 
-/** 隐秘卡片的尖角裁剪轮廓；普通模式继续使用圆角 [CardShape]。 */
+/** 隐秘卡片的 90° 直角裁剪轮廓；普通模式继续使用圆角 [CardShape]。 */
 object PrivacyGothicCardShape : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
-        Outline.Generic(
-            gothicCutPath(
-                width = size.width,
-                height = size.height,
-                inset = 0f,
-                cut = with(density) { 8.dp.toPx() }
-            )
-        )
+        Outline.Rectangle(Rect(0f, 0f, size.width, size.height))
 }
 
 /**
@@ -71,19 +65,10 @@ fun Modifier.privacyGothicBorder(): Modifier = drawWithCache {
 
 private fun gothicCutPath(width: Float, height: Float, inset: Float, cut: Float): Path =
     Path().apply {
-        val point = cut * 0.34f
-        moveTo(inset + cut, inset)
-        lineTo(width - inset - cut, inset)
-        lineTo(width - inset - point, inset + point)
-        lineTo(width - inset, inset + cut)
-        lineTo(width - inset, height - inset - cut)
-        lineTo(width - inset - point, height - inset - point)
-        lineTo(width - inset - cut, height - inset)
-        lineTo(inset + cut, height - inset)
-        lineTo(inset + point, height - inset - point)
-        lineTo(inset, height - inset - cut)
-        lineTo(inset, inset + cut)
-        lineTo(inset + point, inset + point)
+        moveTo(inset, inset)
+        lineTo(width - inset, inset)
+        lineTo(width - inset, height - inset)
+        lineTo(inset, height - inset)
         close()
     }
 
