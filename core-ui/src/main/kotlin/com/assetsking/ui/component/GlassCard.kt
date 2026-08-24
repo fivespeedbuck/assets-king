@@ -29,9 +29,10 @@ fun GlassCard(
         if (LocalPrivacyEnabled.current) color.copy(alpha = 0.72f) else color
     }
     val privacyEnabled = LocalPrivacyEnabled.current
+    val cardShape = if (privacyEnabled) PrivacyGothicCardShape else CardShape
     Box(
         modifier = modifier
-            .clip(CardShape)
+            .clip(cardShape)
             .background(containerColor)
             .then(
                 if (privacyEnabled) {

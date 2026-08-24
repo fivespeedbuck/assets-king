@@ -3,11 +3,29 @@ package com.assetsking.ui.component
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.assetsking.ui.theme.PrivacyGothicBorderMist
 import com.assetsking.ui.theme.PrivacyGothicBorderSilver
+
+/** 隐秘卡片的尖角裁剪轮廓；普通模式继续使用圆角 [CardShape]。 */
+object PrivacyGothicCardShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Generic(
+            gothicCutPath(
+                width = size.width,
+                height = size.height,
+                inset = 0f,
+                cut = with(density) { 8.dp.toPx() }
+            )
+        )
+}
 
 /**
  * 隐秘模式统一卡片边框：细暗银主线、低透明内线和四角尖拱。
