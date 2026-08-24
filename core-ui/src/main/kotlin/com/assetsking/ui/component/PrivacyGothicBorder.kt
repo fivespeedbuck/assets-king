@@ -53,14 +53,19 @@ fun Modifier.privacyGothicBorder(): Modifier = drawWithCache {
 
 private fun gothicCutPath(width: Float, height: Float, inset: Float, cut: Float): Path =
     Path().apply {
+        val point = cut * 0.34f
         moveTo(inset + cut, inset)
         lineTo(width - inset - cut, inset)
+        lineTo(width - inset - point, inset + point)
         lineTo(width - inset, inset + cut)
         lineTo(width - inset, height - inset - cut)
+        lineTo(width - inset - point, height - inset - point)
         lineTo(width - inset - cut, height - inset)
         lineTo(inset + cut, height - inset)
+        lineTo(inset + point, height - inset - point)
         lineTo(inset, height - inset - cut)
         lineTo(inset, inset + cut)
+        lineTo(inset + point, inset + point)
         close()
     }
 
@@ -70,24 +75,25 @@ private fun gothicCornerPath(width: Float, height: Float, inset: Float, cut: Flo
         val top = inset
         val right = width - inset
         val bottom = height - inset
-        val point = cut * 0.38f
+        // 外框已经用 V 形折线收成尖角；这里再叠一层短内尖，形成轻微复杂度。
+        val detailArm = cut * 0.66f
+        val detailPoint = cut * 0.27f
+        val detailInset = cut * 0.18f
+        moveTo(left + detailInset, top + detailArm)
+        lineTo(left + detailPoint, top + detailPoint)
+        lineTo(left + detailArm, top + detailInset)
 
-        // 四个克制的内向尖拱，不形成厚重花纹。
-        moveTo(left, top + cut)
-        lineTo(left + point, top + point)
-        lineTo(left + cut, top)
+        moveTo(right - detailArm, top + detailInset)
+        lineTo(right - detailPoint, top + detailPoint)
+        lineTo(right - detailInset, top + detailArm)
 
-        moveTo(right - cut, top)
-        lineTo(right - point, top + point)
-        lineTo(right, top + cut)
+        moveTo(right - detailInset, bottom - detailArm)
+        lineTo(right - detailPoint, bottom - detailPoint)
+        lineTo(right - detailArm, bottom - detailInset)
 
-        moveTo(right, bottom - cut)
-        lineTo(right - point, bottom - point)
-        lineTo(right - cut, bottom)
-
-        moveTo(left + cut, bottom)
-        lineTo(left + point, bottom - point)
-        lineTo(left, bottom - cut)
+        moveTo(left + detailArm, bottom - detailInset)
+        lineTo(left + detailPoint, bottom - detailPoint)
+        lineTo(left + detailInset, bottom - detailArm)
 
         // 每条长边一枚极短荆棘尖，保持统一节奏而不过度装饰。
         val sidePoint = cut * 0.375f
