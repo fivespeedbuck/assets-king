@@ -16,13 +16,13 @@
         android:name=".AssetsKingApplication"
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
-        android:label="资产大王·恢复验收"
+        android:label="资产大王"
         android:supportsRtl="true">
         <activity
             android:name=".MainActivity"
             android:excludeFromRecents="true"
             android:exported="true"
-            android:label="资产大王·恢复验收"
+            android:label="资产大王"
             android:theme="@style/Theme.AssetsKing">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -31,7 +31,7 @@
         </activity>
         <service
             android:name=".notification.AssetsNotificationListenerService"
-            android:label="资产大王·恢复验收通知读取"
+            android:label="资产大王通知读取"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:foregroundServiceType="specialUse"
             android:stopWithTask="false"

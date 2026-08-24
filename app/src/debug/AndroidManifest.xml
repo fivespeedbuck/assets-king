@@ -1,11 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <application
-        android:label="资产大王·恢复验收"
+        android:label="资产大王"
         tools:replace="android:label">
         <activity
             android:name=".MainActivity"
-            android:label="资产大王·恢复验收"
+            android:label="资产大王"
             tools:replace="android:label" />
     </application>
 </manifest>
