@@ -34,6 +34,7 @@ import com.assetsking.app.ui.privacy.privacyScrambleText
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.theme.ReimbursementYellow
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import java.time.YearMonth
@@ -189,8 +190,16 @@ private fun ReimbursementRecordCard(
                     fontWeight = FontWeight.SemiBold,
                     color = ReimbursementYellow
                 )
+                val categoryText = transactionCategoryLabel(transaction.type, transaction.category)
                 Text(
-                    "${if (privacyEnabled) privacyFakeDateTime(2421 + privacyIndex) else formatTime(transaction.occurredAt)} · ${if (privacyEnabled) privacyScrambleText(transaction.category.ifEmpty { "待分类" }, 2422 + privacyIndex) else transaction.category.ifEmpty { "待分类" }}",
+                    if (privacyEnabled) {
+                        listOfNotNull(
+                            privacyFakeDateTime(2421 + privacyIndex),
+                            categoryText?.let { privacyScrambleText(it, 2422 + privacyIndex) }
+                        ).joinToString(" · ")
+                    } else {
+                        listOfNotNull(formatTime(transaction.occurredAt), categoryText).joinToString(" · ")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

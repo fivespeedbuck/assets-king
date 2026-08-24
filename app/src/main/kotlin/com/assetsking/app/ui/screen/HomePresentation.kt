@@ -14,18 +14,25 @@ internal fun homeRepaymentPages(
     totalDueCents: Long,
     paidCount: Int,
     paidCents: Long,
-    totalDebtCents: Long = totalDueCents
-): List<HomeRepaymentPage> = listOf(
-    HomeRepaymentPage(
+    totalDebtCents: Long = totalDueCents,
+    hasFutureRepaymentInfo: Boolean = false
+): List<HomeRepaymentPage> = buildList {
+    add(HomeRepaymentPage(
         label = when {
             totalDueCount > 0 -> "本月待还 ${totalDueCount}笔"
             totalDebtCents <= 0L -> "全部还清"
+            paidCount > 0 -> "本月已还清"
+            hasFutureRepaymentInfo -> "本月无还款"
             else -> "待完善还款信息"
         },
-        amountCents = if (totalDueCount > 0) totalDueCents else totalDebtCents
-    ),
-    HomeRepaymentPage("本月已还 ${paidCount}笔", paidCents)
-)
+        amountCents = when {
+            totalDueCount > 0 -> totalDueCents
+            totalDebtCents > 0L && paidCount == 0 && !hasFutureRepaymentInfo -> totalDebtCents
+            else -> 0L
+        }
+    ))
+    if (paidCount > 0) add(HomeRepaymentPage("本月已还 ${paidCount}笔", paidCents))
+}
 
 internal enum class HomeVaultSeverity { NORMAL, WARNING, RECOVERING, ERROR }
 
@@ -104,8 +111,7 @@ internal data class HomeModulePreviewSpec(
 internal val homeModulePreviewSpecs = listOf(
     HomeModulePreviewSpec("reimbursement", "待报销", "待报销金额、笔数与状态", "2 笔 · 待报 ¥320", "本月已报 ¥680"),
     HomeModulePreviewSpec("recurring", "周期扣款", "本月周期扣款金额与笔数", "3 笔 · 待扣 ¥268", "查看本月扣款计划"),
-    HomeModulePreviewSpec("budget", "本月预算", "必要预算与非必要消费进度", "必要预算 68%", "非必要消费 32%"),
-    HomeModulePreviewSpec("accounts", "分账户余额", "常用资产账户余额", "工资卡 ¥4,700", "现金 ¥300")
+    HomeModulePreviewSpec("budget", "本月预算", "必要预算与非必要消费进度", "必要预算 68%", "非必要消费 32%")
 )
 
 internal fun monthSpendingBreakdown(

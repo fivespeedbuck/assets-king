@@ -26,7 +26,13 @@ fun categoryLabel(storedCategory: String): String =
 
 fun transactionCategoryLabel(transactionType: String, storedCategory: String): String? =
     if (
-        transactionType == TransactionType.REIMBURSEMENT.name &&
+        transactionType in setOf(
+            TransactionType.REFUND.name,
+            TransactionType.REIMBURSEMENT.name,
+            TransactionType.LOAN_DISBURSEMENT.name,
+            TransactionType.LOAN_PAYMENT.name,
+            TransactionType.LOAN_PREPAYMENT.name
+        ) &&
         storedCategory == TransactionCategory.UNCATEGORIZED.name
     ) {
         null

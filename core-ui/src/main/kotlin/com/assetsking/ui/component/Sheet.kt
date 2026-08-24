@@ -49,6 +49,7 @@ fun Sheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
         dragHandle = if (swipeToDismissEnabled) {
             { BottomSheetDefaults.DragHandle() }
         } else {

@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- REQ 设置§13：检查 GitHub Release 新版本需要联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 用户确认更新后，将已校验 APK 交给系统安装器。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:name=".AssetsKingApplication"
         android:allowBackup="false"
@@ -71,5 +73,14 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/assets_king_widget_info" />
         </receiver>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.update.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
     </application>
 </manifest>

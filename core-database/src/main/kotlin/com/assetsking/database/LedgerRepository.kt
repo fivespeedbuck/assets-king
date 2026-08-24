@@ -478,7 +478,7 @@ class LedgerRepository(
 
     companion object {
         val defaultEnabledModules: Set<String> = setOf("reimbursement", "recurring", "budget", "accounts")
-        val defaultModuleOrder: List<String> = listOf("reimbursement", "recurring", "budget", "accounts")
+        val defaultModuleOrder: List<String> = listOf("reimbursement", "recurring", "budget")
     }
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
@@ -588,7 +588,8 @@ class LedgerRepository(
         bankBalanceCents: Long? = null,
         bankCardTail: String? = null,
         necessity: Boolean? = null,
-        channel: String? = null
+        channel: String? = null,
+        refundOfId: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -621,18 +622,6 @@ class LedgerRepository(
                     merchant = merchant,
                     postedAt = postedAt
                 )?.id
-                // 退款关联原消费（REQ 待确认交易类型 §6-8）：同账户、30 天内的支出中取金额
-                // 最接近且 ≤ 退款额的（同额取最近）——冲减原消费的分类与必要性，不计入本月收入。
-                // ponytail: 找不到原消费仍允许独立退款确认（§7），只不参与冲减。
-                val refundOfId = if (type == TransactionType.REFUND) {
-                    database.transactionDao().findInRange(
-                        postedAt - 30L * 24 * 60 * 60 * 1000, postedAt
-                    ).filter {
-                        it.accountId == accountId &&
-                            it.type == TransactionType.EXPENSE.name &&
-                            it.amountCents <= amountCents
-                    }.maxWithOrNull(compareBy({ it.amountCents }, { it.occurredAt }))?.id
-                } else null
                 if (type == TransactionType.LOAN_PAYMENT) {
                     // 贷款扣款自动匹配期次（REQ 贷款页 §6-8）：确认时按金额+日期匹配最接近的
                     // 未还期次，匹配上即标记已还并记实际本金/利息/手续费；对不上挂最近计划、
@@ -661,7 +650,8 @@ class LedgerRepository(
                 } else {
                     addTransaction(
                         accountId, amountCents, type, category, merchant, note,
-                        occurredAt = postedAt, recurringRuleId = ruleId, refundOfId = refundOfId,
+                        occurredAt = postedAt, recurringRuleId = ruleId,
+                        refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
                         necessity = necessity, channel = channel, notificationId = notificationId
                     )
                 }
@@ -893,7 +883,8 @@ class LedgerRepository(
         occurredAt: Long,
         necessity: Boolean?,
         channel: String?,
-        isReimbursable: Boolean? = null
+        isReimbursable: Boolean? = null,
+        refundOfId: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -911,6 +902,10 @@ class LedgerRepository(
                 isReimbursable?.let { requested ->
                     database.transactionDao().updateReimbursable(id, requested)
                 }
+                database.transactionDao().updateRefundOfId(
+                    id,
+                    refundOfId.takeIf { type == TransactionType.REFUND }
+                )
                 recomputeBalance(old.accountId)
                 if (accountId != old.accountId) recomputeBalance(accountId)
             }
@@ -1054,16 +1049,8 @@ class LedgerRepository(
         require(amountCents > 0)
         database.withTransaction {
             requireNotNull(database.accountDao().find(accountId))
-            // 手动记退款同样自动关联原消费（REQ 待确认§6-8）：与通知确认路径同一条规则
-            val linkedRefund = refundOfId ?: if (type == TransactionType.REFUND) {
-                database.transactionDao().findInRange(
-                    occurredAt - 30L * 24 * 60 * 60 * 1000, occurredAt
-                ).filter {
-                    it.accountId == accountId &&
-                        it.type == TransactionType.EXPENSE.name &&
-                        it.amountCents <= amountCents
-                }.maxWithOrNull(compareBy({ it.amountCents }, { it.occurredAt }))?.id
-            } else null
+            // 退款只使用用户在编辑器里明确选中的原消费；不再按金额猜测，避免冲错分类和预算。
+            val linkedRefund = refundOfId.takeIf { type == TransactionType.REFUND }
             database.transactionDao().insert(
                 TransactionEntity(
                     id = UUID.randomUUID().toString(),

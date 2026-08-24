@@ -77,13 +77,35 @@ class HomePresentationTest {
     }
 
     @Test
+    fun assetOverviewShowsNoMonthlyRepaymentWhenDebtStartsNextMonth() {
+        assertEquals(
+            listOf(HomeRepaymentPage(label = "本月无还款", amountCents = 0L)),
+            homeRepaymentPages(
+                totalDueCount = 0,
+                totalDueCents = 0L,
+                paidCount = 0,
+                paidCents = 0L,
+                totalDebtCents = 700_000L,
+                hasFutureRepaymentInfo = true
+            )
+        )
+    }
+
+    @Test
+    fun budgetOverrunRequiresPositiveBudgetAndTurnsTruePastTheLimit() {
+        assertTrue(isBudgetOverrun(spentCents = 554_750L, budgetCents = 110_000L))
+        assertTrue(!isBudgetOverrun(spentCents = 110_000L, budgetCents = 110_000L))
+        assertTrue(!isBudgetOverrun(spentCents = 1L, budgetCents = 0L))
+    }
+
+    @Test
     fun moduleLibraryHasOneCompletePreviewForEverySupportedModule() {
         assertEquals(
-            setOf("budget", "reimbursement", "recurring", "accounts"),
+            setOf("budget", "reimbursement", "recurring"),
             homeModulePreviewSpecs.map { it.key }.toSet()
         )
-        assertEquals(listOf("reimbursement", "recurring", "budget", "accounts"), homeModulePreviewSpecs.map { it.key })
-        assertEquals(4, homeModulePreviewSpecs.size)
+        assertEquals(listOf("reimbursement", "recurring", "budget"), homeModulePreviewSpecs.map { it.key })
+        assertEquals(3, homeModulePreviewSpecs.size)
         assertTrue(homeModulePreviewSpecs.all { listOf(it.title, it.hint, it.primary, it.secondary).all(String::isNotBlank) })
     }
 

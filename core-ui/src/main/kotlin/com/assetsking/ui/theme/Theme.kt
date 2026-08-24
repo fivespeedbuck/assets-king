@@ -42,13 +42,22 @@ private fun lightScheme(primary: Color, primaryContainer: Color, onPrimaryContai
     onTertiaryContainer = onPrimaryContainer,
     background = SurfaceLight,
     surface = SurfaceLight,
+    surfaceBright = GlassCardLight,
+    surfaceDim = SurfaceVariantLight,
+    surfaceContainerLowest = GlassCardLight,
+    surfaceContainerLow = SurfaceLight,
     surfaceContainer = GlassCardLight,
+    surfaceContainerHigh = SurfaceVariantLight,
+    surfaceContainerHighest = SurfaceVariantLight,
     surfaceVariant = SurfaceVariantLight,
     onBackground = TextPrimaryLight,
     onSurface = TextPrimaryLight,
     onSurfaceVariant = TextSecondaryLight,
     outline = OutlineLight,
-    outlineVariant = OutlineVariantLight
+    outlineVariant = OutlineVariantLight,
+    inverseSurface = TextPrimaryLight,
+    inverseOnSurface = SurfaceLight,
+    inversePrimary = primary
 )
 
 // 龙巢深色占位（Codex 后续替换完整深色令牌）

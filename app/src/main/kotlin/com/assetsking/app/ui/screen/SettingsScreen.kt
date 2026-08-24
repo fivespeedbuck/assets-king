@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -53,6 +54,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.assetsking.app.BuildConfig
 import com.assetsking.app.UpdateChecker
+import com.assetsking.app.UpdateInstaller
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.notification.VaultRuntimeStatus
 import com.assetsking.app.ui.privacy.privacyFakeAmount
@@ -78,7 +80,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
 import java.util.UUID
+
+private fun formatUpdateBytes(bytes: Long): String =
+    String.format(Locale.ROOT, "%.1f MB", bytes.coerceAtLeast(0L) / 1024.0 / 1024.0)
 
 private fun parseSmsSenderWhitelistInput(input: String): Set<String>? {
     val senders = input
@@ -261,6 +268,10 @@ fun SettingsScreen(
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateMsg by remember { mutableStateOf("") }
     var latestRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
+    var downloadingRelease by remember { mutableStateOf<UpdateChecker.Release?>(null) }
+    var downloadedUpdateApk by remember { mutableStateOf<File?>(null) }
+    var updateDownloadedBytes by remember { mutableStateOf(0L) }
+    var updateTotalBytes by remember { mutableStateOf(0L) }
     var guideDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeSection by remember { mutableStateOf<SettingsSection?>(null) }
     LaunchedEffect(activeSection) { onRootStateChanged(activeSection == null) }
@@ -282,6 +293,19 @@ fun SettingsScreen(
     }
 
     val smsPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    val installPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val apk = downloadedUpdateApk
+        if (apk != null && UpdateInstaller.canRequestPackageInstalls(context)) {
+            runCatching { UpdateInstaller.launchSystemInstaller(context, apk) }
+                .onSuccess {
+                    downloadedUpdateApk = null
+                    updateMsg = "安装包已校验，已打开系统安装器"
+                }
+                .onFailure { updateMsg = it.message ?: "无法打开系统安装器" }
+        } else if (apk != null) {
+            updateMsg = "安装权限未开启，安装包已保留"
+        }
+    }
 
     // ON_RESUME 重读：授权弹窗关掉后回来立即刷新（REQ 监听§14）
     val smsPermOk = rememberSmsGranted()
@@ -881,19 +905,28 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        // 检查更新（REQ 设置§13）：检查 GitHub Release，不静默更新
+                        // 检查更新（REQ 设置§13）：API 失败时回退公开清单。
                         TextButton(
-                            enabled = settingsWritable && !checkingUpdate,
+                            enabled = settingsWritable && !checkingUpdate && downloadingRelease == null,
                             onClick = {
                                 checkingUpdate = true
                                 updateMsg = ""
                                 scope.launch {
-                                    val rel = withContext(Dispatchers.IO) { UpdateChecker.fetchLatest() }
+                                    val result = withContext(Dispatchers.IO) { UpdateChecker.fetchLatest() }
                                     checkingUpdate = false
-                                    when {
-                                        rel == null -> updateMsg = "检查失败：无网络或暂无发布"
-                                        UpdateChecker.isNewer(rel.tag, BuildConfig.VERSION_NAME) -> latestRelease = rel
-                                        else -> updateMsg = "已是最新版本"
+                                    when (result) {
+                                        is UpdateChecker.FetchResult.Failure -> updateMsg = result.message
+                                        is UpdateChecker.FetchResult.Success -> {
+                                            if (UpdateChecker.isNewer(result.release.tag, BuildConfig.VERSION_NAME)) {
+                                                latestRelease = result.release
+                                            } else {
+                                                updateMsg = if (result.source == UpdateChecker.Source.PUBLIC_MANIFEST) {
+                                                    "已是最新版本（经备用地址确认）"
+                                                } else {
+                                                    "已是最新版本"
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -902,12 +935,29 @@ fun SettingsScreen(
                     if (updateMsg.isNotEmpty()) {
                         Text(updateMsg, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    downloadedUpdateApk?.let { apk ->
+                        TextButton(
+                            enabled = settingsWritable && downloadingRelease == null,
+                            onClick = {
+                                if (UpdateInstaller.canRequestPackageInstalls(context)) {
+                                    runCatching { UpdateInstaller.launchSystemInstaller(context, apk) }
+                                        .onSuccess {
+                                            downloadedUpdateApk = null
+                                            updateMsg = "安装包已校验，已打开系统安装器"
+                                        }
+                                        .onFailure { updateMsg = it.message ?: "无法打开系统安装器" }
+                                } else {
+                                    installPermissionLauncher.launch(UpdateInstaller.unknownSourcesIntent(context))
+                                }
+                            }
+                        ) { Text("安装已下载版本") }
+                    }
                 }
             }
         } }
     }
 
-    // 新版本说明弹窗（REQ 设置§13）：展示版本说明，用户确认后跳转浏览器下载 APK
+    // 新版本说明弹窗：用户确认后留在 App 内下载并校验 APK。
     latestRelease?.let { rel ->
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { latestRelease = null },
@@ -925,11 +975,66 @@ fun SettingsScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(rel.htmlUrl))) }
                     latestRelease = null
-                }) { Text("前往下载") }
+                    downloadingRelease = rel
+                    updateDownloadedBytes = 0L
+                    updateTotalBytes = rel.apkSize
+                    updateMsg = ""
+                    scope.launch {
+                        try {
+                            val artifact = UpdateInstaller.download(context, rel) { downloaded, total ->
+                                scope.launch {
+                                    updateDownloadedBytes = downloaded
+                                    updateTotalBytes = total
+                                }
+                            }
+                            downloadingRelease = null
+                            downloadedUpdateApk = artifact.file
+                            updateMsg = "下载与校验完成"
+                            if (UpdateInstaller.canRequestPackageInstalls(context)) {
+                                UpdateInstaller.launchSystemInstaller(context, artifact.file)
+                                downloadedUpdateApk = null
+                                updateMsg = "安装包已校验，已打开系统安装器"
+                            } else {
+                                updateMsg = "安装包已校验，请允许资产大王安装应用"
+                                installPermissionLauncher.launch(UpdateInstaller.unknownSourcesIntent(context))
+                            }
+                        } catch (error: Throwable) {
+                            downloadingRelease = null
+                            updateMsg = error.message ?: "下载失败，请重试"
+                        }
+                    }
+                }) { Text("立即更新") }
             },
             dismissButton = { TextButton(onClick = { latestRelease = null }) { Text("取消") } }
+        )
+    }
+
+    downloadingRelease?.let { rel ->
+        val total = updateTotalBytes.coerceAtLeast(rel.apkSize)
+        val progress = if (total > 0L) {
+            (updateDownloadedBytes.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            title = { Text("正在下载 ${rel.tag}", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "${formatUpdateBytes(updateDownloadedBytes)} / ${formatUpdateBytes(total)}（${(progress * 100).toInt()}%）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text("下载完成后会校验安装包，再打开系统安装器。", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {}
         )
     }
 

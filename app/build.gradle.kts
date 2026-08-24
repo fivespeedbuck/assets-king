@@ -21,8 +21,8 @@ android {
         applicationId = "com.assetsking.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
     }
 
     buildTypes {
@@ -72,4 +72,6 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation(kotlin("test"))
+    // JVM 单测需提供 Android org.json 的真实实现；不打入正式 APK。
+    testImplementation("org.json:json:20240303")
 }

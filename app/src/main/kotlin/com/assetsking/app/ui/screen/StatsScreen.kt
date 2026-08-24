@@ -5,7 +5,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,12 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -90,6 +87,7 @@ import com.assetsking.ui.theme.ReimbursementYellow
 import com.assetsking.ui.theme.BalanceBlue
 import com.assetsking.ui.theme.RepaymentPurple
 import com.assetsking.ui.theme.DeficitRed
+import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.ui.theme.cashBalanceColor
 import com.assetsking.usecase.GetStatsUseCase
 import com.assetsking.usecase.StatsData
@@ -141,7 +139,7 @@ fun StatsScreen(
     var drillCategory by remember { mutableStateOf<CategoryEntity?>(null) }
     BackHandler(enabled = drillCategory != null) { drillCategory = null }
     var stats by remember { mutableStateOf<StatsData?>(null) }
-    var showAllBudgets by remember { mutableStateOf(false) }
+    var showBudgetDetails by remember { mutableStateOf(false) }
     // 趋势卡选中月：默认本月；图表点击只切换月份，避免窄柱二次点击误触跳转。
     var selectedBar by remember { mutableStateOf(YearMonth.now()) }
 
@@ -428,20 +426,15 @@ fun StatsScreen(
 
         // ── ②本月预算（REQ 统计§6/§17-18）──
         item {
-            GlassCard(contentPadding = Modifier) {
+            GlassCard(
+                modifier = Modifier.clickable { showBudgetDetails = true },
+                contentPadding = Modifier
+            ) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("本月预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        StatsHeaderActionButton("查看全部") { showAllBudgets = true }
-                    }
+                    Text("本月预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
-                    ProgressLine("必要预算", necessarySpent, budgetSum, StatsGreen)
-                    ProgressLine("自由开销", optionalSpent, freeSpendingCents, StatsRed)
-                    // 概览只保留两条总进度；所有分类明细都收进右上角「查看全部」（AK-UX-004）。
+                    BudgetProgressLine("必要预算", necessarySpent, budgetSum, StatsGreen, privacyIndex = 410)
+                    BudgetProgressLine("自由开销", optionalSpent, freeSpendingCents, PendingOrange, privacyIndex = 412)
                 }
             }
         }
@@ -528,36 +521,13 @@ fun StatsScreen(
     if (showMonthPicker) {
         MonthPickerDialog(initial = month, onPick = { month = it; showMonthPicker = false }, onDismiss = { showMonthPicker = false })
     }
-    if (showAllBudgets) {
-        // 完整预算页（REQ 统计§18）：所有已设预算，未消费显示 0%
-        AlertDialog(
-            onDismissRequest = { showAllBudgets = false },
-            title = {
-                Text(if (privacyEnabled) "${privacyFakeYearMonth(510)} 全部预算" else "${month.year}年${month.monthValue}月 全部预算")
-            },
-            text = {
-                val monthBudgets = budgets.filter { it.month == month.toString() }
-                Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-                    if (monthBudgets.isEmpty()) {
-                        Text("本月未设分类预算", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    monthBudgets.forEachIndexed { index, b ->
-                        val spent = expenses.filter { it.category == b.category }.sumOf { netOf(it) }
-                        ProgressLine(
-                            if (privacyEnabled) privacyObfuscatedText(b.category, 520 + index) else b.category,
-                            spent,
-                            b.monthlyLimitCents,
-                            StatsGreen,
-                            roomy = true
-                        )
-                        if (index < monthBudgets.lastIndex) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showAllBudgets = false }) { Text("关闭") } },
-            dismissButton = {}
+    if (showBudgetDetails) {
+        BudgetDetailsDialog(
+            month = month,
+            budgets = budgets,
+            categories = categories,
+            transactions = state.transactions,
+            onDismiss = { showBudgetDetails = false }
         )
     }
 }
@@ -1412,38 +1382,5 @@ private fun TrendLegendItem(color: Color, label: String) {
         )
         Spacer(Modifier.width(5.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun ProgressLine(label: String, spent: Long, budget: Long, color: Color, roomy: Boolean = false) {
-    val privacyEnabled = LocalPrivacyEnabled.current
-    val frame = LocalPrivacyChaosFrame.current
-    val privacyIndex = Math.floorMod(label.hashCode(), frame.progressFractions.size)
-    val privacyFraction = animatePrivacyValue(
-        frame.progressFractions[privacyIndex],
-        "privacy-budget-${label.hashCode()}"
-    )
-    Column(Modifier.padding(vertical = if (roomy) 11.dp else 4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = if (roomy) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall)
-            Text(
-                if (privacyEnabled) {
-                    "${privacyFakeAmount(privacyIndex)} / ${privacyFakeAmount(privacyIndex + 1)} · ${(privacyFraction * 100).toInt()}%"
-                } else {
-                    "${formatMoney(spent)} / ${formatMoney(budget)} · ${if (budget > 0) spent * 100 / budget else 0}%"
-                },
-                style = if (roomy) MaterialTheme.typography.bodySmall else MaterialTheme.typography.labelSmall,
-                color = if (!privacyEnabled && budget > 0 && spent > budget) StatsRed else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Spacer(Modifier.height(if (roomy) 7.dp else 2.dp))
-        val frac = if (privacyEnabled) privacyFraction else if (budget > 0) (spent.toFloat() / budget).coerceIn(0f, 1f) else 0f
-        androidx.compose.material3.LinearProgressIndicator(
-            progress = { frac },
-            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-            color = color,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
     }
 }

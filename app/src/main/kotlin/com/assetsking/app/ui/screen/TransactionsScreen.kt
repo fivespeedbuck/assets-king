@@ -697,7 +697,11 @@ private fun TransactionListRow(
     val reimbursementBadge = reimbursementBadge(tx)
     val recurringDebit = isRecurringDebit(tx)
     val metadata = listOfNotNull(
-        transactionListCategoryLabel(tx.type, tx.category, category).ifEmpty { null },
+        if (tx.type == TransactionType.REFUND.name && tx.refundOfId == null) {
+            "未关联原消费"
+        } else {
+            transactionListCategoryLabel(tx.type, tx.category, category).ifEmpty { null }
+        },
         if (tx.channel != null) "${tx.channel} · $accountName" else accountName.ifEmpty { null }
     ).joinToString(" · ")
     Row(

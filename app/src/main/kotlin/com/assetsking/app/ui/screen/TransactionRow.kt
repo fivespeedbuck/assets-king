@@ -178,7 +178,7 @@ fun TransactionRow(
                 color = transactionCashFlowColor(transaction.type)
             )
         }
-        if (!isLoanTx) {
+        if (!isLoanTx && categoryText.isNotBlank()) {
             Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
                 Text(
                     if (privacyEnabled) privacyObfuscatedText(categoryText, 828) else categoryText,

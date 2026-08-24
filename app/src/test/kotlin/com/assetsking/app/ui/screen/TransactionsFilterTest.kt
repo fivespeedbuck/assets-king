@@ -24,6 +24,8 @@ class TransactionsFilterTest {
     @Test
     fun uncategorizedInternalCodeNeverLeaksIntoTransactionList() {
         assertEquals("", transactionListCategoryLabel("REIMBURSEMENT", "UNCATEGORIZED", null))
+        assertEquals("", transactionListCategoryLabel("REFUND", "UNCATEGORIZED", null))
+        assertEquals("", transactionListCategoryLabel("LOAN_PAYMENT", "UNCATEGORIZED", null))
         assertEquals("未分类", transactionListCategoryLabel("EXPENSE", "UNCATEGORIZED", null))
         assertEquals("书籍资料", transactionListCategoryLabel("REIMBURSEMENT", "书籍资料", null))
     }

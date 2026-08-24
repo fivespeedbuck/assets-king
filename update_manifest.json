@@ -1,0 +1,14 @@
+{
+  "tag_name": "v0.1.4",
+  "name": "资产大王 v0.1.4",
+  "body": "可靠更新与日常录入体验收口：支持 GitHub API 失败后自动切换公开清单、App 内下载并校验 APK；退款可选关联原消费；修复本月无还款误提示；统一预算超支、表单选中态和账户/周期账单二级视觉。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.4",
+  "assets": [
+    {
+      "name": "assets-king-v0.1.4.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.4/assets-king-v0.1.4.apk",
+      "size": 31171854,
+      "digest": "sha256:45af96800d6fd41eb322639e12e9b9444453e95b028cc528acb800f7a37c54c2"
+    }
+  ]
+}

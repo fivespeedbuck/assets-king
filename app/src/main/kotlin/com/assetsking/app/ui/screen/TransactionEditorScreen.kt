@@ -43,8 +43,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -88,6 +91,7 @@ import com.assetsking.ui.component.Sheet
 import com.assetsking.ui.format.datePickerMillis
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.format.replaceLocalDate
 import com.assetsking.ui.format.replaceLocalTime
 import com.assetsking.usecase.AccountInference
@@ -99,6 +103,58 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
 import java.util.UUID
+
+@Composable
+private fun strongSelectedFilterChipColors() = FilterChipDefaults.filterChipColors(
+    selectedContainerColor = MaterialTheme.colorScheme.primary,
+    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
+    selectedTrailingIconColor = MaterialTheme.colorScheme.onPrimary
+)
+
+internal data class RefundSourceCandidate(
+    val transaction: TransactionEntity,
+    val remainingCents: Long
+)
+
+internal fun refundSourceCandidates(
+    transactions: List<TransactionEntity>,
+    accountId: String,
+    refundAmountCents: Long,
+    refundOccurredAt: Long,
+    editingRefundId: String? = null
+): List<RefundSourceCandidate> {
+    val refundedByExpense = transactions
+        .filter {
+            it.id != editingRefundId &&
+                it.status == "CONFIRMED" &&
+                it.type == TransactionType.REFUND.name &&
+                it.refundOfId != null
+        }
+        .groupBy { requireNotNull(it.refundOfId) }
+        .mapValues { (_, refunds) -> refunds.sumOf { it.amountCents } }
+
+    return transactions.asSequence()
+        .filter {
+            it.status == "CONFIRMED" &&
+                it.type == TransactionType.EXPENSE.name &&
+                it.accountId == accountId &&
+                it.occurredAt <= refundOccurredAt
+        }
+        .map { expense ->
+            RefundSourceCandidate(
+                transaction = expense,
+                remainingCents = (expense.amountCents - refundedByExpense.getOrDefault(expense.id, 0L)).coerceAtLeast(0L)
+            )
+        }
+        .filter { it.remainingCents > 0L && (refundAmountCents <= 0L || refundAmountCents <= it.remainingCents) }
+        .sortedWith(
+            compareByDescending<RefundSourceCandidate> { refundAmountCents > 0L && it.remainingCents == refundAmountCents }
+                .thenByDescending { it.transaction.occurredAt }
+        )
+        .take(30)
+        .toList()
+}
 
 // ── 编辑器顶层类型（REQ 编辑器§11）──
 private enum class EditorKind(val label: String) { EXPENSE("支出"), INCOME("入账"), TRANSFER("转账"), REPAY("还款") }
@@ -278,6 +334,7 @@ fun TransactionEditorScreen(
     }
     var necessity by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.necessity) }
     var isReimbursable by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.isReimbursable ?: false) }
+    var refundOfId by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.refundOfId) }
     var note by remember(editingTransaction?.id) { mutableStateOf(editingTransaction?.note.orEmpty()) }
     var balanceResolution by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf<BalanceResolution?>(null)
@@ -345,6 +402,21 @@ fun TransactionEditorScreen(
     val selectedReimbursementCents = selectableReimbursableTxs
         .filter { it.id in expenseIds.value }
         .sumOf(::availableReimbursementCents)
+    val refundCandidates = remember(transactions, accountId, amountCents, occurredAt, editingTransaction?.id) {
+        refundSourceCandidates(
+            transactions = transactions,
+            accountId = accountId,
+            refundAmountCents = amountCents,
+            refundOccurredAt = occurredAt,
+            editingRefundId = editingTransaction?.id
+        )
+    }
+    val selectedRefundSource = refundOfId?.let { selectedId ->
+        refundCandidates.firstOrNull { it.transaction.id == selectedId }
+    }
+    LaunchedEffect(accountId, amountCents, refundCandidates, refundOfId) {
+        if (refundOfId != null && selectedRefundSource == null) refundOfId = null
+    }
 
     LaunchedEffect(amountCents, kind, incomeSub, selectableReimbursableTxs, reimbursementSelectionTouched) {
         if (
@@ -580,6 +652,8 @@ fun TransactionEditorScreen(
                                 val updatedCategory = when {
                                     kind == EditorKind.EXPENSE -> selectedCategoryName
                                     incomeSub == IncomeSub.INCOME -> selectedCategoryName
+                                    incomeSub == IncomeSub.REFUND -> selectedRefundSource?.transaction?.category
+                                        ?: com.assetsking.model.TransactionCategory.UNCATEGORIZED.name
                                     else -> editingTransaction.category.ifBlank { com.assetsking.model.TransactionCategory.UNCATEGORIZED.name }
                                 }
                                 if (updatedType == TransactionType.REIMBURSEMENT) {
@@ -604,16 +678,20 @@ fun TransactionEditorScreen(
                                         occurredAt,
                                         if (updatedType == TransactionType.EXPENSE) effectiveNecessity else editingTransaction.necessity,
                                         channel.trim().takeIf { it.isNotEmpty() },
-                                        isReimbursable
+                                        isReimbursable,
+                                        refundOfId
                                     )
                                 }
                             } else {
                                 doSave(
                                     kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
-                                    merchantText.trim(), selectedCategoryName, necessity, isReimbursable, note,
+                                    merchantText.trim(),
+                                    if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.category.orEmpty() else selectedCategoryName,
+                                    if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.necessity else necessity,
+                                    isReimbursable, note,
                                     loanPlanId, principalCents ?: 0L, interestCents ?: 0L, feeCents ?: 0L,
                                     transferFeeCents, expenseIds.value, bankBalanceForSave,
-                                    pendingItem, viewModel
+                                    refundOfId, pendingItem, viewModel
                                 )
                             }
                             onDone()
@@ -658,19 +736,30 @@ fun TransactionEditorScreen(
                                 necessity = null
                             }
                         },
-                        label = { Text(k.label) }
+                        label = { Text(k.label) },
+                        colors = strongSelectedFilterChipColors()
                     )
                 }
             }
             when (kind) {
                 EditorKind.INCOME -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     visibleIncomeSubs.forEach { s ->
-                        FilterChip(selected = incomeSub == s, onClick = { incomeSub = s }, label = { Text(s.label) })
+                        FilterChip(
+                            selected = incomeSub == s,
+                            onClick = { incomeSub = s },
+                            label = { Text(s.label) },
+                            colors = strongSelectedFilterChipColors()
+                        )
                     }
                 }
                 EditorKind.REPAY -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     RepaySub.entries.forEach { s ->
-                        FilterChip(selected = repaySub == s, onClick = { repaySub = s }, label = { Text(s.label) })
+                        FilterChip(
+                            selected = repaySub == s,
+                            onClick = { repaySub = s },
+                            label = { Text(s.label) },
+                            colors = strongSelectedFilterChipColors()
+                        )
                     }
                 }
                 else -> Unit
@@ -784,6 +873,22 @@ fun TransactionEditorScreen(
                 singleLine = true
             )
 
+            if (kind == EditorKind.INCOME && incomeSub == IncomeSub.REFUND) {
+                RefundSourceField(
+                    candidates = refundCandidates,
+                    selectedId = refundOfId,
+                    onSelected = { candidate ->
+                        refundOfId = candidate?.transaction?.id
+                        candidate?.transaction?.let { source ->
+                            necessity = source.necessity
+                            categoryId = categories.firstOrNull {
+                                it.name == source.category && it.kind == "EXPENSE" && !it.isArchived
+                            }?.id
+                        }
+                    }
+                )
+            }
+
             // ── 分类宫格（REQ 编辑器§3/§25-29）──
             if (kind == EditorKind.EXPENSE || (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME)) {
                 CategoryGrid(
@@ -804,30 +909,45 @@ fun TransactionEditorScreen(
                 } == true
                 Text("必要性", fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = effectiveNecessity, onClick = { necessity = true }, label = { Text("必要") })
-                    FilterChip(selected = !effectiveNecessity, onClick = { necessity = false }, label = { Text("非必要") })
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable(enabled = !reimbursementLocked) {
-                        isReimbursable = !isReimbursable
-                    }
-                ) {
-                    Icon(
-                        if (isReimbursable) Icons.Filled.Check else Icons.Filled.Close,
-                        contentDescription = null,
-                        tint = if (isReimbursable) com.assetsking.ui.theme.ReimbursementYellow else MaterialTheme.colorScheme.onSurfaceVariant
+                    FilterChip(
+                        selected = effectiveNecessity,
+                        onClick = { necessity = true },
+                        label = { Text("必要") },
+                        colors = strongSelectedFilterChipColors()
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        reimbursementToggleLabel(
-                            isReimbursable = isReimbursable,
-                            lockedByArrival = reimbursementLocked
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (isReimbursable) com.assetsking.ui.theme.ReimbursementYellow else MaterialTheme.colorScheme.onSurface
+                    FilterChip(
+                        selected = !effectiveNecessity,
+                        onClick = { necessity = false },
+                        label = { Text("非必要") },
+                        colors = strongSelectedFilterChipColors()
                     )
                 }
+                Text("报销", fontWeight = FontWeight.Medium)
+                val reimbursementSelected = isReimbursable || reimbursementLocked
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = reimbursementSelected,
+                        onClick = { isReimbursable = true },
+                        enabled = !reimbursementLocked,
+                        label = { Text("报销") },
+                        colors = strongSelectedFilterChipColors()
+                    )
+                    FilterChip(
+                        selected = !reimbursementSelected,
+                        onClick = { isReimbursable = false },
+                        enabled = !reimbursementLocked,
+                        label = { Text("不报销") },
+                        colors = strongSelectedFilterChipColors()
+                    )
+                }
+                Text(
+                    reimbursementToggleLabel(
+                        isReimbursable = isReimbursable,
+                        lockedByArrival = reimbursementLocked
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             // ── 贷款还款：计划 + 明细（REQ 贷款页§7-8）──
@@ -838,7 +958,8 @@ fun TransactionEditorScreen(
                         FilterChip(
                             selected = loanPlanId == plan.id,
                             onClick = { loanPlanId = plan.id },
-                            label = { Text(loanPlanDisplayName(plan, accounts)) }
+                            label = { Text(loanPlanDisplayName(plan, accounts)) },
+                            colors = strongSelectedFilterChipColors()
                         )
                     }
                 }
@@ -1116,7 +1237,10 @@ internal fun ManagedTransactionDetailSheet(
             fontWeight = FontWeight.SemiBold
         )
         Text("资金账户：$accountName")
-        Text("分类：${transaction.category}")
+        transactionCategoryLabel(transaction.type, transaction.category)?.let { Text("分类：$it") }
+        if (transaction.type == TransactionType.REFUND.name) {
+            Text(if (transaction.refundOfId == null) "原消费：未关联" else "原消费：已关联")
+        }
         Text("日期与时间：${formatTime(transaction.occurredAt)}")
         transaction.merchant?.let { Text("商户/来源：$it") }
         transaction.note?.let { Text("备注：$it") }
@@ -1130,7 +1254,7 @@ private fun doSave(
     amountCents: Long, occurredAt: Long, accountId: String, toAccountId: String, channel: String,
     merchant: String, category: String, necessity: Boolean?, isReimbursable: Boolean, note: String,
     loanPlanId: String?, principalCents: Long, interestCents: Long, feeCents: Long, transferFeeCents: Long,
-    expenseIds: List<String>, bankBalanceCents: Long?, pendingItem: PendingItem?, viewModel: LedgerViewModel
+    expenseIds: List<String>, bankBalanceCents: Long?, refundOfId: String?, pendingItem: PendingItem?, viewModel: LedgerViewModel
 ) {
     when {
         kind == EditorKind.TRANSFER && pendingItem != null ->
@@ -1202,16 +1326,17 @@ private fun doSave(
                     bankBalanceCents = bankBalanceCents,
                     bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
                     necessity = necessity,
-                    channel = channel
+                    channel = channel,
+                    refundOfId = refundOfId
                 )
             } else {
                 viewModel.saveEditorTransaction(
                     accountId, amountCents, type, cat, merchant.takeIf { it.isNotEmpty() },
-                    note.takeIf { it.isNotEmpty() }, occurredAt, isReimbursable, necessity, channel
+                    note.takeIf { it.isNotEmpty() }, occurredAt, isReimbursable, necessity, channel, refundOfId
                 )
             }
             if (merchant.isNotEmpty()) {
-                viewModel.learnRule(merchant, accountId, type.name, category)
+                viewModel.learnRule(merchant, accountId, type.name, cat)
             }
         }
     }
@@ -1360,7 +1485,8 @@ internal fun CategoryGrid(
                             FilterChip(
                                 selected = selectedCategoryId == child.id,
                                 onClick = { onSelect(child) },
-                                label = { Text(child.name) }
+                                label = { Text(child.name) },
+                                colors = strongSelectedFilterChipColors()
                             )
                         }
                         if (children.size > 9) {
@@ -1517,6 +1643,68 @@ private fun BalancePreviewInEditor(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun RefundSourceField(
+    candidates: List<RefundSourceCandidate>,
+    selectedId: String?,
+    onSelected: (RefundSourceCandidate?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = candidates.firstOrNull { it.transaction.id == selectedId }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("关联原消费（可选）", fontWeight = FontWeight.Medium)
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    selected?.let {
+                        "${it.transaction.merchant ?: "未命名"} · ${formatMoney(it.transaction.amountCents)}"
+                    } ?: "不关联原消费",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.fillMaxWidth(0.92f)
+            ) {
+                DropdownMenuItem(
+                    text = { Text("不关联原消费") },
+                    onClick = { onSelected(null); expanded = false }
+                )
+                candidates.forEach { candidate ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    "${candidate.transaction.merchant ?: "未命名"} · ${formatMoney(candidate.transaction.amountCents)}",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    "可退 ${formatMoney(candidate.remainingCents)} · ${formatTime(candidate.transaction.occurredAt)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        onClick = { onSelected(candidate); expanded = false }
+                    )
+                }
+            }
+        }
+        Text(
+            when {
+                selected != null -> "将继承原消费分类与必要性，并冲减对应预算"
+                candidates.isEmpty() -> "没有金额足够的同账户消费，可不关联直接入账"
+                else -> "未关联时退款不冲减消费分类和预算，可之后编辑补绑"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -1796,8 +1984,18 @@ internal fun NewCategoryDialog(
                 // 收入分类没有必要性概念（REQ 预期收入§4）
                 if (!isIncome) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = necessary == true, onClick = { necessary = true }, label = { Text("默认必要") })
-                        FilterChip(selected = necessary == false, onClick = { necessary = false }, label = { Text("默认非必要") })
+                        FilterChip(
+                            selected = necessary == true,
+                            onClick = { necessary = true },
+                            label = { Text("默认必要") },
+                            colors = strongSelectedFilterChipColors()
+                        )
+                        FilterChip(
+                            selected = necessary == false,
+                            onClick = { necessary = false },
+                            label = { Text("默认非必要") },
+                            colors = strongSelectedFilterChipColors()
+                        )
                     }
                 }
                 if (!isSecondary) {

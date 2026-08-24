@@ -48,6 +48,7 @@ import com.assetsking.model.AccountType
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
+import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.transactionCashFlowColor
 
@@ -363,9 +364,15 @@ private fun CreditAccountFlowRow(
     onClick: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
+    val categoryText = transactionCategoryLabel(transaction.type, transaction.category)
     val title = transaction.merchant?.takeIf { it.isNotBlank() }
         ?: transaction.note?.takeIf { it.isNotBlank() }
-        ?: transaction.category
+        ?: categoryText
+        ?: when (transaction.type) {
+            "REFUND" -> "退款"
+            "REIMBURSEMENT" -> "报销到账"
+            else -> "流水"
+        }
     Column(
         Modifier.fillMaxWidth().clickable(enabled = !privacyEnabled, onClick = onClick)
     ) {
@@ -382,9 +389,12 @@ private fun CreditAccountFlowRow(
                 )
                 Text(
                     if (privacyEnabled) {
-                        "${privacyObfuscatedText(transaction.category, privacyIndex + 100)} · ${privacyFakeDateTime(privacyIndex + 200)}"
+                        listOfNotNull(
+                            categoryText?.let { privacyObfuscatedText(it, privacyIndex + 100) },
+                            privacyFakeDateTime(privacyIndex + 200)
+                        ).joinToString(" · ")
                     } else {
-                        "${transaction.category} · ${formatTime(transaction.occurredAt)}"
+                        listOfNotNull(categoryText, formatTime(transaction.occurredAt)).joinToString(" · ")
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

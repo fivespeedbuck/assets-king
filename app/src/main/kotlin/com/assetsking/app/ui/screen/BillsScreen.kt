@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
@@ -105,34 +106,38 @@ fun BillsScreen(
         ) {
             item {
                 GlassCard {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.weight(1.15f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Text("本月已扣", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "本月已扣",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
                             Text(
                                 if (privacyEnabled) privacyFakeCompactAmount(2701) else formatMoney(claimedTxs.sumOf { it.amountCents }),
                                 color = RecurringDebitOrange,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Clip
                             )
                         }
-                        Row(
-                            modifier = Modifier.weight(0.85f),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Text("待扣", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                            Text(
+                                "待扣",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
                             Text(
                                 if (privacyEnabled) privacyFakeCompactAmount(2702) else formatMoney(pendingRules.sumOf { it.amountCents }),
                                 color = RecurringDebitOrange,
-                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.End,
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Clip

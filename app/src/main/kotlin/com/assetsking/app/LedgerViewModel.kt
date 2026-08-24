@@ -235,12 +235,13 @@ class LedgerViewModel(
         id: String, amountCents: Long, type: TransactionType,
         category: String, merchant: String?, note: String?,
         accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?,
-        isReimbursable: Boolean
+        isReimbursable: Boolean,
+        refundOfId: String? = null
     ) {
         viewModelScope.coroutineLaunch {
             repository.updateTransaction(
                 id, amountCents, type, category, merchant, note,
-                accountId, occurredAt, necessity, channel, isReimbursable
+                accountId, occurredAt, necessity, channel, isReimbursable, refundOfId
             )
         }
     }
@@ -450,13 +451,14 @@ class LedgerViewModel(
         occurredAt: Long = System.currentTimeMillis(),
         isReimbursable: Boolean = false,
         necessity: Boolean? = null,
-        channel: String? = null
+        channel: String? = null,
+        refundOfId: String? = null
     ) {
         viewModelScope.launch {
             repository.addTransaction(
                 accountId, amountCents, type, category, merchant, note,
                 occurredAt = occurredAt, isReimbursable = isReimbursable,
-                necessity = necessity, channel = channel
+                necessity = necessity, channel = channel, refundOfId = refundOfId
             )
         }
     }
@@ -573,12 +575,13 @@ class LedgerViewModel(
         bankBalanceCents: Long? = null,
         bankCardTail: String? = null,
         necessity: Boolean? = null,
-        channel: String? = null
+        channel: String? = null,
+        refundOfId: String? = null
     ) {
         viewModelScope.launch {
             repository.confirmNotification(
                 notificationId, accountId, amountCents, type, category, merchant, note,
-                bankBalanceCents, bankCardTail, necessity, channel
+                bankBalanceCents, bankCardTail, necessity, channel, refundOfId
             )
             repository.learnRule(merchant, accountId, type.name, category)
         }

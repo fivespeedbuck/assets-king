@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -29,6 +30,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.automirrored.filled.FactCheck
@@ -93,6 +95,7 @@ import com.assetsking.ui.theme.ReimbursementYellow
 import com.assetsking.ui.theme.RecurringDebitOrange
 import com.assetsking.ui.theme.RepaymentPurple
 import com.assetsking.ui.theme.cashBalanceColor
+import com.assetsking.ui.theme.debtAmountColor
 import com.assetsking.usecase.cashFlowSummary
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
@@ -154,6 +157,8 @@ fun HomeTab(
     val monthIncome = monthCashFlow.incomeCents
     val monthExpense = monthCashFlow.expenseCents
     val monthBalance = monthCashFlow.balanceCents
+    val today = java.time.LocalDate.now()
+    val currentMonthEnd = YearMonth.from(today).atEndOfMonth()
     val totalDueItems = monthRepaymentItems(
         plans = loanPlans,
         accounts = state.accounts,
@@ -165,16 +170,43 @@ fun HomeTab(
     )
     val outstandingDueItems = totalDueItems.filterNot { it.paid }
     val paidDueItems = totalDueItems.filter { it.paid }
+    val throughNextMonth = monthRepaymentItems(
+        plans = loanPlans,
+        accounts = state.accounts,
+        cardInstallments = cardInstallments,
+        cardSchedules = cardInstallmentSchedules,
+        cardRemainingDueByCard = state.v5?.cardRemainingDueByCard.orEmpty(),
+        transactions = state.transactions,
+        transfers = state.transfers,
+        today = today,
+        outstandingThrough = YearMonth.from(today).plusMonths(1).atEndOfMonth()
+    )
+    val hasFutureScheduledRepayment = throughNextMonth.any {
+        !it.paid && it.dueDay > currentMonthEnd.toEpochDay()
+    } || state.accounts.any { account ->
+        account.type == AccountType.CREDIT.name && !account.archived && account.balanceCents > 0L &&
+            creditAccountRepaymentProjection(
+                account = account,
+                statementRemainingCents = state.v5?.cardRemainingDueByCard?.get(account.id)
+                    ?: account.statementOriginalDueCents,
+                cardInstallments = cardInstallments,
+                cardSchedules = cardInstallmentSchedules,
+                today = today
+            ).let { projection ->
+                projection.nextDueDay?.let { it > currentMonthEnd.toEpochDay() } == true &&
+                    projection.nextTotalCents > 0L
+            }
+    }
     val repaymentPages = homeRepaymentPages(
         totalDueCount = outstandingDueItems.size,
         totalDueCents = outstandingDueItems.sumOf { it.amount },
         paidCount = paidDueItems.size,
         paidCents = paidDueItems.sumOf { it.amount },
-        totalDebtCents = state.v5?.totalDebtCents ?: 0L
+        totalDebtCents = state.v5?.totalDebtCents ?: 0L,
+        hasFutureRepaymentInfo = hasFutureScheduledRepayment
     )
 
     // 近期提醒与本月卡片共用同一聚合器，只改变截止窗口。
-    val today = java.time.LocalDate.now()
     val dueSoon = monthRepaymentItems(
         plans = loanPlans,
         accounts = state.accounts,
@@ -341,7 +373,7 @@ fun HomeTab(
             )
         }
 
-        // ── 固定首页信息区：待报销/本月待扣/预算/分账户 ──
+        // ── 固定首页信息区：待报销/本月待扣/预算 ──
         LedgerRepository.defaultModuleOrder.forEachIndexed { index, module ->
             val compactKeys = setOf("reimbursement", "recurring")
             val hasAdjacentCompactPartner = module in compactKeys && (
@@ -359,10 +391,8 @@ fun HomeTab(
                     recurringRules = recurringRules,
                     freeSpendingCents = freeSpendingCents,
                     money = ::money,
-                    onGotoStats = onGotoStats,
                     onGotoBills = onGotoBills,
-                    onGotoReimbursement = onGotoReimbursement,
-                    onGotoAccounts = { showAssetAccounts = true }
+                    onGotoReimbursement = onGotoReimbursement
                 )
             }
         }
@@ -371,6 +401,7 @@ fun HomeTab(
         AccountListDialog(
             title = "资产账户",
             accounts = state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived },
+            debtAccounts = false,
             onEdit = { showAssetAccounts = false; onEditAccount(it) },
             onAdd = { showAssetAccounts = false; onAddAccount(AccountType.ASSET) },
             onDismiss = { showAssetAccounts = false }
@@ -380,6 +411,7 @@ fun HomeTab(
         AccountListDialog(
             title = "欠款账户",
             accounts = visibleDebtAccounts(state.accounts),
+            debtAccounts = true,
             onEdit = { showDebtAccounts = false; onEditAccount(it) },
             onAdd = { showDebtAccounts = false; onAddAccount(AccountType.CREDIT) },
             onDismiss = { showDebtAccounts = false }
@@ -387,7 +419,7 @@ fun HomeTab(
     }
 }
 
-/** 4 个固定模块（待报销/待扣/预算/分账户），全部可下钻。 */
+/** 3 个固定模块（待报销/待扣/预算），全部可下钻。 */
 @Composable
 private fun HomeModuleCard(
     modifier: Modifier = Modifier,
@@ -398,13 +430,12 @@ private fun HomeModuleCard(
     recurringRules: List<RecurringRuleEntity>,
     freeSpendingCents: Long,
     money: (Long, Int) -> String,
-    onGotoStats: () -> Unit,
     onGotoBills: () -> Unit,
-    onGotoReimbursement: () -> Unit,
-    onGotoAccounts: () -> Unit
+    onGotoReimbursement: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
     val privacyFrame = LocalPrivacyChaosFrame.current
+    var showBudgetDetails by remember { mutableStateOf(false) }
     val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
     val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
     val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
@@ -414,8 +445,7 @@ private fun HomeModuleCard(
             when (key) {
                 "recurring" -> onGotoBills()
                 "reimbursement" -> onGotoReimbursement()
-                "accounts" -> onGotoAccounts()
-                else -> onGotoStats()
+                else -> showBudgetDetails = true
             }
         },
         contentPadding = Modifier
@@ -430,46 +460,21 @@ private fun HomeModuleCard(
                 "budget" -> {
                     val budgetSum = necessaryBudgetCents(budgets, categories, YearMonth.now().toString())
                     val monthSpending = monthSpendingBreakdown(state.transactions, categories, monthStart, monthEnd)
-                    val necessaryProgress = animatePrivacyValue(
-                        if (privacyEnabled) privacyFrame.progressFractions[1]
-                        else if (budgetSum > 0L) (monthSpending.necessaryCents.toFloat() / budgetSum).coerceIn(0f, 1f) else 0f,
-                        "privacy-home-necessary"
-                    )
-                    val optionalProgress = animatePrivacyValue(
-                        if (privacyEnabled) privacyFrame.progressFractions[2]
-                        else if (freeSpendingCents > 0L) (monthSpending.optionalCents.toFloat() / freeSpendingCents).coerceIn(0f, 1f) else 0f,
-                        "privacy-home-optional"
-                    )
                     HomeModuleHeader("本月预算")
                     Spacer(Modifier.height(8.dp))
-                    Text("必要消费", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (privacyEnabled) "${privacyFakeAmount(1)} / ${privacyFakeAmount(2)}" else "${money(monthSpending.necessaryCents, 1)} / ${money(budgetSum, 2)}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    BudgetProgressLine(
+                        label = "必要消费",
+                        spentCents = monthSpending.necessaryCents,
+                        budgetCents = budgetSum,
+                        normalColor = MaterialTheme.colorScheme.primary,
+                        privacyIndex = 1
                     )
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = { necessaryProgress },
-                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                    Spacer(Modifier.height(5.dp))
-                    Text("自由开销（非必要）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (privacyEnabled) "${privacyFakeAmount(3)} / ${privacyFakeAmount(4)}" else "${money(monthSpending.optionalCents, 3)} / ${money(freeSpendingCents, 4)}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    androidx.compose.material3.LinearProgressIndicator(
-                        progress = { optionalProgress },
-                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
-                        color = HomeOrange,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    BudgetProgressLine(
+                        label = "自由开销（非必要）",
+                        spentCents = monthSpending.optionalCents,
+                        budgetCents = freeSpendingCents,
+                        normalColor = HomeOrange,
+                        privacyIndex = 3
                     )
                 }
                 "reimbursement" -> {
@@ -522,49 +527,17 @@ private fun HomeModuleCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                "accounts" -> {
-                    val assetAccounts = state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived }
-                    HomeModuleHeader("分账户余额")
-                    Spacer(Modifier.height(8.dp))
-                    assetAccounts.take(3).forEachIndexed { index, account ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                if (privacyEnabled) privacyObfuscatedText(account.name, 100 + index) else account.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                money(account.balanceCents, 10 + index),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = cashBalanceColor(account.balanceCents),
-                                maxLines = 1
-                            )
-                        }
-                        if (index < minOf(assetAccounts.size, 3) - 1) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
-                        }
-                    }
-                    if (assetAccounts.size > 3) {
-                        Text(
-                            if (privacyEnabled) "另有 ${privacyFakeCount(24)} 个账户" else "另有 ${assetAccounts.size - 3} 个账户",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 5.dp)
-                        )
-                    }
-                    if (assetAccounts.isEmpty()) {
-                        Text("暂无账户", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
             }
         }
+    }
+    if (showBudgetDetails) {
+        BudgetDetailsDialog(
+            month = YearMonth.now(),
+            budgets = budgets,
+            categories = categories,
+            transactions = state.transactions,
+            onDismiss = { showBudgetDetails = false }
+        )
     }
 }
 
@@ -654,41 +627,75 @@ private fun HomeModuleHeader(title: String) {
 private fun AccountListDialog(
     title: String,
     accounts: List<AccountEntity>,
+    debtAccounts: Boolean,
     onEdit: (AccountEntity) -> Unit,
     onAdd: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
+    val sortedAccounts = remember(accounts) { accounts.sortedByDescending { it.balanceCents } }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            Column {
-                if (accounts.isEmpty()) {
+            Column(
+                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (sortedAccounts.isEmpty()) {
                     Text(
                         "暂无账户",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                accounts.forEachIndexed { index, a ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onEdit(a) }.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (privacyEnabled) privacyObfuscatedText(a.name, 200 + index) else a.name,
-                            Modifier.weight(1f)
-                        )
-                        Text(
-                            if (privacyEnabled) privacyFakeAmount(200 + index) else formatMoney(a.balanceCents),
-                            fontWeight = FontWeight.Medium
-                        )
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            contentDescription = if (privacyEnabled) "查看并编辑账户" else "查看并编辑${a.name}",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                sortedAccounts.forEachIndexed { index, account ->
+                    val amountColor = if (debtAccounts) {
+                        debtAmountColor(account.balanceCents)
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    }
+                    GlassCard(modifier = Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onEdit(account) }.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                Modifier.size(10.dp).clip(CircleShape).background(amountColor)
+                            )
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    if (privacyEnabled) privacyObfuscatedText(account.name, 200 + index) else account.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    when (account.type) {
+                                        AccountType.CREDIT.name -> "信用账户"
+                                        AccountType.LOAN.name -> "贷款账户"
+                                        else -> "资产账户"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                if (privacyEnabled) privacyFakeAmount(200 + index) else formatMoney(account.balanceCents),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = amountColor,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = if (privacyEnabled) "查看并编辑账户" else "查看并编辑${account.name}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }

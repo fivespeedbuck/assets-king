@@ -60,6 +60,9 @@ interface TransactionDao {
     @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id")
     suspend fun updateRecurringRuleId(id: String, ruleId: String?)
 
+    @Query("UPDATE transactions SET refundOfId = :refundOfId WHERE id = :id")
+    suspend fun updateRefundOfId(id: String, refundOfId: String?)
+
     @Query("SELECT * FROM transactions WHERE recurringRuleId = :ruleId ORDER BY occurredAt DESC")
     suspend fun findByRecurringRule(ruleId: String): List<TransactionEntity>
 
