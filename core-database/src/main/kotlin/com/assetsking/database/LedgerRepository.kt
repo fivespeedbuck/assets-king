@@ -1438,6 +1438,11 @@ class LedgerRepository(
         database.merchantDao().upsert(target.copy(aliasesJson = JSONArray(aliases.toList()).toString()))
     }
 
+    /** 删除商户映射规则，不改历史流水；下次确认同名商户时可重新学习。 */
+    suspend fun deleteMerchantMapping(name: String) {
+        database.merchantDao().deleteByName(name.trim())
+    }
+
     private fun parseAliases(json: String): List<String> =
         runCatching {
             JSONArray(json).let { arr -> (0 until arr.length()).map { arr.getString(it) } }

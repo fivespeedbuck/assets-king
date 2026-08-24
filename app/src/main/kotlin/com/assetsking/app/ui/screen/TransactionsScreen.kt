@@ -816,6 +816,7 @@ private fun MerchantCategoryLibrary(
     var showNewCategory by remember { mutableStateOf(false) }
     var merchantSearch by remember { mutableStateOf("") }
     var mergeSource by remember { mutableStateOf<MerchantEntity?>(null) }
+    var deleteTarget by remember { mutableStateOf<MerchantEntity?>(null) }
     val shownMerchants = merchants.filter { merchant ->
         merchantSearch.isBlank() ||
             merchant.id.contains(merchantSearch, ignoreCase = true) ||
@@ -930,14 +931,19 @@ private fun MerchantCategoryLibrary(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            TextButton(onClick = { mergeSource = merchant }) { Text("合并") }
+                            Row {
+                                TextButton(onClick = { mergeSource = merchant }) { Text("合并") }
+                                TextButton(onClick = { deleteTarget = merchant }) {
+                                    Text("删除", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
                         }
                     }
                 }
             }
             item {
                 Text(
-                    "商户合并与原名映射更正将在商户映射专项中继续完善。",
+                    "入口：流水页顶部「商户与分类库」；搜索商户或原名后，可「合并」或「删除」映射规则。删除只移除规则，不删除历史流水。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 4.dp)
@@ -1009,6 +1015,27 @@ private fun MerchantCategoryLibrary(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { mergeSource = null }) { Text("取消") } }
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除商户映射？") },
+            text = {
+                Text(
+                    "将删除「${target.id}」的标准商户、别名和学习规则，但不会删除历史流水。以后确认同名商户时可以重新学习。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        model.deleteMerchantMapping(target.id)
+                        deleteTarget = null
+                    }
+                ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
         )
     }
 }

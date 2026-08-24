@@ -250,7 +250,11 @@ fun TransactionEditorScreen(
     var channel by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(
             editingTransaction?.channel.orEmpty().ifBlank {
-                if (pendingItem != null) AccountInference.channelLabel(pendingItem.notification.packageName, pendingItem.notification.sourceLabel)
+                if (pendingItem != null) AccountInference.channelLabel(
+                    pendingItem.notification.packageName,
+                    pendingItem.notification.sourceLabel,
+                    parsed?.paymentChannel
+                )
                 else "微信"
             }
         )

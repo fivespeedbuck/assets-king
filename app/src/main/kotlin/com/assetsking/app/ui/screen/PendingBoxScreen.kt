@@ -501,8 +501,15 @@ private fun PendingBoxCard(
                     color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                 )
                 Text("· ${account?.name?.let { if (privacyEnabled) privacyObfuscatedText(it, 2203 + privacyIndex) else it } ?: "未选账户"}", style = MaterialTheme.typography.labelSmall)
-                val channelLabel = AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)
-                Text("· ${if (privacyEnabled) privacyObfuscatedText(channelLabel, 2204 + privacyIndex) else channelLabel}", style = MaterialTheme.typography.labelSmall)
+                val channelLabel = AccountInference.channelLabel(
+                    item.notification.packageName,
+                    item.notification.sourceLabel,
+                    item.parsed.paymentChannel
+                )
+                Text(
+                    "· ${if (privacyEnabled) privacyObfuscatedText(channelLabel.ifBlank { "未设置" }, 2204 + privacyIndex) else channelLabel.ifBlank { "未设置" }}",
+                    style = MaterialTheme.typography.labelSmall
+                )
                 Text("· ${if (privacyEnabled) privacyFakeDateTime(2205 + privacyIndex) else formatTime(item.notification.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val bankBalance = parsed.balanceCents
@@ -548,7 +555,11 @@ private fun confirmItem(
         note = item.notification.title,
         bankBalanceCents = parsed.balanceCents,
         bankCardTail = parsed.cardTail,
-        channel = AccountInference.channelLabel(item.notification.packageName, item.notification.sourceLabel)
+        channel = AccountInference.channelLabel(
+            item.notification.packageName,
+            item.notification.sourceLabel,
+            item.parsed.paymentChannel
+        ).takeIf { it.isNotBlank() },
     )
     return true
 }

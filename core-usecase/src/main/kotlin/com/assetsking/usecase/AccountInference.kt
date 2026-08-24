@@ -13,12 +13,24 @@ package com.assetsking.usecase
 object AccountInference {
     data class Candidate(val id: String, val name: String)
 
-    /** 支付渠道标签（REQ 流水§5）：渠道与资金账户分开保存展示。 */
-    fun channelLabel(packageName: String?, sourceLabel: String?): String = when (packageName) {
-        "com.tencent.mm" -> "微信支付"
-        "com.eg.android.AlipayGphone" -> "支付宝"
-        "sms" -> "银行短信"
-        else -> sourceLabel ?: "其他"
+    /**
+     * 支付渠道标签（REQ 流水§5）：渠道与资金账户分开保存展示。
+     *
+     * 银行名/短信来源是资金账户证据，不是支付渠道；只有解析出的正文渠道或
+     * 明确的微信/支付宝来源才能写入渠道。无法识别时留空，避免把「招商银行」、
+     * 「银行短信」沉淀成自定义渠道。
+     */
+    fun channelLabel(
+        packageName: String?,
+        sourceLabel: String?,
+        parsedChannel: String? = null
+    ): String {
+        parsedChannel?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return when (packageName) {
+            "com.tencent.mm" -> "微信支付"
+            "com.eg.android.AlipayGphone" -> "支付宝"
+            else -> ""
+        }
     }
 
     fun infer(

@@ -26,6 +26,26 @@ internal fun loanInstallmentCountError(count: Int?, paidCount: Int?): String? = 
 
 internal const val MaxDirectCustomLoanInstallments = 60
 
+internal fun parseAnnualRateBps(value: String): Int = runCatching {
+    BigDecimal(value.trim())
+        .movePointRight(2)
+        .setScale(0, RoundingMode.HALF_UP)
+        .intValueExact()
+}.getOrDefault(0)
+
+internal fun applyUniformPaymentToUpcoming(
+    installments: List<LoanInstallment>,
+    totalCents: Long
+): List<LoanInstallment>? {
+    if (totalCents <= 0L || installments.any {
+            it.status != InstallmentStatus.PAID && totalCents < it.principal.cents + it.fee.cents
+        }) return null
+    return installments.map { installment ->
+        if (installment.status == InstallmentStatus.PAID) installment
+        else installment.copy(interest = Money(totalCents - installment.principal.cents - installment.fee.cents))
+    }
+}
+
 internal data class CustomLoanInstallmentDraft(
     val number: Int,
     val dueDate: String,

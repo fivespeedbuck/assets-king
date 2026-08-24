@@ -8,7 +8,7 @@
 
 ## 当前版本
 
-GitHub Release：[资产大王 v0.1.0](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.0)。本版本包含贷款与信用账户账款统一口径、信用分期账务模型、隐秘只读环境、短信补扫和商户识别等能力。
+GitHub Release：[资产大王 v0.1.1](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.1)。本版本恢复贷款页新增信用卡入口，修复银行短信商户/支付渠道识别、贷款利率精度与统一月供输入，并补充商户映射删除。
 
 ## 当前可用功能
 

@@ -171,6 +171,21 @@ internal fun nearbyCardInstallmentSchedules(
     return ordered.drop((firstUnpaid - 1).coerceAtLeast(0)).take(3)
 }
 
+internal fun visibleLoanCreditAccounts(
+    accounts: List<AccountEntity>,
+    cardRemainingDueByCard: Map<String, Long>
+): List<AccountEntity> = accounts
+    .filter { account ->
+        account.type == AccountType.CREDIT.name &&
+            !account.archived &&
+            account.balanceCents > 0L
+    }
+    .sortedWith(
+        compareByDescending<AccountEntity> { (cardRemainingDueByCard[it.id] ?: 0L) > 0L }
+            .thenBy { it.dueDay ?: 32 }
+            .thenBy { it.name }
+    )
+
 // ── Main Screen ──
 
 @Composable
@@ -180,6 +195,7 @@ fun LoanScreen(
     onSave: (LoanPlanEntity) -> Unit,
     onDelete: (String) -> Unit,
     onAddLoanAccount: () -> Unit = {},
+    onAddCreditAccount: () -> Unit = {},
     v5: V5Metrics? = null,
     cardInstallments: List<CreditCardInstallmentEntity> = emptyList(),
     cardInstallmentAllocations: List<CreditCardInstallmentAllocationEntity> = emptyList(),
@@ -226,17 +242,7 @@ fun LoanScreen(
         cardInstallmentCandidates(transactions, accounts, cardInstallments, cardInstallmentAllocations)
     }
     val creditAccounts = remember(accounts, v5?.cardRemainingDueByCard) {
-        accounts
-            .filter { account ->
-                account.type == AccountType.CREDIT.name &&
-                    !account.archived &&
-                    account.balanceCents > 0L
-            }
-            .sortedWith(
-                compareByDescending<AccountEntity> { (v5?.cardRemainingDueByCard?.get(it.id) ?: 0L) > 0L }
-                    .thenBy { it.dueDay ?: 32 }
-                    .thenBy { it.name }
-            )
+        visibleLoanCreditAccounts(accounts, v5?.cardRemainingDueByCard.orEmpty())
     }
     val pendingPaymentConfirmations = remember(
         cardInstallmentPaymentMatches,
@@ -456,10 +462,16 @@ fun LoanScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("信用账户", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Button(
-                            onClick = { showCreditInstallmentSheet = true },
-                            enabled = installmentCandidates.isNotEmpty() && !privacyEnabled
-                        ) { Text("创建分期") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = onAddCreditAccount,
+                                enabled = !privacyEnabled
+                            ) { Text("新增信用卡") }
+                            Button(
+                                onClick = { showCreditInstallmentSheet = true },
+                                enabled = installmentCandidates.isNotEmpty() && !privacyEnabled
+                            ) { Text("创建分期") }
+                        }
                     }
                     installmentMessage?.let { message ->
                         Text(message, style = MaterialTheme.typography.bodySmall, color = if (message.startsWith("失败")) DeficitRed else IncomeGreen)
@@ -2699,6 +2711,8 @@ private fun LoanPlanSheet(
                 ?: RepaymentMethod.EQUAL_PAYMENT
         )
     }
+    var uniformPaymentStr by remember { mutableStateOf("") }
+    var uniformPaymentError by remember { mutableStateOf<String?>(null) }
     val selectedAccount = accounts.firstOrNull { it.id == accountId }
     var paidMonths by remember { mutableStateOf(existingInstallments.count { it.status == InstallmentStatus.PAID }.toString()) }
     var showAdvanced by remember { mutableStateOf(false) }
@@ -2798,6 +2812,24 @@ private fun LoanPlanSheet(
             },
             id = { it.name }
         )
+
+        if (method == RepaymentMethod.EQUAL_PAYMENT) {
+            Spacer(Modifier.height(8.dp))
+            FormField(
+                value = uniformPaymentStr,
+                onValueChange = {
+                    uniformPaymentStr = it.filter { c -> c.isDigit() || c == '.' }
+                    uniformPaymentError = null
+                },
+                label = "统一每期还款金额（可选）"
+            )
+            Text(
+                "填入后保存，会一次应用到所有未还期；已还期保持不变。留空则按年利率自动计算。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            uniformPaymentError?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed) }
+        }
 
         Spacer(Modifier.height(8.dp))
         SelectDropdownField(
@@ -2900,7 +2932,7 @@ private fun LoanPlanSheet(
             onClick = {
                 val cents = principalCents ?: return@Button
 
-                val rateBps = (rateStr.toDoubleOrNull()?.times(100))?.toInt() ?: 0
+                val rateBps = parseAnnualRateBps(rateStr)
                 val remaining = runCatching {
                     java.math.BigDecimal(remainingStr.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact()
                 }.getOrNull() ?: 0L
@@ -2918,12 +2950,23 @@ private fun LoanPlanSheet(
                         RepaymentMethod.INTEREST_ONLY -> LoanCalculator.interestOnlySchedule(cents, rateBps, count, firstDue.minusDays(30).toEpochDay())
                         else -> emptyList()
                     }
-                    raw.mapIndexed { idx, inst ->
+                    val generated = raw.mapIndexed { idx, inst ->
                         inst.copy(
                             dueDateEpochDay = loanDueDate(firstDue, repaymentDay!!, idx).toEpochDay(),
                             status = if (idx < paid) InstallmentStatus.PAID else inst.status
                         )
                     }
+                    if (method == RepaymentMethod.EQUAL_PAYMENT && uniformPaymentStr.isNotBlank()) {
+                        val uniformPayment = moneyInputToCents(uniformPaymentStr)
+                        if (uniformPayment == null) {
+                            uniformPaymentError = "统一每期金额格式不正确"
+                            return@Button
+                        }
+                        applyUniformPaymentToUpcoming(generated, uniformPayment) ?: run {
+                            uniformPaymentError = "统一金额不能低于某期本金和手续费"
+                            return@Button
+                        }
+                    } else generated
                 } else return@Button
                 onSave(
                     LoanPlanEntity(

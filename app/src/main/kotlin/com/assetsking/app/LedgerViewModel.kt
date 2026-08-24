@@ -510,6 +510,10 @@ class LedgerViewModel(
         viewModelScope.launch { repository.mergeMerchants(targetName, sourceNames) }
     }
 
+    fun deleteMerchantMapping(name: String) {
+        viewModelScope.launch { repository.deleteMerchantMapping(name) }
+    }
+
     fun confirmTransferPair(outId: String, inId: String, fromAccountId: String, toAccountId: String, amountCents: Long, note: String?) {
         viewModelScope.launch { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
     }

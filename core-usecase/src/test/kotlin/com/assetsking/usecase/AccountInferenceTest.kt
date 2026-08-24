@@ -61,4 +61,12 @@ class AccountInferenceTest {
             AccountInference.infer("gone", "gone2", "com.tencent.mm", candidates)
         )
     }
+
+    @Test
+    fun `bank source label never becomes payment channel`() {
+        assertEquals("", AccountInference.channelLabel("sms", "招商银行"))
+        assertEquals("", AccountInference.channelLabel("com.cmb.pb", "招商银行"))
+        assertEquals("支付宝", AccountInference.channelLabel("sms", "招商银行", "支付宝"))
+        assertEquals("微信支付", AccountInference.channelLabel("com.cmb.pb", "招商银行", "微信支付"))
+    }
 }

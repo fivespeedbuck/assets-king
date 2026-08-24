@@ -19,6 +19,39 @@ import kotlin.test.assertEquals
 
 class LoanPresentationTest {
     @Test
+    fun indebtedCreditAccountCreatedOnHomeIsVisibleOnLoanScreen() {
+        val indebted = AccountEntity("card", "广发信用卡", AccountType.CREDIT.name, 250_000L, dueDay = 15)
+        val cleared = AccountEntity("cleared", "已还清信用卡", AccountType.CREDIT.name, 0L)
+        val archived = AccountEntity("archived", "已归档信用卡", AccountType.CREDIT.name, 300_000L, archived = true)
+        val loan = AccountEntity("loan", "普通贷款", AccountType.LOAN.name, 5_000_000L)
+
+        assertEquals(
+            listOf(indebted),
+            visibleLoanCreditAccounts(listOf(cleared, archived, loan, indebted), mapOf(indebted.id to 100_000L))
+        )
+    }
+
+    @Test
+    fun annualRateParsingRoundsDecimalPercentWithoutFloatingPointTruncation() {
+        assertEquals(803, parseAnnualRateBps("8.03"))
+        assertEquals(760, parseAnnualRateBps("7.60"))
+    }
+
+    @Test
+    fun uniformPaymentChangesOnlyUnpaidInstallments() {
+        val installments = listOf(
+            LoanInstallment(1, 1L, Money(8_000L), Money(500L), status = InstallmentStatus.PAID),
+            LoanInstallment(2, 2L, Money(7_000L), Money(400L)),
+            LoanInstallment(3, 3L, Money(6_000L), Money(300L))
+        )
+        val result = applyUniformPaymentToUpcoming(installments, 10_000L)!!
+        assertEquals(500L, result[0].interest.cents)
+        assertEquals(3_000L, result[1].interest.cents)
+        assertEquals(4_000L, result[2].interest.cents)
+        assertEquals(10_000L, result[1].total.cents)
+    }
+
+    @Test
     fun paidPlanStatusesNeverReplaceTheSingleActualRepaymentRecord() {
         val today = LocalDate.of(2026, 8, 23)
         val account = AccountEntity("loan", "消费贷", AccountType.LOAN.name, 500_000L)

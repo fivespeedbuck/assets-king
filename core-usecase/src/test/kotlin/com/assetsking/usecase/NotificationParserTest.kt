@@ -162,6 +162,74 @@ class NotificationParserTest {
     }
 
     @Test
+    fun `招商银行短信新格式保留真实商户而不是银行名`() {
+        val mala = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月24日11：48在支付宝- 杭景元东北老式麻辣烫（和邦大…快捷支付29。19元，余额3399.24",
+            title = "95555"
+        )
+        val guming = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月24日1151在财付通-微信支付-浙江古茗快捷支付31.70元，余额3367.54",
+            title = "95555"
+        )
+        assertEquals("杭景元东北老式麻辣烫", mala.merchant)
+        assertEquals("浙江古茗", guming.merchant)
+        assertEquals(2_919L, mala.amountCents)
+        assertEquals(3_170L, guming.amountCents)
+        assertEquals("支付宝", mala.paymentChannel)
+        assertEquals("微信支付", guming.paymentChannel)
+    }
+
+    @Test
+    fun `广发信用卡交易商户支付宝前缀`() {
+        val parsed = NotificationParser.parse(
+            content = "【广发银行】您尾号3304信用卡24日12:26消费26.90人民币，交易商户:支付宝-厦门滋利医疗器械有限公司。",
+            title = "95508"
+        )
+        assertEquals(2_690L, parsed.amountCents)
+        assertEquals("厦门滋利医疗器械有限公司", parsed.merchant)
+        assertEquals("支付宝", parsed.paymentChannel)
+        assertEquals("3304", parsed.cardTail)
+    }
+
+    @Test
+    fun `招商银行转出余额充值退款与宁波动态密码模板`() {
+        val transferOut = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月24日12:33实时转至他行人民币1.00，余额3366.54，收款人陈扬",
+            title = "95555"
+        )
+        val balanceTopUp = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月22日20:20在支付宝-支付宝-余额充值-陈扬快捷支付20.00元，余额3548.03",
+            title = "95555"
+        )
+        val refund = NotificationParser.parse(
+            content = "【招商银行】您账户3683于08月24日12:30在支付宝-张豪盛退款22.00元，余额3367.54",
+            title = "95555"
+        )
+        val otp = NotificationParser.parse(
+            content = "【宁波银行】动态密码774752，序号72，两分钟后失效。您正在向收款人官大荣，尾号2497账户转账1200.00元，请勿泄露动态密码。",
+            title = "宁波银行"
+        )
+        val transferIn = NotificationParser.parse(
+            content = "【宁波银行】您尾号3721账户收入（网银转账）人民币1.00，余额21.64。",
+            title = "宁波银行"
+        )
+
+        assertEquals(100L, transferOut.amountCents)
+        assertEquals(true, transferOut.isExpense)
+        assertEquals("陈扬", transferOut.merchant)
+        assertEquals(2_000L, balanceTopUp.amountCents)
+        assertEquals("余额充值-陈扬", balanceTopUp.merchant)
+        assertEquals("支付宝", balanceTopUp.paymentChannel)
+        assertEquals(2_200L, refund.amountCents)
+        assertEquals(false, refund.isExpense)
+        assertEquals(true, refund.isRefund)
+        assertEquals("张豪盛", refund.merchant)
+        assertNull(otp.amountCents)
+        assertEquals(100L, transferIn.amountCents)
+        assertEquals(false, transferIn.isExpense)
+    }
+
+    @Test
     fun `云闪付广发信用卡真机样本`() {
         val p = NotificationParser.parse(
             content = "您尾号为3304的银行卡于22日20时26分消费12.42元",

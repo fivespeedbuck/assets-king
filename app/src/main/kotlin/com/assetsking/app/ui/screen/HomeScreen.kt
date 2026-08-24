@@ -300,6 +300,7 @@ fun HomeScreen(
                     onSave = { model.saveLoanPlan(it) },
                     onDelete = { model.deleteLoanPlan(it) },
                     onAddLoanAccount = { if (!privacyEnabled) addingAccountType = AccountType.LOAN },
+                    onAddCreditAccount = { if (!privacyEnabled) addingAccountType = AccountType.CREDIT },
                     v5 = state.v5,
                     cardInstallments = cardInstallments,
                     cardInstallmentAllocations = cardInstallmentAllocations,

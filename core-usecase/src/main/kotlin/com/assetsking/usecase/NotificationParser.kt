@@ -20,7 +20,9 @@ data class ParsedNotification(
     /** 卡号后 4 位。余额必须配尾号才敢用：否则不知道这个余额是哪张卡的。 */
     val cardTail: String? = null,
     /** 是否退款/退回类。用于区分「退款对冲」和「转账」（转账不是退款，不能对冲掉）。 */
-    val isRefund: Boolean = false
+    val isRefund: Boolean = false,
+    /** 从交易原文提取的支付渠道；银行/短信来源不属于支付渠道。 */
+    val paymentChannel: String? = null
 )
 
 /**
@@ -104,6 +106,7 @@ object NotificationParser {
     )
     private val expenseKeywords = listOf(
         "支付", "付款", "消费", "扣款", "支出", "转账给",
+        "转至", "转出", "汇出",
         "已付", "成功付款", "快捷支付", "在线支付", "扫码支付",
         "向你", "转给", "付给"
     )
@@ -123,7 +126,7 @@ object NotificationParser {
      * 只要一刀切掉「额度」，真消费也会被丢掉，所以必须分两层。
      */
     private val settledMarkers = Regex(
-        """消费|支出|收入|收款|到账|入账|成功还款|成功充值|扣款成功|付款成功|支付成功|交易成功|转账成功"""
+        """消费|支出|收入|收款|到账|入账|转入|转出|转至|成功还款|成功充值|扣款成功|付款成功|支付成功|交易成功|转账成功"""
     )
 
     /**
@@ -142,7 +145,8 @@ object NotificationParser {
      */
     private val hardNonTransaction = Regex(
         """账单提醒|本期应付|应还|还款日|扣款失败|待审核|拒收请回复|退订|优惠券|返现券""" +
-            """|可提至|最高可|可贷|提额|周转便捷|已还请忽略|已还忽略|请确保|总账分期|办理分期"""
+            """|可提至|最高可|可贷|提额|周转便捷|已还请忽略|已还忽略|请确保|总账分期|办理分期""" +
+            """|动态密码|验证码|序号\d*|两分钟后失效|请勿泄露密码"""
     )
 
     /** 软否决：只在整条都找不到「钱已动」标志时才否决 —— 提额、营销、借款额度类 */
@@ -163,15 +167,31 @@ object NotificationParser {
         Regex("""你在\s*([^，。；、！【】]{1,40}?)\s*有一笔"""),
         // 招商银行短信常见写法：「在支付宝-李杰快捷支付10.00元」；商户位于
         // “在”和“快捷支付/消费/扣款”之间，不能只依赖支付 App 的通知格式。
-        Regex("""在\s*([^，。；、！\s【】(（]+?)\s*(快捷支付|消费|扣款|支付|付款)"""),
+        Regex("""在\s*([^，。；、！\s【】(（]+?)\s*(快捷支付|消费|扣款|支付|付款|退款)"""),
         Regex("""收款方[：:]\s*$NAME"""),
         Regex("""商户[：:]\s*$NAME"""),
         Regex("""商户全称[：:]\s*$NAME"""),
         Regex("""对方[：:]\s*$NAME"""),
+        Regex("""收款人(?!民币)[：:]?\s*$NAME"""),
         Regex("""商品说明[：:]\s*$NAME"""),
         Regex("""商品[：:]\s*$NAME"""),
         Regex("""向\s*(\S+?)\s*(付款|支付|消费|转账)"""),
         Regex("""给\s*(\S+?)\s*(付款|支付|转账)""")
+    )
+
+    /**
+     * 招商银行等银行短信会把渠道、商户和动作压在同一段里：
+     * 「在支付宝- 杭景元东北老式麻辣烫（和邦大…快捷支付」或
+     * 「在财付通-微信支付-浙江古茗快捷支付」。
+     * 这里单独取商户，允许渠道分隔符后有空格，并截断到括号/标点，避免旧规则整段失配。
+     */
+    private val bankChannelMerchantPattern = Regex(
+        """在\s*(?:支付宝|微信支付|微信|财付通\s*[-－—]\s*微信支付|云闪付)\s*[-－—:：]\s*([^，。；、！【】]+?)\s*(快捷支付|消费|扣款|支付|付款|退款)"""
+    )
+
+    /** 银行短信正文里的真实支付渠道；不能拿短信来源银行名代替。 */
+    private val paymentChannelPattern = Regex(
+        """(?:(?:在|通过|使用)\s*|交易商户\s*[：: ]\s*)(财付通\s*[-－—]\s*微信支付|微信支付|微信|支付宝|云闪付)"""
     )
 
     /**
@@ -230,10 +250,16 @@ object NotificationParser {
             else -> extractAmount(text)
         }
 
-        // 提取商户
-        val merchant = merchantPatterns.firstNotNullOfOrNull { pattern ->
+        // 提取商户：先处理银行短信的「渠道-商户-动作」紧凑格式，再回退通用格式。
+        val merchant = normalizeMerchant(
+            bankChannelMerchantPattern.find(text)?.groupValues?.getOrNull(1)
+        ) ?: merchantPatterns.firstNotNullOfOrNull { pattern ->
             normalizeMerchant(pattern.find(text)?.groupValues?.getOrNull(1))
         }
+
+        val paymentChannel = paymentChannelPattern.find(text)?.groupValues?.getOrNull(1)
+            ?.replace(Regex("""\s*[-－—]\s*"""), "-")
+            ?.let { if (it == "财付通-微信支付") "微信支付" else it }
 
         // 提取银行提示
         val bankHint = bankPatterns.firstNotNullOfOrNull { pattern ->
@@ -264,13 +290,17 @@ object NotificationParser {
             cardTail = cardTailPatterns.firstNotNullOfOrNull {
                 it.find(text)?.groupValues?.getOrNull(1)
             },
-            isRefund = isRefund
+            isRefund = isRefund,
+            paymentChannel = paymentChannel
         )
     }
 
     private fun extractAmount(text: String): Long? {
+        // 部分银行短信把小数点发成中文句号（例如「29。19元」）；先只在两位数字之间归一化，
+        // 不影响正文里的句号和商户名称。
+        val normalizedText = text.replace(Regex("""(?<=\d)[。．](?=\d)"""), ".")
         for (pattern in amountPatterns) {
-            val match = pattern.find(text) ?: continue
+            val match = pattern.find(normalizedText) ?: continue
             val amountStr = match.groupValues.getOrNull(1) ?: continue
             val yuan = amountStr.replace(",", "").toDoubleOrNull() ?: continue
             if (yuan <= 0 || yuan > 1_000_000) continue
@@ -282,7 +312,14 @@ object NotificationParser {
     }
 
     private fun normalizeMerchant(raw: String?): String? {
-        val normalized = raw?.trim()?.replace(merchantChannelPrefix, "")?.trim() ?: return null
+        val normalized = raw?.trim()
+            ?.replace(merchantChannelPrefix, "")
+            ?.trim()
+            // 银行短信有时在真实商户后附带门店/分店括号说明；主体先保留为可学习的标准名。
+            ?.substringBefore('（')
+            ?.substringBefore('(')
+            ?.trim()
+            ?: return null
         return normalized.takeIf { it.isNotBlank() && it.length < 30 && it !in bankBlacklist }
     }
 
