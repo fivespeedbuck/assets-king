@@ -371,8 +371,7 @@ fun LoanScreen(
         }
 
         // ── 本月还款列表（REQ 贷款页§2-3/§10-11）：逾期置顶 → 本月待还 → 已还删除线 ──
-        if (repayRows.isNotEmpty()) {
-            item {
+        item {
                 GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
@@ -401,6 +400,14 @@ fun LoanScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Spacer(Modifier.height(2.dp))
                         Column(Modifier.fillMaxWidth()) {
+                            if (repayRows.isEmpty()) {
+                                Text(
+                                    if (privacyEnabled) "本月暂无待还" else "本月无待还",
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             repayRows.forEachIndexed { index, r ->
                                 if (index > 0) {
                                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
@@ -575,7 +582,6 @@ fun LoanScreen(
                         }
                     }
             }
-        }
         item {
             GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
                 Column(
