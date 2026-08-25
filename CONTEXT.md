@@ -32,3 +32,45 @@ This file records the bounded-context vocabulary used by the recovery worktree. 
 ## Boundary
 
 The current application still uses account checkpoints plus transaction/transfer events rather than a full double-entry journal. This recovery batch may add a safe installment seam, but it must not claim that the complete V3 posting-engine migration is finished.
+
+## Ledger-deletion language
+
+**Posted ledger event**:
+A confirmed transaction or transfer that participates in balances and derived debt state.
+_Avoid_: Notification, pending item, raw message
+
+**Pending evidence**:
+An unconfirmed bank, payment-app, or SMS observation that has not entered the posted ledger.
+_Avoid_: Transaction, deleted transaction
+
+**Trash a ledger event**:
+Temporarily deactivate one posted ledger event, reverse only its owned effects, and retain enough state for a seven-day restoration window.
+_Avoid_: Ignore evidence, hard delete, roll back the whole account
+
+**Deletion projection**:
+The per-account current balance and projected balance after the selected posted events are deactivated.
+_Avoid_: Reconciliation checkpoint
+
+**Dependency snapshot**:
+The before/after state owned by a loan, reimbursement, or installment-payment relationship, used to prove that restoration will not overwrite later related changes.
+_Avoid_: Whole-database backup
+
+**Restore a ledger event**:
+Reactivate the trashed event in the current timeline; unrelated events posted after deletion remain intact.
+_Avoid_: Restore the account snapshot, rewind the ledger
+
+**Evidence tombstone**:
+A durable ignored marker for raw evidence whose posted event is in trash or permanently purged, preventing notification rescans from recreating it.
+_Avoid_: Trash entry
+
+**Audit-locked source expense**:
+A credit-card purchase referenced by an installment allocation; it remains immutable so the installment audit chain never points at a missing or rewritten source event.
+_Avoid_: Ordinary deletable expense
+
+**Internal transfer**:
+One movement between two accounts owned by the user; it changes account locations but is neither income nor expense.
+_Avoid_: Any bank transfer, external payment, external receipt
+
+**External payment or receipt**:
+Money moving between a user-owned account and another person or organization; its ledger type is determined by economic purpose such as expense, income, receivable, borrowing, repayment, refund, or reimbursement.
+_Avoid_: Internal transfer

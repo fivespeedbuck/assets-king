@@ -112,6 +112,40 @@ class CardInstallmentMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun version24TransactionsGainEmptyTrashStateWithoutChangingExistingRows() {
+        openWith(
+            version = 24,
+            onCreate = { db ->
+                db.execSQL("CREATE TABLE `transactions` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `type` TEXT NOT NULL, `category` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `merchant` TEXT, `note` TEXT, `status` TEXT NOT NULL, `isReimbursable` INTEGER NOT NULL, `recurringRuleId` TEXT, `principalCents` INTEGER NOT NULL, `interestCents` INTEGER NOT NULL, `feeCents` INTEGER NOT NULL, `loanPlanId` TEXT, `refundOfId` TEXT, `reimbursedCents` INTEGER NOT NULL, `necessity` INTEGER, `channel` TEXT, `notificationId` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT INTO transactions VALUES ('existing', 'cash', 1000, 'EXPENSE', 'UNCATEGORIZED', 100, NULL, NULL, 'CONFIRMED', 0, NULL, 0, 0, 0, NULL, NULL, 0, NULL, NULL, NULL)")
+            }
+        ).close()
+
+        val migrated = openWith(
+            version = 25,
+            onUpgrade = { db, oldVersion, newVersion ->
+                assertEquals(24, oldVersion)
+                assertEquals(25, newVersion)
+                AssetsKingDatabase.MIGRATION_24_25.migrate(db)
+            }
+        )
+
+        migrated.writableDatabase.query("SELECT amountCents, deletedAt, trashContextJson FROM transactions WHERE id = 'existing'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(1_000L, cursor.getLong(0))
+            assertTrue(cursor.isNull(1))
+            assertTrue(cursor.isNull(2))
+        }
+        migrated.writableDatabase.query("PRAGMA index_list(transactions)").use { cursor ->
+            val names = buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+            }
+            assertTrue("index_transactions_deletedAt" in names)
+        }
+        migrated.close()
+    }
+
     private fun openWith(
         version: Int,
         onCreate: (SupportSQLiteDatabase) -> Unit = {},

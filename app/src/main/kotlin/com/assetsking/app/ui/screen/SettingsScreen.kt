@@ -66,6 +66,8 @@ import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.TransactionEntity
+import com.assetsking.database.TransferEntity
 import com.assetsking.ledger.SmsSenderWhitelist
 import com.assetsking.model.TransactionCategory
 import com.assetsking.ui.component.ChipRow
@@ -247,6 +249,12 @@ fun SettingsScreen(
     onSetSmsSenderWhitelist: (Set<String>) -> Unit = {},
     freeSpendingCents: Long = 50_000,
     onSetFreeSpending: (Long) -> Unit = {},
+    deletedTransactions: List<TransactionEntity> = emptyList(),
+    deletedTransfers: List<TransferEntity> = emptyList(),
+    onRestoreTransaction: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("恢复服务未连接"))) },
+    onPermanentlyDeleteTransaction: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("删除服务未连接"))) },
+    onRestoreTransfer: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("恢复划转服务未连接"))) },
+    onPermanentlyDeleteTransfer: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("删除划转服务未连接"))) },
     onRootStateChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -274,6 +282,7 @@ fun SettingsScreen(
     var updateTotalBytes by remember { mutableStateOf(0L) }
     var guideDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeSection by remember { mutableStateOf<SettingsSection?>(null) }
+    var showTransactionTrash by remember { mutableStateOf(false) }
     LaunchedEffect(activeSection) { onRootStateChanged(activeSection == null) }
 
     BackHandler(enabled = activeSection != null) { activeSection = null }
@@ -855,6 +864,15 @@ fun SettingsScreen(
                         enabled = settingsWritable,
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("导出流水 CSV") }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { showTransactionTrash = true },
+                        enabled = settingsWritable,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val trashCount = deletedTransactions.size + deletedTransfers.size
+                        Text(if (trashCount == 0) "流水垃圾箱（空）" else "流水垃圾箱（${trashCount}）")
+                    }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
                             "备份目录：${
@@ -1055,6 +1073,19 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = { guideDialog = null }) { Text("知道了") }
             }
+        )
+    }
+
+    if (showTransactionTrash) {
+        TransactionTrashSheet(
+            transactions = deletedTransactions,
+            accounts = accounts,
+            onRestore = onRestoreTransaction,
+            onPermanentlyDelete = onPermanentlyDeleteTransaction,
+            transfers = deletedTransfers,
+            onRestoreTransfer = onRestoreTransfer,
+            onPermanentlyDeleteTransfer = onPermanentlyDeleteTransfer,
+            onDismiss = { showTransactionTrash = false }
         )
     }
 }

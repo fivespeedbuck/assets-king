@@ -90,6 +90,7 @@ import com.assetsking.ui.theme.ExpenseRed
 import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.RepaymentPurple
 import com.assetsking.ui.theme.ReimbursementYellow
+import com.assetsking.ui.theme.LoanPrincipalDebtColor
 import com.assetsking.ui.theme.RecurringDebitOrange
 import com.assetsking.ui.theme.cashBalanceColor
 import com.assetsking.ui.theme.transactionCashFlowColor
@@ -214,7 +215,16 @@ fun TransactionsScreen(
     val selected = remember { mutableStateListOf<String>() }
     var bulkCategory by remember { mutableStateOf(false) }
     var bulkNecessity by remember { mutableStateOf(false) }
-    var bulkDelete by remember { mutableStateOf(false) }
+    var deleteIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var deletionPreviews by remember { mutableStateOf<List<com.assetsking.database.TransactionDeletionAccountPreview>?>(null) }
+    var deletionRisk by remember { mutableStateOf(false) }
+    var deletionBusy by remember { mutableStateOf(false) }
+    var deletionError by remember { mutableStateOf<String?>(null) }
+    var deleteTransferId by remember { mutableStateOf<String?>(null) }
+    var transferDeletionPreviews by remember { mutableStateOf<List<com.assetsking.database.TransferDeletionAccountPreview>?>(null) }
+    var transferDeletionRisk by remember { mutableStateOf(false) }
+    var transferDeletionBusy by remember { mutableStateOf(false) }
+    var transferDeletionError by remember { mutableStateOf<String?>(null) }
     var editingTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
     // 时间范围（REQ 流水§1）：MONTH=按月 / LAST3=近三月 / CUSTOM=自定义起止
@@ -307,6 +317,18 @@ fun TransactionsScreen(
                 (tx.note?.contains(searchQuery) == true) ||
                 accountNameOf(tx.accountId).contains(searchQuery) ||
                 formatMoney(tx.amountCents).contains(searchQuery))
+    }.sortedByDescending { it.occurredAt }
+    val filteredTransfers = state.transfers.filter { transfer ->
+        (rangeMode == "ALL" || transfer.occurredAt in rangeStart..rangeEnd) &&
+            (fAccountId == null || transfer.fromAccountId == fAccountId || transfer.toAccountId == fAccountId) &&
+            (minCents == null || transfer.amountCents >= minCents) &&
+            (maxCents == null || transfer.amountCents <= maxCents) &&
+            (dayFilter == null || Instant.ofEpochMilli(transfer.occurredAt).atZone(zone).toLocalDate() == dayFilter) &&
+            (searchQuery.isBlank() ||
+                accountNameOf(transfer.fromAccountId).contains(searchQuery) ||
+                accountNameOf(transfer.toAccountId).contains(searchQuery) ||
+                transfer.note?.contains(searchQuery) == true ||
+                formatMoney(transfer.amountCents).contains(searchQuery))
     }.sortedByDescending { it.occurredAt }
 
     Column(
@@ -481,7 +503,14 @@ fun TransactionsScreen(
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) { Text("改必要性", maxLines = 1) }
                     OutlinedButton(
-                        onClick = { bulkDelete = true },
+                        onClick = {
+                            if (selected.isNotEmpty()) {
+                                deleteIds = selected.toList()
+                                deletionPreviews = null
+                                deletionRisk = false
+                                deletionError = null
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
@@ -504,12 +533,12 @@ fun TransactionsScreen(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                if (filtered.isEmpty()) {
+                if (filtered.isEmpty() && filteredTransfers.isEmpty()) {
                     item {
                         Text("没有符合条件的流水", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
-                    filtered.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.entries.forEachIndexed { dayIndex, (day, dayTxs) ->
+                    if (filtered.isNotEmpty()) filtered.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.entries.forEachIndexed { dayIndex, (day, dayTxs) ->
                         item(key = "day-$day") {
                             Column {
                                 Text(
@@ -524,21 +553,65 @@ fun TransactionsScreen(
                                     contentPadding = Modifier
                                 ) {
                                     dayTxs.forEachIndexed { index, tx ->
-                                        TransactionListRow(
-                                            tx = tx,
-                                            accountName = accountNameOf(tx.accountId),
-                                            category = categories.firstOrNull { it.name == tx.category },
-                                            privacyIndex = dayIndex * 20 + index,
-                                            multiSelect = multiSelect,
-                                            checked = tx.id in selected,
-                                            modifier = Modifier.padding(horizontal = 12.dp),
-                                            onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
-                                            onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
-                                            onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
-                                        )
+                                        ReversibleDeleteSwipe(
+                                            onDelete = {
+                                                if (!multiSelect) {
+                                                    deleteIds = listOf(tx.id)
+                                                    deletionPreviews = null
+                                                    deletionRisk = false
+                                                    deletionError = null
+                                                }
+                                            }
+                                        ) {
+                                            Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
+                                                TransactionListRow(
+                                                    tx = tx,
+                                                    accountName = accountNameOf(tx.accountId),
+                                                    category = categories.firstOrNull { it.name == tx.category },
+                                                    privacyIndex = dayIndex * 20 + index,
+                                                    multiSelect = multiSelect,
+                                                    checked = tx.id in selected,
+                                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                                    onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
+                                                    onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
+                                                    onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
+                                                )
+                                            }
+                                        }
                                         if (index < dayTxs.lastIndex) {
                                             HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.outlineVariant)
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (filteredTransfers.isNotEmpty()) {
+                        item(key = "transfer-section") {
+                            Column {
+                                Text("划转", Modifier.padding(start = 2.dp, top = 8.dp, bottom = 6.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                GlassCard(modifier = Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                                    filteredTransfers.forEachIndexed { index, transfer ->
+                                        ReversibleDeleteSwipe(
+                                            onDelete = {
+                                                deleteTransferId = transfer.id
+                                                transferDeletionPreviews = null
+                                                transferDeletionRisk = false
+                                                transferDeletionError = null
+                                            }
+                                        ) {
+                                            Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
+                                                TransferRow(
+                                                    fromName = accountNameOf(transfer.fromAccountId),
+                                                    toName = accountNameOf(transfer.toAccountId),
+                                                    amountCents = transfer.amountCents,
+                                                    occurredAt = transfer.occurredAt,
+                                                    note = transfer.note,
+                                                    onClick = {}
+                                                )
+                                            }
+                                        }
+                                        if (index < filteredTransfers.lastIndex) HorizontalDivider(Modifier.padding(start = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
                                     }
                                 }
                             }
@@ -662,18 +735,104 @@ fun TransactionsScreen(
             dismissButton = { TextButton(onClick = { bulkNecessity = false }) { Text("取消") } }
         )
     }
-    if (bulkDelete) {
-        AlertDialog(
-            onDismissRequest = { bulkDelete = false },
-            title = { Text("批量删除 ${selected.size} 笔？") },
-            text = { Text("删除后不可撤销；由通知确认的流水会回到待确认箱重新处理。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    selected.forEach { model.deleteTransaction(it) }
-                    selected.clear(); multiSelect = false; bulkDelete = false
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { bulkDelete = false }) { Text("取消") } }
+    androidx.compose.runtime.LaunchedEffect(deleteIds) {
+        if (deleteIds.isNotEmpty()) {
+            deletionPreviews = runCatching { model.previewTransactionDeletion(deleteIds) }
+                .onFailure { deletionError = it.message ?: "无法计算删除后的余额" }
+                .getOrNull()
+        }
+    }
+
+    fun dismissDeletion() {
+        if (deletionBusy) return
+        deleteIds = emptyList()
+        deletionPreviews = null
+        deletionRisk = false
+        deletionError = null
+    }
+
+    fun executeDeletion() {
+        if (deletionBusy || deleteIds.isEmpty()) return
+        deletionBusy = true
+        deletionError = null
+        model.deleteTransactions(deleteIds) { result ->
+            deletionBusy = false
+            result.onSuccess {
+                selected.clear()
+                multiSelect = false
+                dismissDeletion()
+            }.onFailure {
+                deletionError = it.message ?: "删除失败，账目未发生变化"
+            }
+        }
+    }
+
+    if (deleteIds.isNotEmpty() && !deletionRisk) {
+        TransactionDeletionPreviewDialog(
+            transactionCount = deleteIds.size,
+            previews = deletionPreviews,
+            accounts = state.accounts,
+            errorMessage = deletionError,
+            busy = deletionBusy,
+            onDismiss = ::dismissDeletion,
+            onBalancesMatch = ::executeDeletion,
+            onBalancesMismatch = { deletionRisk = true; deletionError = null }
+        )
+    }
+    if (deleteIds.isNotEmpty() && deletionRisk) {
+        TransactionDeletionRiskDialog(
+            transactionCount = deleteIds.size,
+            busy = deletionBusy,
+            errorMessage = deletionError,
+            onDismiss = { deletionRisk = false; deletionError = null },
+            onConfirmAnyway = ::executeDeletion
+        )
+    }
+
+    androidx.compose.runtime.LaunchedEffect(deleteTransferId) {
+        val id = deleteTransferId ?: return@LaunchedEffect
+        transferDeletionPreviews = runCatching { model.previewTransferDeletion(id) }
+            .onFailure { transferDeletionError = it.message ?: "无法计算删除划转后的余额" }
+            .getOrNull()
+    }
+
+    fun dismissTransferDeletion() {
+        if (transferDeletionBusy) return
+        deleteTransferId = null
+        transferDeletionPreviews = null
+        transferDeletionRisk = false
+        transferDeletionError = null
+    }
+
+    fun executeTransferDeletion() {
+        val id = deleteTransferId ?: return
+        if (transferDeletionBusy) return
+        transferDeletionBusy = true
+        transferDeletionError = null
+        model.deleteTransfer(id) { result ->
+            transferDeletionBusy = false
+            result.onSuccess { dismissTransferDeletion() }
+                .onFailure { transferDeletionError = it.message ?: "删除划转失败，账目未发生变化" }
+        }
+    }
+
+    if (deleteTransferId != null && !transferDeletionRisk) {
+        TransferDeletionPreviewDialog(
+            previews = transferDeletionPreviews,
+            accounts = state.accounts,
+            errorMessage = transferDeletionError,
+            busy = transferDeletionBusy,
+            onDismiss = ::dismissTransferDeletion,
+            onBalancesMatch = ::executeTransferDeletion,
+            onBalancesMismatch = { transferDeletionRisk = true; transferDeletionError = null }
+        )
+    }
+    if (deleteTransferId != null && transferDeletionRisk) {
+        TransferDeletionRiskDialog(
+            busy = transferDeletionBusy,
+            errorMessage = transferDeletionError,
+            onDismiss = { transferDeletionRisk = false; transferDeletionError = null },
+            onConfirmAnyway = ::executeTransferDeletion
         )
     }
 }
@@ -696,6 +855,7 @@ private fun TransactionListRow(
     val cashFlowColor = transactionCashFlowColor(tx.type)
     val reimbursementBadge = reimbursementBadge(tx)
     val recurringDebit = isRecurringDebit(tx)
+    val linkBadges = transactionLinkBadges(tx)
     val metadata = listOfNotNull(
         if (tx.type == TransactionType.REFUND.name && tx.refundOfId == null) {
             "未关联原消费"
@@ -760,6 +920,22 @@ private fun TransactionListRow(
                         color = RecurringDebitOrange,
                         modifier = Modifier
                             .background(RecurringDebitOrange.copy(alpha = 0.12f), RoundedCornerShape(50))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                linkBadges.forEach { badge ->
+                    val badgeColor = when (badge.colorKey) {
+                        "recurring" -> RecurringDebitOrange
+                        else -> LoanPrincipalDebtColor
+                    }
+                    Text(
+                        badge.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = badgeColor,
+                        modifier = Modifier
+                            .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(50))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                     Spacer(Modifier.width(6.dp))

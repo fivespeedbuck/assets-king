@@ -25,8 +25,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.ZoneId
 import java.util.UUID
 
 data class LearnedRule(
@@ -36,6 +38,24 @@ data class LearnedRule(
 )
 
 private class NotificationAlreadyHandledException : RuntimeException()
+
+data class TransactionDeletionAccountPreview(
+    val accountId: String,
+    val currentBalanceCents: Long,
+    val projectedBalanceCents: Long,
+    val balanceStatus: String
+)
+
+data class TransferDeletionAccountPreview(
+    val accountId: String,
+    val currentBalanceCents: Long,
+    val projectedBalanceCents: Long,
+    val balanceStatus: String
+)
+
+private const val TRANSACTION_TRASH_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
+private const val CATEGORY_SEED_VERSION_KEY = "category_seed_version"
+private const val CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW = 2
 
 private fun coveredLoanInstallmentNumbers(
     installments: List<LoanInstallment>,
@@ -70,7 +90,9 @@ class LedgerRepository(
 ) {
     val accounts: Flow<List<AccountEntity>> = database.accountDao().observeAll()
     val transactions: Flow<List<TransactionEntity>> = database.transactionDao().observeAll()
+    val deletedTransactions: Flow<List<TransactionEntity>> = database.transactionDao().observeDeleted()
     val transfers: Flow<List<TransferEntity>> = database.transferDao().observeAll()
+    val deletedTransfers: Flow<List<TransferEntity>> = database.transferDao().observeDeleted()
     val unprocessedNotifications: Flow<Int> = database.rawNotificationDao().observeUnprocessedCount()
     val pendingNotifications: Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("PENDING_CONFIRMATION")
@@ -123,17 +145,37 @@ class LedgerRepository(
     fun categorize(merchant: String?, note: String? = null): TransactionCategory =
         categorizer.categorize(merchant, note)
 
-    suspend fun saveRawNotification(notification: RawNotificationEntity, updateLastReceived: Boolean = true) {
-        val insertedRowId = database.rawNotificationDao().insert(
-            if (notification.contentFingerprint.isBlank())
-                notification.copy(contentFingerprint = ContentFingerprint.of(notification.title, notification.content))
-            else notification
-        )
+    suspend fun saveRawNotification(
+        notification: RawNotificationEntity,
+        updateLastReceived: Boolean = true
+    ): Boolean {
+        val fingerprinted = if (notification.contentFingerprint.isBlank()) {
+            notification.copy(
+                contentFingerprint = ContentFingerprint.of(notification.title, notification.content)
+            )
+        } else {
+            notification
+        }
+        // SMS_RECEIVED 与短信箱补扫过去使用两个 id 前缀，主键无法拦截同一条短信。
+        // 在唯一持久化入口统一改写为稳定证据标签，调用方以后再增加入口也绕不过此门禁。
+        val identified = if (fingerprinted.packageName == "sms") {
+            fingerprinted.copy(
+                id = ContentFingerprint.stableSmsEvidenceId(
+                    fingerprinted.title,
+                    fingerprinted.content,
+                    fingerprinted.postedAt
+                )
+            )
+        } else {
+            fingerprinted
+        }
+        val insertedRowId = database.rawNotificationDao().insert(identified)
         // 金库「最近入库时间」：实时证据落库才刷新；补扫旧短信不刷新（避免被历史补回污染）
         if (updateLastReceived && insertedRowId != -1L) {
             _lastReceivedAt.value = notification.receivedAt
             prefs.edit().putLong("last_notification_received_at", notification.receivedAt).apply()
         }
+        return insertedRowId != -1L
     }
 
     /** Last completed listener recovery window; persisted so a process restart does not widen the gap. */
@@ -912,16 +954,178 @@ class LedgerRepository(
         }
     }
 
-    suspend fun deleteTransaction(id: String) {
+    /** 把已经确认的普通收入/支出补挂到借款计划；借款本身不进普通收入统计。 */
+    suspend fun linkTransactionToLoanDisbursement(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        merchant: String?,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?
+    ) {
+        require(amountCents > 0L)
         database.withTransaction {
-            val tx = requireNotNull(database.transactionDao().findById(id))
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            require(old.type == TransactionType.EXPENSE.name || old.type == TransactionType.INCOME.name) {
+                "只有普通收支流水可以补挂借款计划"
+            }
             requireTransactionNotAllocated(id)
-            val accountId = tx.accountId
+            require(database.reimbursementLinkDao().findByExpense(id).isEmpty()) { "已关联报销的流水不能改成借款到账" }
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "借款计划不存在" }
+            val account = requireNotNull(database.accountDao().find(accountId)) { "到账账户不存在" }
+            require(account.type == AccountType.ASSET.name) { "借款到账必须进入资产账户" }
+            database.transactionDao().updateManagedFields(
+                id = id,
+                amountCents = amountCents,
+                type = TransactionType.LOAN_DISBURSEMENT.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                merchant = merchant?.trim()?.takeIf { it.isNotEmpty() },
+                note = note?.trim()?.takeIf { it.isNotEmpty() },
+                accountId = accountId,
+                occurredAt = occurredAt,
+                principalCents = 0L,
+                interestCents = 0L,
+                feeCents = 0L,
+                loanPlanId = plan.id,
+                necessity = null,
+                channel = channel
+            )
+            // 贷款计划的本金在建计划时已经存在；这里补的是实际到账证据，不能再次把本金加一遍。
+            recomputeBalance(old.accountId)
+            if (old.accountId != accountId) recomputeBalance(accountId)
+        }
+    }
+
+    /** 把已经确认的普通支出补挂到贷款计划，按用户提供的本金/息费拆分推进计划。 */
+    suspend fun linkTransactionToLoanPayment(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        feeCents: Long,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?
+    ) {
+        require(amountCents > 0L)
+        require(principalCents >= 0L && interestCents >= 0L && feeCents >= 0L)
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            require(old.type == TransactionType.EXPENSE.name) { "贷款还款必须从支出流水补挂" }
+            requireTransactionNotAllocated(id)
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
+            require(principalCents + interestCents + feeCents == amountCents) { "本金+利息+手续费必须等于流水金额" }
+            require(principalCents <= remainingEffective(plan)) { "本金超过贷款计划剩余本金" }
+            val insts = jsonToInstallments(plan.installmentsJson)
+            val atDay = Instant.ofEpochMilli(occurredAt).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
+            val matched = InstallmentMatcher.match(insts, amountCents, atDay)
+            val updatedInsts = if (matched != null && matched.total.cents == amountCents && matched.principal.cents == principalCents) {
+                insts.map { if (it.number == matched.number) it.copy(status = InstallmentStatus.PAID) else it }
+            } else insts
+            database.transactionDao().updateManagedFields(
+                id = id,
+                amountCents = amountCents,
+                type = TransactionType.LOAN_PAYMENT.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                merchant = null,
+                note = note?.trim()?.takeIf { it.isNotEmpty() },
+                accountId = accountId,
+                occurredAt = occurredAt,
+                principalCents = principalCents,
+                interestCents = interestCents,
+                feeCents = feeCents,
+                loanPlanId = plan.id,
+                necessity = null,
+                channel = channel
+            )
+            database.loanPlanDao().upsert(
+                plan.copy(
+                    remainingPrincipalCents = maxOf(0L, remainingEffective(plan) - principalCents),
+                    installmentsJson = installmentsToJson(updatedInsts),
+                    status = if (principalCents >= remainingEffective(plan)) "PAID_OFF" else plan.status
+                )
+            )
+            recomputeBalance(old.accountId)
+            if (old.accountId != accountId) recomputeBalance(accountId)
+        }
+    }
+
+    suspend fun previewTransactionDeletion(ids: Collection<String>): List<TransactionDeletionAccountPreview> {
+        val transactions = ids.distinct().mapNotNull { database.transactionDao().findById(it) }
+        return transactions.groupBy { it.accountId }.mapNotNull { (accountId, accountTransactions) ->
+            val account = database.accountDao().find(accountId) ?: return@mapNotNull null
+            val checkpoint = database.balanceCheckpointDao().latestFor(accountId)
+            val accountType = AccountType.valueOf(account.type)
+            val removedDelta = accountTransactions
+                .asSequence()
+                .filter { checkpoint == null || it.occurredAt > checkpoint.checkedAt }
+                .sumOf { tx ->
+                    BalanceMath.transactionDelta(accountType, TransactionType.valueOf(tx.type), tx.amountCents)
+                }
+            TransactionDeletionAccountPreview(
+                accountId = accountId,
+                currentBalanceCents = account.balanceCents,
+                projectedBalanceCents = account.balanceCents - removedDelta,
+                balanceStatus = account.balanceStatus
+            )
+        }.sortedBy { it.accountId }
+    }
+
+    suspend fun deleteTransaction(id: String, deletedAt: Long = System.currentTimeMillis()) {
+        deleteTransactions(listOf(id), deletedAt)
+    }
+
+    suspend fun deleteTransactions(ids: Collection<String>, deletedAt: Long = System.currentTimeMillis()) {
+        database.withTransaction {
+            val transactions = ids.distinct().map { id ->
+                requireNotNull(database.transactionDao().findById(id)) { "流水不存在或已在垃圾箱" }
+            }
+            transactions.forEach { tx ->
+                requireTransactionNotAllocated(tx.id)
+                if (TransactionType.valueOf(tx.type) == TransactionType.EXPENSE) {
+                    require(database.reimbursementLinkDao().findByExpense(tx.id).isEmpty()) {
+                        "已关联报销到账，请先删除对应报销到账流水"
+                    }
+                    require(database.transactionDao().countRefundsFor(tx.id) == 0) {
+                        "已关联退款（含垃圾箱），请先处理对应退款流水"
+                    }
+                }
+            }
+            require(
+                transactions.mapNotNull { it.loanPlanId }.groupingBy { it }.eachCount().none { it.value > 1 }
+            ) { "同一贷款计划的多笔流水请逐笔删除，避免恢复顺序破坏期次" }
+            val trashContexts = transactions.associate { tx ->
+                val before = captureTransactionEffectState(tx)
+                rollbackTransactionEffects(tx)
+                val after = captureTransactionEffectState(tx)
+                tx.id to if (before != null && after != null) {
+                    JSONObject().put("before", JSONObject(before)).put("after", JSONObject(after)).toString()
+                } else null
+            }
+            transactions.forEach { tx ->
+                check(database.transactionDao().moveToTrash(tx.id, deletedAt, trashContexts[tx.id]) == 1) {
+                    "流水状态已变化，请刷新后重试"
+                }
+                tx.notificationId?.let { nid ->
+                    database.rawNotificationDao().updateStatus(nid, "IGNORED")
+                    database.rawNotificationDao().updateProcessingNote(
+                        nid,
+                        "关联流水已移入垃圾箱；保留忽略墓碑，防止通知补扫复活"
+                    )
+                }
+            }
+            transactions.map { it.accountId }.distinct().forEach { recomputeBalance(it) }
+        }
+    }
+
+    private suspend fun rollbackTransactionEffects(tx: TransactionEntity) {
             // V5 回滚：借款/还款/提前还款与贷款计划的联动还原，保持真相源对称
             when (TransactionType.valueOf(tx.type)) {
-                TransactionType.EXPENSE -> require(
-                    database.reimbursementLinkDao().findByExpense(tx.id).isEmpty()
-                ) { "已关联报销到账，请先删除对应报销到账流水" }
+                TransactionType.EXPENSE -> Unit
                 TransactionType.LOAN_PAYMENT -> tx.loanPlanId?.let { planId ->
                     database.loanPlanDao().findById(planId)?.let { plan ->
                         val current = jsonToInstallments(plan.installmentsJson)
@@ -943,13 +1147,8 @@ class LedgerRepository(
                         )
                     }
                 }
-                TransactionType.LOAN_DISBURSEMENT -> tx.loanPlanId?.let { planId ->
-                    database.loanPlanDao().findById(planId)?.let { plan ->
-                        database.loanPlanDao().upsert(
-                            plan.copy(remainingPrincipalCents = maxOf(0, remainingEffective(plan) - tx.amountCents))
-                        )
-                    }
-                }
+                // 借款计划建档时已经记录了本金；借款到账流水只是资金证据，删除它不能再次改动计划本金。
+                TransactionType.LOAN_DISBURSEMENT -> Unit
                 TransactionType.LOAN_PREPAYMENT -> tx.loanPlanId?.let { planId ->
                     database.loanPlanDao().findById(planId)?.let { plan ->
                         database.loanPlanDao().upsert(
@@ -961,7 +1160,7 @@ class LedgerRepository(
                     }
                 }
                 TransactionType.REIMBURSEMENT -> {
-                    // 报销流水删除：解除关联并归还垫付的已报销金额
+                    // 关联行留作恢复快照；这里只归还垫付的已报销金额。
                     database.reimbursementLinkDao().findByReimbursement(tx.id).forEach { link ->
                         database.transactionDao().findById(link.expenseTxId)?.let { expense ->
                             database.transactionDao().updateReimbursed(
@@ -970,18 +1169,128 @@ class LedgerRepository(
                             )
                         }
                     }
-                    database.reimbursementLinkDao().deleteByReimbursement(tx.id)
                 }
                 else -> Unit
             }
-            database.transactionDao().deleteById(id)
-            recomputeBalance(accountId)
-            // 由通知确认的流水删除后：原通知回到待确认箱重新处理（REQ 流水§9）
+    }
+
+    suspend fun restoreTransactionFromTrash(id: String) {
+        database.withTransaction {
+            val tx = requireNotNull(database.transactionDao().findIncludingDeleted(id)) { "垃圾箱中没有这条流水" }
+            require(tx.deletedAt != null) { "这条流水不在垃圾箱" }
+            restoreTransactionEffectsFromSnapshot(tx)
+            check(database.transactionDao().restoreFromTrash(id) == 1) { "流水状态已变化，请刷新后重试" }
+            recomputeBalance(tx.accountId)
             tx.notificationId?.let { nid ->
-                database.rawNotificationDao().updateStatus(nid, "PENDING_CONFIRMATION")
-                database.rawNotificationDao().updateProcessingNote(nid, "流水已删除，回到待确认")
+                database.rawNotificationDao().updateStatus(nid, "LINKED")
+                database.rawNotificationDao().updateProcessingNote(nid, "关联流水已从垃圾箱恢复")
             }
         }
+    }
+
+    private suspend fun restoreTransactionEffectsFromSnapshot(tx: TransactionEntity) {
+        val effectful = tx.loanPlanId != null || TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT
+        if (!effectful) return
+        val context = requireNotNull(tx.trashContextJson) { "缺少删除联动快照，无法安全恢复" }
+        val root = JSONObject(context)
+        val expectedAfter = root.getJSONObject("after").toString()
+        val current = requireNotNull(captureTransactionEffectState(tx)) { "关联数据不存在，无法安全恢复" }
+        require(JSONObject(current).toString() == JSONObject(expectedAfter).toString()) {
+            "删除后关联贷款或报销数据已变化，不能强行恢复这条流水"
+        }
+        applyTransactionEffectState(root.getJSONObject("before"))
+    }
+
+    private suspend fun captureTransactionEffectState(tx: TransactionEntity): String? {
+        tx.loanPlanId?.let { planId ->
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "关联贷款计划不存在" }
+            return JSONObject()
+                .put("kind", "LOAN")
+                .put("plan", loanPlanToTrashJson(plan))
+                .toString()
+        }
+        if (TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT) {
+            val expenses = JSONArray()
+            database.reimbursementLinkDao().findByReimbursement(tx.id)
+                .sortedBy { it.expenseTxId }
+                .forEach { link ->
+                    val expense = requireNotNull(database.transactionDao().findById(link.expenseTxId)) {
+                        "关联垫付流水不存在"
+                    }
+                    expenses.put(
+                        JSONObject()
+                            .put("id", expense.id)
+                            .put("reimbursedCents", expense.reimbursedCents)
+                    )
+                }
+            return JSONObject().put("kind", "REIMBURSEMENT").put("expenses", expenses).toString()
+        }
+        return null
+    }
+
+    private suspend fun applyTransactionEffectState(state: JSONObject) {
+        when (state.getString("kind")) {
+            "LOAN" -> database.loanPlanDao().upsert(trashJsonToLoanPlan(state.getJSONObject("plan")))
+            "REIMBURSEMENT" -> {
+                val expenses = state.getJSONArray("expenses")
+                for (index in 0 until expenses.length()) {
+                    val expenseState = expenses.getJSONObject(index)
+                    val id = expenseState.getString("id")
+                    requireNotNull(database.transactionDao().findById(id)) { "关联垫付流水不存在，无法恢复" }
+                    database.transactionDao().updateReimbursed(id, expenseState.getLong("reimbursedCents"))
+                }
+            }
+        }
+    }
+
+    private fun loanPlanToTrashJson(plan: LoanPlanEntity): JSONObject = JSONObject()
+        .put("id", plan.id)
+        .put("accountId", plan.accountId)
+        .put("principalCents", plan.principalCents)
+        .put("startDateEpochDay", plan.startDateEpochDay)
+        .put("repaymentMethod", plan.repaymentMethod)
+        .put("installmentsJson", plan.installmentsJson)
+        .put("annualRateBps", plan.annualRateBps)
+        .put("remainingPrincipalCents", plan.remainingPrincipalCents)
+        .put("earlyRepaidCents", plan.earlyRepaidCents)
+        .put("repaymentDay", plan.repaymentDay ?: JSONObject.NULL)
+        .put("status", plan.status)
+
+    private fun trashJsonToLoanPlan(json: JSONObject): LoanPlanEntity = LoanPlanEntity(
+        id = json.getString("id"),
+        accountId = json.getString("accountId"),
+        principalCents = json.getLong("principalCents"),
+        startDateEpochDay = json.getLong("startDateEpochDay"),
+        repaymentMethod = json.getString("repaymentMethod"),
+        installmentsJson = json.getString("installmentsJson"),
+        annualRateBps = json.getInt("annualRateBps"),
+        remainingPrincipalCents = json.getLong("remainingPrincipalCents"),
+        earlyRepaidCents = json.getLong("earlyRepaidCents"),
+        repaymentDay = if (json.isNull("repaymentDay")) null else json.getInt("repaymentDay"),
+        status = json.getString("status")
+    )
+
+    suspend fun permanentlyDeleteTransactionFromTrash(id: String) {
+        database.withTransaction {
+            val tx = requireNotNull(database.transactionDao().findIncludingDeleted(id)) { "垃圾箱中没有这条流水" }
+            require(tx.deletedAt != null) { "只能永久删除垃圾箱中的流水" }
+            permanentlyDeleteTrashedTransaction(tx)
+        }
+    }
+
+    suspend fun purgeExpiredTransactionTrash(now: Long = System.currentTimeMillis()): Int =
+        database.withTransaction {
+            val expired = database.transactionDao().deletedAtOrBefore(now - TRANSACTION_TRASH_RETENTION_MS)
+            expired.forEach { permanentlyDeleteTrashedTransaction(it) }
+            expired.size
+        }
+
+    private suspend fun permanentlyDeleteTrashedTransaction(tx: TransactionEntity) {
+        if (TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT) {
+            database.reimbursementLinkDao().deleteByReimbursement(tx.id)
+        }
+        database.transactionDao().deleteById(tx.id)
+        // 原始通知墓碑故意保留；否则短信箱补扫会把永久删除的流水再次变成待确认。
     }
 
     /** 待确认贷款扣款：通知认领、真实还款、期次推进和状态更新必须同一事务。 */
@@ -1014,6 +1323,45 @@ class LedgerRepository(
                 occurredAt = postedAt,
                 notificationId = notificationId
             )
+            database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+            if (bankBalanceCents != null && bankCardTail != null) {
+                applyBankBalance(cashAccountId, bankCardTail, bankBalanceCents, postedAt)
+            }
+        }
+    }
+
+    /** 待确认借款到账：只能挂到明确的借款计划，不能降级为普通收入。 */
+    suspend fun confirmLoanDisbursementNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
+    ) {
+        require(amountCents > 0)
+        database.withTransaction {
+            if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
+                return@withTransaction
+            }
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "借款计划不存在" }
+            val cashAccount = requireNotNull(database.accountDao().find(cashAccountId)) { "到账账户不存在" }
+            require(cashAccount.type == AccountType.ASSET.name) { "借款到账必须进入资产账户" }
+            val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
+                ?: System.currentTimeMillis()
+            addTransaction(
+                accountId = cashAccountId,
+                amountCents = amountCents,
+                type = TransactionType.LOAN_DISBURSEMENT,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                merchant = null,
+                note = note,
+                occurredAt = postedAt,
+                loanPlanId = plan.id,
+                notificationId = notificationId
+            )
+            // 借款计划本金在建计划时已存在；确认这里只落到账事件，不能重复增加负债。
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             if (bankBalanceCents != null && bankCardTail != null) {
                 applyBankBalance(cashAccountId, bankCardTail, bankBalanceCents, postedAt)
@@ -1224,16 +1572,158 @@ class LedgerRepository(
         }
     }
 
-    /** 删除转账：删除后重算两边余额。账户已删的自动跳过（recomputeBalance 里 find 不到即返回）。 */
-    suspend fun deleteTransfer(id: String) {
+    suspend fun previewTransferDeletion(id: String): List<TransferDeletionAccountPreview> {
+        val transfer = database.transferDao().findById(id) ?: return emptyList()
+        return listOf(transfer.fromAccountId, transfer.toAccountId).distinct().mapNotNull { accountId ->
+            val account = database.accountDao().find(accountId) ?: return@mapNotNull null
+            val checkpoint = database.balanceCheckpointDao().latestFor(accountId)
+            val accountType = AccountType.valueOf(account.type)
+            val delta = if (checkpoint == null || transfer.occurredAt > checkpoint.checkedAt) {
+                if (accountId == transfer.toAccountId) {
+                    BalanceMath.transferInDelta(accountType, transfer.amountCents)
+                } else {
+                    BalanceMath.transferOutDelta(accountType, transfer.amountCents)
+                }
+            } else 0L
+            TransferDeletionAccountPreview(
+                accountId = accountId,
+                currentBalanceCents = account.balanceCents,
+                projectedBalanceCents = account.balanceCents - delta,
+                balanceStatus = account.balanceStatus
+            )
+        }
+    }
+
+    /** 删除划转采用软删除：先反向撤销信用卡匹配，再重算两端账户；七天后才物理清除。 */
+    suspend fun deleteTransfer(id: String, deletedAt: Long = System.currentTimeMillis()) {
         database.withTransaction {
             val tf = database.transferDao().findById(id) ?: return@withTransaction
+            val before = captureTransferEffectState(id)
             cardInstallmentService.reverseTransferMatches(id)
-            database.transferDao().delete(id)
+            val after = captureTransferEffectState(id)
+            check(database.transferDao().moveToTrash(id, deletedAt, JSONObject().put("before", JSONObject(before)).put("after", JSONObject(after)).toString()) == 1) {
+                "划转状态已变化，请刷新后重试"
+            }
             recomputeBalance(tf.fromAccountId)
             recomputeBalance(tf.toAccountId)
         }
     }
+
+    suspend fun restoreTransferFromTrash(id: String) {
+        database.withTransaction {
+            val tf = requireNotNull(database.transferDao().findIncludingDeleted(id)) { "垃圾箱中没有这条划转" }
+            require(tf.deletedAt != null) { "这条划转不在垃圾箱" }
+            val context = requireNotNull(tf.trashContextJson) { "缺少划转联动快照，无法安全恢复" }
+            val root = JSONObject(context)
+            val current = captureTransferEffectState(id)
+            require(current == root.getJSONObject("after").toString()) {
+                "删除后信用卡分期状态已变化，不能强行恢复这条划转"
+            }
+            applyTransferEffectState(root.getJSONObject("before").toString())
+            check(database.transferDao().restoreFromTrash(id) == 1) { "划转状态已变化，请刷新后重试" }
+            recomputeBalance(tf.fromAccountId)
+            recomputeBalance(tf.toAccountId)
+        }
+    }
+
+    suspend fun permanentlyDeleteTransferFromTrash(id: String) {
+        database.withTransaction {
+            val tf = requireNotNull(database.transferDao().findIncludingDeleted(id)) { "垃圾箱中没有这条划转" }
+            require(tf.deletedAt != null) { "只能永久删除垃圾箱中的划转" }
+            database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(id)
+            database.transferDao().delete(id)
+        }
+    }
+
+    suspend fun purgeExpiredTransferTrash(now: Long = System.currentTimeMillis()): Int =
+        database.withTransaction {
+            val expired = database.transferDao().deletedAtOrBefore(now - TRANSACTION_TRASH_RETENTION_MS)
+            expired.forEach {
+                database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(it.id)
+                database.transferDao().delete(it.id)
+            }
+            expired.size
+        }
+
+    private suspend fun captureTransferEffectState(transferId: String): String {
+        val matches = database.creditCardInstallmentPaymentMatchDao().findByTransfer(transferId)
+        val planIds = matches.map { it.planId }.toSet()
+        val schedules = planIds.flatMap { database.creditCardInstallmentScheduleDao().findByPlan(it) }
+        val plans = planIds.mapNotNull { database.creditCardInstallmentDao().findById(it) }
+        return JSONObject()
+            .put("matches", JSONArray().apply { matches.sortedWith(compareBy({ it.scheduleId }, { it.planId })).forEach { put(matchToJson(it)) } })
+            .put("schedules", JSONArray().apply { schedules.sortedBy { it.id }.forEach { put(scheduleToJson(it)) } })
+            .put("plans", JSONArray().apply { plans.sortedBy { it.id }.forEach { put(installmentPlanToJson(it)) } })
+            .toString()
+    }
+
+    private suspend fun applyTransferEffectState(state: String) {
+        val root = JSONObject(state)
+        val plans = root.getJSONArray("plans")
+        for (index in 0 until plans.length()) {
+            database.creditCardInstallmentDao().upsert(jsonToInstallmentPlan(plans.getJSONObject(index)))
+        }
+        val schedules = root.getJSONArray("schedules")
+        val scheduleRows = buildList {
+            for (index in 0 until schedules.length()) add(jsonToSchedule(schedules.getJSONObject(index)))
+        }
+        if (scheduleRows.isNotEmpty()) database.creditCardInstallmentScheduleDao().upsertAll(scheduleRows)
+        val matches = root.getJSONArray("matches")
+        val matchRows = buildList {
+            for (index in 0 until matches.length()) add(jsonToMatch(matches.getJSONObject(index)))
+        }
+        if (matchRows.isNotEmpty()) database.creditCardInstallmentPaymentMatchDao().upsertAll(matchRows)
+    }
+
+    private fun matchToJson(value: CreditCardInstallmentPaymentMatchEntity) = JSONObject()
+        .put("transferId", value.transferId).put("scheduleId", value.scheduleId).put("planId", value.planId)
+        .put("paymentCents", value.paymentCents).put("principalCents", value.principalCents)
+        .put("status", value.status).put("source", value.source).put("createdAt", value.createdAt)
+        .put("resolvedAt", value.resolvedAt ?: JSONObject.NULL)
+
+    private fun jsonToMatch(value: JSONObject) = CreditCardInstallmentPaymentMatchEntity(
+        transferId = value.getString("transferId"), scheduleId = value.getString("scheduleId"), planId = value.getString("planId"),
+        paymentCents = value.getLong("paymentCents"), principalCents = value.getLong("principalCents"),
+        status = value.getString("status"), source = value.getString("source"), createdAt = value.getLong("createdAt"),
+        resolvedAt = if (value.isNull("resolvedAt")) null else value.getLong("resolvedAt")
+    )
+
+    private fun scheduleToJson(value: CreditCardInstallmentScheduleEntity) = JSONObject()
+        .put("id", value.id).put("planId", value.planId).put("revision", value.revision).put("number", value.number)
+        .put("dueDateEpochDay", value.dueDateEpochDay).put("principalDueCents", value.principalDueCents)
+        .put("expectedInterestCents", value.expectedInterestCents).put("expectedFeeCents", value.expectedFeeCents)
+        .put("expectedUnclassifiedChargeCents", value.expectedUnclassifiedChargeCents)
+        .put("principalPaidCents", value.principalPaidCents).put("interestPaidCents", value.interestPaidCents)
+        .put("feePaidCents", value.feePaidCents).put("status", value.status)
+
+    private fun jsonToSchedule(value: JSONObject) = CreditCardInstallmentScheduleEntity(
+        id = value.getString("id"), planId = value.getString("planId"), revision = value.getInt("revision"), number = value.getInt("number"),
+        dueDateEpochDay = value.getLong("dueDateEpochDay"), principalDueCents = value.getLong("principalDueCents"),
+        expectedInterestCents = value.getLong("expectedInterestCents"), expectedFeeCents = value.getLong("expectedFeeCents"),
+        expectedUnclassifiedChargeCents = value.getLong("expectedUnclassifiedChargeCents"), principalPaidCents = value.getLong("principalPaidCents"),
+        interestPaidCents = value.getLong("interestPaidCents"), feePaidCents = value.getLong("feePaidCents"), status = value.getString("status")
+    )
+
+    private fun installmentPlanToJson(value: CreditCardInstallmentEntity) = JSONObject()
+        .put("id", value.id).put("cardAccountId", value.cardAccountId).put("label", value.label)
+        .put("originalPrincipalCents", value.originalPrincipalCents).put("remainingPrincipalCents", value.remainingPrincipalCents)
+        .put("monthlyPaymentCents", value.monthlyPaymentCents).put("feeCentsPerPeriod", value.feeCentsPerPeriod)
+        .put("periodsRemaining", value.periodsRemaining).put("startDateEpochDay", value.startDateEpochDay)
+        .put("installmentType", value.installmentType).put("installmentCount", value.installmentCount)
+        .put("nextDueDateEpochDay", value.nextDueDateEpochDay ?: JSONObject.NULL)
+        .put("statementCycleStartEpochDay", value.statementCycleStartEpochDay ?: JSONObject.NULL)
+        .put("status", value.status).put("scheduleRevision", value.scheduleRevision).put("createdAt", value.createdAt).put("updatedAt", value.updatedAt)
+
+    private fun jsonToInstallmentPlan(value: JSONObject) = CreditCardInstallmentEntity(
+        id = value.getString("id"), cardAccountId = value.getString("cardAccountId"), label = value.getString("label"),
+        originalPrincipalCents = value.getLong("originalPrincipalCents"), remainingPrincipalCents = value.getLong("remainingPrincipalCents"),
+        monthlyPaymentCents = value.getLong("monthlyPaymentCents"), feeCentsPerPeriod = value.getLong("feeCentsPerPeriod"),
+        periodsRemaining = value.getInt("periodsRemaining"), startDateEpochDay = value.getLong("startDateEpochDay"),
+        installmentType = value.getString("installmentType"), installmentCount = value.getInt("installmentCount"),
+        nextDueDateEpochDay = if (value.isNull("nextDueDateEpochDay")) null else value.getLong("nextDueDateEpochDay"),
+        statementCycleStartEpochDay = if (value.isNull("statementCycleStartEpochDay")) null else value.getLong("statementCycleStartEpochDay"),
+        status = value.getString("status"), scheduleRevision = value.getInt("scheduleRevision"), createdAt = value.getLong("createdAt"), updatedAt = value.getLong("updatedAt")
+    )
 
     // ── Reimbursement ──
 
@@ -1296,7 +1786,12 @@ class LedgerRepository(
 
     val categories: Flow<List<CategoryEntity>> = database.categoryDao().observeAll()
 
-    /** 首次启动播种分类库（REQ 初始分类库 + 预期收入§4）：消费/收入两类独立判断，缺哪类种哪类；用户已动过的那类不再动。 */
+    /**
+     * 首次启动播种分类库，并对既有安装执行一次性的分类补种。
+     *
+     * 不能在每次启动时把所有缺失的默认分类补回来，否则用户主动删除的分类会“复活”。
+     * 因此升级只补本版本新增的稳定 ID，并用版本标记保证只执行一次。
+     */
     suspend fun seedDefaultCategoriesIfEmpty() {
         val existing = database.categoryDao().all()
         suspend fun seedIfMissing(kind: String, list: List<com.assetsking.ledger.CategorySeed>) {
@@ -1315,6 +1810,29 @@ class LedgerRepository(
         }
         seedIfMissing("EXPENSE", DefaultCategories.seeds)
         seedIfMissing("INCOME", DefaultCategories.incomeSeeds)
+
+        if (prefs.getInt(CATEGORY_SEED_VERSION_KEY, 0) < CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW) {
+            val upgradeIds = setOf("social-other-gift", "income-other")
+            val upgrades = (DefaultCategories.seeds + DefaultCategories.incomeSeeds)
+                .filter { it.id in upgradeIds }
+                .mapIndexed { index, seed ->
+                    CategoryEntity(
+                        id = seed.id,
+                        name = seed.name,
+                        shortName = seed.shortName,
+                        parentId = seed.parentId,
+                        iconKey = seed.iconKey,
+                        defaultNecessary = seed.defaultNecessary,
+                        kind = seed.kind,
+                        sortOrder = existing.maxOfOrNull { it.sortOrder }?.plus(index + 1) ?: index,
+                        isCustom = false
+                    )
+                }
+            database.categoryDao().insertAll(upgrades)
+            prefs.edit()
+                .putInt(CATEGORY_SEED_VERSION_KEY, CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW)
+                .apply()
+        }
     }
 
     suspend fun addCategory(
@@ -1642,13 +2160,7 @@ class LedgerRepository(
                 occurredAt = occurredAt,
                 loanPlanId = planId
             )
-            if (planId != null) {
-                database.loanPlanDao().findById(planId)?.let { plan ->
-                    database.loanPlanDao().upsert(
-                        plan.copy(remainingPrincipalCents = remainingEffective(plan) + amountCents)
-                    )
-                }
-            }
+            // 贷款计划创建时已经登记本金；这笔流水只证明资金到账，不能再次增加负债。
         }
     }
 

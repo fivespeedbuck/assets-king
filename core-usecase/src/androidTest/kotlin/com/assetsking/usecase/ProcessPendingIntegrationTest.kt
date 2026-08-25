@@ -128,6 +128,74 @@ class ProcessPendingIntegrationTest {
     }
 
     @Test
+    fun smsReceiverAndRescanUseOneStableDatabaseIdentity() = runBlocking {
+        val postedAt = System.currentTimeMillis()
+        val content = "【招商银行】您账户3683于08月25日17:47快捷支付35.00元，余额3138.74"
+
+        repository.saveRawNotification(
+            rawNotification("sms:95555:$postedAt", content).copy(postedAt = postedAt)
+        )
+        repository.saveRawNotification(
+            rawNotification("sms:rescan:95555:$postedAt", content).copy(postedAt = postedAt),
+            updateLastReceived = false
+        )
+
+        assertEquals(1, database.rawNotificationDao().countAll())
+    }
+
+    @Test
+    fun existingPendingSmsDuplicateIsCollapsedAgainstIgnoredTombstone() = runBlocking {
+        val postedAt = System.currentTimeMillis()
+        val content = "【招商银行】您账户3683于08月25日17:47快捷支付35.00元，余额3138.74"
+        val fingerprint = ContentFingerprint.of("95555", content)
+        database.rawNotificationDao().insert(
+            rawNotification("sms:95555:$postedAt", content).copy(
+                postedAt = postedAt,
+                status = "IGNORED",
+                contentFingerprint = fingerprint
+            )
+        )
+        database.rawNotificationDao().insert(
+            rawNotification("sms:rescan:95555:$postedAt", content).copy(
+                postedAt = postedAt,
+                status = "PENDING_CONFIRMATION",
+                contentFingerprint = fingerprint
+            )
+        )
+
+        assertEquals(0, ProcessPendingUseCase(repository).invoke())
+
+        assertEquals(
+            "IGNORED",
+            database.rawNotificationDao().findById("sms:rescan:95555:$postedAt")?.status
+        )
+        assertEquals(0, database.rawNotificationDao().countPendingConfirmation())
+    }
+
+    @Test
+    fun existingPendingSmsDuplicatesCollapseToOneCandidate() = runBlocking {
+        val postedAt = System.currentTimeMillis()
+        val content = "【招商银行】您账户3683于08月25日17:47快捷支付35.00元，余额3138.74"
+        val fingerprint = ContentFingerprint.of("95555", content)
+        listOf(
+            "sms:95555:$postedAt",
+            "sms:rescan:95555:$postedAt"
+        ).forEach { id ->
+            database.rawNotificationDao().insert(
+                rawNotification(id, content).copy(
+                    postedAt = postedAt,
+                    status = "PENDING_CONFIRMATION",
+                    contentFingerprint = fingerprint
+                )
+            )
+        }
+
+        assertEquals(0, ProcessPendingUseCase(repository).invoke())
+
+        assertEquals(1, database.rawNotificationDao().countPendingConfirmation())
+    }
+
+    @Test
     fun guangfaStatementUpdatesBillStateOnceAndNeverCreatesATransaction() = runBlocking {
         database.accountDao().upsert(
             AccountEntity(
@@ -158,11 +226,14 @@ class ProcessPendingIntegrationTest {
         assertEquals(26, account.statementDay)
         assertEquals(15, account.dueDay)
         assertTrue(database.transactionDao().all().isEmpty())
-        assertEquals("IGNORED", database.rawNotificationDao().findById("statement-1")?.status)
-        assertTrue(
-            database.rawNotificationDao().findById("statement-2")?.processingNote
-                ?.contains("内容相同") == true
+        val statements = listOfNotNull(
+            database.rawNotificationDao().findById("statement-1"),
+            database.rawNotificationDao().findById("statement-2")
         )
+        assertTrue(statements.all { it.status == "IGNORED" })
+        // receivedAt 可能落在同一毫秒，Room 对同值行不保证次序；只要求两份中恰有一份
+        // 记录“内容相同”的归并证据，不把哪一个 id 被保留写死成时序契约。
+        assertTrue(statements.count { it.processingNote?.contains("内容相同") == true } == 1)
     }
 
     private fun rawNotification(id: String, content: String) = RawNotificationEntity(

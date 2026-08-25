@@ -1,6 +1,7 @@
 package com.assetsking.app.ui.screen
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.app.ui.privacy.LocalPrivacyChaosFrame
@@ -40,6 +42,8 @@ import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.transactionCashFlowColor
+import com.assetsking.ui.theme.LoanPrincipalDebtColor
+import com.assetsking.ui.theme.RecurringDebitOrange
 
 @Composable
 fun AccountRow(account: AccountEntity, onClick: () -> Unit = {}) {
@@ -129,6 +133,7 @@ fun TransactionRow(
     // 自定义分类（如"转账"）不在枚举里：valueOf 失败时直接显示存储的原始名字，不回退成"未分类"
     val category = runCatching { TransactionCategory.valueOf(transaction.category) }.getOrNull()
     val categoryText = transactionCategoryLabel(transaction.type, transaction.category).orEmpty()
+    val linkBadges = transactionLinkBadges(transaction)
     val isLoanTx = transaction.type == "LOAN_DISBURSEMENT" || transaction.type == "LOAN_PAYMENT" || transaction.type == "LOAN_PREPAYMENT"
     // V5：借款/还款/提前还款流水不可编辑分类（与贷款计划联动），只读展示
     val title = when {
@@ -168,6 +173,22 @@ fun TransactionRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                if (linkBadges.isNotEmpty()) {
+                    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)) {
+                        linkBadges.forEach { badge ->
+                            val badgeColor = if (badge.colorKey == "recurring") RecurringDebitOrange else LoanPrincipalDebtColor
+                            Text(
+                                badge.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = badgeColor,
+                                modifier = Modifier
+                                    .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(50))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
             Text(

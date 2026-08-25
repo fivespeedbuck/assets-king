@@ -1,12 +1,10 @@
 package com.assetsking.app.ui.screen
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animate
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
@@ -20,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,7 +39,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,11 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
@@ -83,7 +76,6 @@ import com.assetsking.usecase.PendingConfirmationPolicy
 import com.assetsking.usecase.PendingConfirmationValidation
 import com.assetsking.usecase.TransferPairMerge
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Job
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -317,75 +309,6 @@ fun PendingBoxScreen(
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
         )
-    }
-}
-
-/**
- * 只露出固定宽度操作区的可逆滑轨。Material SwipeToDismissBox 会把前景完全移出屏幕，
- * 适合“滑走即删除”，不适合本页“驻留按钮、允许反向取消”的二次确认交互。
- */
-@Composable
-private fun ReversibleDeleteSwipe(
-    onDelete: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    val revealPx = with(LocalDensity.current) { 96.dp.toPx() }
-    val scope = rememberCoroutineScope()
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var settleJob by remember { mutableStateOf<Job?>(null) }
-
-    fun settle(target: Float) {
-        settleJob?.cancel()
-        settleJob = scope.launch {
-            animate(
-                initialValue = offsetX,
-                targetValue = target
-            ) { value, _ -> offsetX = value }
-        }
-    }
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(BoxRed)
-            .pointerInput(revealPx) {
-                detectHorizontalDragGestures(
-                    onDragStart = { settleJob?.cancel() },
-                    onDragCancel = {
-                        settle(if (offsetX <= -revealPx * 0.35f) -revealPx else 0f)
-                    },
-                    onDragEnd = {
-                        settle(if (offsetX <= -revealPx * 0.35f) -revealPx else 0f)
-                    },
-                    onHorizontalDrag = { change, dragAmount ->
-                        change.consume()
-                        offsetX = (offsetX + dragAmount).coerceIn(-revealPx, 0f)
-                    }
-                )
-            }
-    ) {
-        Box(
-            Modifier.matchParentSize().padding(end = 8.dp),
-            contentAlignment = Alignment.CenterEnd
-        ) {
-            if (offsetX < -1f) {
-                Text(
-                    "删除",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .clickable {
-                            settle(0f)
-                            onDelete()
-                        }
-                        .padding(vertical = 12.dp, horizontal = 18.dp)
-                )
-            }
-        }
-        Box(Modifier.offset { IntOffset(offsetX.roundToInt(), 0) }) {
-            content()
-        }
     }
 }
 

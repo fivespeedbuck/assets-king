@@ -33,20 +33,35 @@ interface AccountDao {
 
 @Dao
 interface TransactionDao {
-    @Query("SELECT * FROM transactions ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     fun observeAll(): Flow<List<TransactionEntity>>
+
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
+    fun observeDeleted(): Flow<List<TransactionEntity>>
 
     @Insert
     suspend fun insert(transaction: TransactionEntity)
 
-    @Query("SELECT * FROM transactions WHERE id = :id")
+    @Query("SELECT * FROM transactions WHERE id = :id AND deletedAt IS NULL")
     suspend fun findById(id: String): TransactionEntity?
 
-    @Query("UPDATE transactions SET category = :category WHERE id = :id")
+    @Query("SELECT * FROM transactions WHERE id = :id")
+    suspend fun findIncludingDeleted(id: String): TransactionEntity?
+
+    @Query("UPDATE transactions SET category = :category WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateCategory(id: String, category: String)
 
-    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity, channel = :channel WHERE id = :id")
+    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity, channel = :channel WHERE id = :id AND deletedAt IS NULL")
     suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?)
+
+    @Query("UPDATE transactions SET deletedAt = :deletedAt, trashContextJson = :trashContextJson WHERE id = :id AND deletedAt IS NULL")
+    suspend fun moveToTrash(id: String, deletedAt: Long, trashContextJson: String?): Int
+
+    @Query("UPDATE transactions SET deletedAt = NULL, trashContextJson = NULL WHERE id = :id AND deletedAt IS NOT NULL")
+    suspend fun restoreFromTrash(id: String): Int
+
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NOT NULL AND deletedAt <= :cutoff ORDER BY deletedAt")
+    suspend fun deletedAtOrBefore(cutoff: Long): List<TransactionEntity>
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -54,62 +69,115 @@ interface TransactionDao {
     @Query("DELETE FROM transactions")
     suspend fun deleteAll()
 
-    @Query("SELECT COUNT(*) FROM transactions")
+    @Query("SELECT COUNT(*) FROM transactions WHERE deletedAt IS NULL")
     suspend fun countAll(): Int
 
-    @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id")
+    @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateRecurringRuleId(id: String, ruleId: String?)
 
-    @Query("UPDATE transactions SET refundOfId = :refundOfId WHERE id = :id")
+    @Query("UPDATE transactions SET refundOfId = :refundOfId WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateRefundOfId(id: String, refundOfId: String?)
 
-    @Query("SELECT * FROM transactions WHERE recurringRuleId = :ruleId ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE recurringRuleId = :ruleId AND deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun findByRecurringRule(ruleId: String): List<TransactionEntity>
 
-    @Query("SELECT * FROM transactions WHERE occurredAt BETWEEN :start AND :end ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NULL AND occurredAt BETWEEN :start AND :end ORDER BY occurredAt DESC")
     suspend fun findInRange(start: Long, end: Long): List<TransactionEntity>
 
-    @Query("SELECT * FROM transactions WHERE merchant LIKE '%' || :query || '%' OR note LIKE '%' || :query || '%' ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NULL AND (merchant LIKE '%' || :query || '%' OR note LIKE '%' || :query || '%') ORDER BY occurredAt DESC")
     suspend fun search(query: String): List<TransactionEntity>
 
-    @Query("SELECT * FROM transactions ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun all(): List<TransactionEntity>
 
-    @Query("UPDATE transactions SET isReimbursable = :isReimbursable WHERE id = :id")
+    @Query("UPDATE transactions SET isReimbursable = :isReimbursable WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateReimbursable(id: String, isReimbursable: Boolean)
 
-    @Query("SELECT * FROM transactions WHERE isReimbursable = 1 ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transactions WHERE isReimbursable = 1 AND deletedAt IS NULL ORDER BY occurredAt DESC")
     fun observeReimbursable(): Flow<List<TransactionEntity>>
 
-    @Query("UPDATE transactions SET reimbursedCents = :cents WHERE id = :id")
+    @Query("UPDATE transactions SET reimbursedCents = :cents WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateReimbursed(id: String, cents: Long)
 
-    @Query("UPDATE transactions SET necessity = :necessity WHERE id = :id")
+    @Query("UPDATE transactions SET necessity = :necessity WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateNecessity(id: String, necessity: Boolean?)
 
-    @Query("UPDATE transactions SET category = :newName WHERE category = :oldName")
+    @Query("""
+        UPDATE transactions SET
+            amountCents = :amountCents,
+            type = :type,
+            category = :category,
+            merchant = :merchant,
+            note = :note,
+            accountId = :accountId,
+            occurredAt = :occurredAt,
+            principalCents = :principalCents,
+            interestCents = :interestCents,
+            feeCents = :feeCents,
+            loanPlanId = :loanPlanId,
+            necessity = :necessity,
+            channel = :channel
+        WHERE id = :id AND deletedAt IS NULL
+    """)
+    suspend fun updateManagedFields(
+        id: String,
+        amountCents: Long,
+        type: String,
+        category: String,
+        merchant: String?,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        principalCents: Long,
+        interestCents: Long,
+        feeCents: Long,
+        loanPlanId: String?,
+        necessity: Boolean?,
+        channel: String?
+    )
+
+    @Query("UPDATE transactions SET category = :newName WHERE category = :oldName AND deletedAt IS NULL")
     suspend fun updateCategoryName(oldName: String, newName: String)
 
-    @Query("UPDATE transactions SET merchant = :newName WHERE merchant = :oldName")
+    @Query("UPDATE transactions SET merchant = :newName WHERE merchant = :oldName AND deletedAt IS NULL")
     suspend fun updateMerchantName(oldName: String, newName: String)
 
-    @Query("SELECT COUNT(*) FROM transactions WHERE category = :category")
+    @Query("SELECT COUNT(*) FROM transactions WHERE category = :category AND deletedAt IS NULL")
     suspend fun countByCategory(category: String): Int
+
+    /** 已入账或已进垃圾箱的退款都算关联证据，避免先删退款再删原消费导致恢复时悬空。 */
+    @Query("SELECT COUNT(*) FROM transactions WHERE refundOfId = :transactionId")
+    suspend fun countRefundsFor(transactionId: String): Int
 }
 
 @Dao
 interface TransferDao {
-    @Query("SELECT * FROM transfers ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transfers WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     fun observeAll(): Flow<List<TransferEntity>>
 
-    @Query("SELECT * FROM transfers ORDER BY occurredAt DESC")
+    @Query("SELECT * FROM transfers WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun all(): List<TransferEntity>
+
+    @Query("SELECT * FROM transfers WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
+    fun observeDeleted(): Flow<List<TransferEntity>>
 
     @Insert
     suspend fun insert(transfer: TransferEntity)
 
-    @Query("SELECT * FROM transfers WHERE id = :id")
+    @Query("SELECT * FROM transfers WHERE id = :id AND deletedAt IS NULL")
     suspend fun findById(id: String): TransferEntity?
+
+    @Query("SELECT * FROM transfers WHERE id = :id")
+    suspend fun findIncludingDeleted(id: String): TransferEntity?
+
+    @Query("UPDATE transfers SET deletedAt = :deletedAt, trashContextJson = :trashContextJson WHERE id = :id AND deletedAt IS NULL")
+    suspend fun moveToTrash(id: String, deletedAt: Long, trashContextJson: String?): Int
+
+    @Query("UPDATE transfers SET deletedAt = NULL, trashContextJson = NULL WHERE id = :id AND deletedAt IS NOT NULL")
+    suspend fun restoreFromTrash(id: String): Int
+
+    @Query("SELECT * FROM transfers WHERE deletedAt IS NOT NULL AND deletedAt <= :cutoff ORDER BY deletedAt")
+    suspend fun deletedAtOrBefore(cutoff: Long): List<TransferEntity>
 
     @Query("DELETE FROM transfers WHERE id = :id")
     suspend fun delete(id: String)
@@ -117,7 +185,7 @@ interface TransferDao {
     @Query("DELETE FROM transfers")
     suspend fun deleteAll()
 
-    @Query("SELECT COUNT(*) FROM transfers")
+    @Query("SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL")
     suspend fun countAll(): Int
 }
 
@@ -364,6 +432,9 @@ interface CreditCardInstallmentScheduleDao {
     @Query("SELECT * FROM credit_card_installment_schedules WHERE id = :id")
     suspend fun findById(id: String): CreditCardInstallmentScheduleEntity?
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(schedules: List<CreditCardInstallmentScheduleEntity>)
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(schedules: List<CreditCardInstallmentScheduleEntity>)
 
@@ -394,6 +465,9 @@ interface CreditCardInstallmentPaymentMatchDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(matches: List<CreditCardInstallmentPaymentMatchEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(matches: List<CreditCardInstallmentPaymentMatchEntity>)
+
     @Query("UPDATE credit_card_installment_payment_matches SET principalCents = :principalCents, status = :status, source = :source, resolvedAt = :resolvedAt WHERE transferId = :transferId AND scheduleId = :scheduleId")
     suspend fun resolve(
         transferId: String,
@@ -409,6 +483,9 @@ interface CreditCardInstallmentPaymentMatchDao {
 
     @Query("UPDATE credit_card_installment_payment_matches SET status = 'REVERSED', resolvedAt = :resolvedAt WHERE transferId = :transferId AND status IN ('PENDING', 'AUTO_MATCHED', 'USER_CONFIRMED')")
     suspend fun reverseByTransfer(transferId: String, resolvedAt: Long)
+
+    @Query("DELETE FROM credit_card_installment_payment_matches WHERE transferId = :transferId")
+    suspend fun deleteByTransfer(transferId: String)
 }
 
 @Dao

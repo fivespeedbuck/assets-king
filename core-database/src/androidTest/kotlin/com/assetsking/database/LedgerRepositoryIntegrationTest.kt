@@ -1,6 +1,7 @@
 package com.assetsking.database
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -28,6 +29,7 @@ class LedgerRepositoryIntegrationTest {
     private lateinit var database: AssetsKingDatabase
     private lateinit var repository: LedgerRepository
     private lateinit var context: Context
+    private lateinit var prefs: SharedPreferences
 
     @Before
     fun setUp() {
@@ -37,7 +39,7 @@ class LedgerRepositoryIntegrationTest {
         database = Room.databaseBuilder(context, AssetsKingDatabase::class.java, "assets-king.db")
             .allowMainThreadQueries()
             .build()
-        val prefs = context.getSharedPreferences("ledger-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+        prefs = context.getSharedPreferences("ledger-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
         repository = LedgerRepository(context, database, prefs)
         runBlocking {
             insertAccount("cash")
@@ -128,7 +130,23 @@ class LedgerRepositoryIntegrationTest {
         assertEquals(600_000L, restoredPlan.remainingPrincipalCents)
         assertEquals(listOf(false, false), repository.v5PlanInput(restoredPlan).installments.map { it.isPaid })
         assertEquals(0L, database.accountDao().find("cash")?.balanceCents)
-        assertEquals("PENDING_CONFIRMATION", database.rawNotificationDao().findById(notification.id)?.status)
+        assertEquals("IGNORED", database.rawNotificationDao().findById(notification.id)?.status)
+        assertTrue(
+            database.rawNotificationDao().findById(notification.id)?.processingNote
+                ?.contains("垃圾箱") == true
+        )
+
+        assertEquals(transaction.id, repository.deletedTransactions.first().single().id)
+
+        repository.restoreTransactionFromTrash(transaction.id)
+
+        val reactivatedPlan = requireNotNull(database.loanPlanDao().findById("loan-plan"))
+        assertEquals(transaction.id, database.transactionDao().all().single().id)
+        assertTrue(repository.deletedTransactions.first().isEmpty())
+        assertEquals(300_000L, reactivatedPlan.remainingPrincipalCents)
+        assertEquals(listOf(true, false), repository.v5PlanInput(reactivatedPlan).installments.map { it.isPaid })
+        assertEquals(-342_000L, database.accountDao().find("cash")?.balanceCents)
+        assertEquals("LINKED", database.rawNotificationDao().findById(notification.id)?.status)
     }
 
     @Test
@@ -214,6 +232,159 @@ class LedgerRepositoryIntegrationTest {
         assertEquals(300_000L, restoredPlan.remainingPrincipalCents)
         assertEquals(0L, restoredPlan.earlyRepaidCents)
         assertEquals(0L, database.accountDao().find("cash")?.balanceCents)
+
+        repository.restoreTransactionFromTrash(transaction.id)
+
+        val reappliedPlan = requireNotNull(database.loanPlanDao().findById("prepay-plan"))
+        assertEquals(200_000L, reappliedPlan.remainingPrincipalCents)
+        assertEquals(100_000L, reappliedPlan.earlyRepaidCents)
+        assertEquals(-105_000L, database.accountDao().find("cash")?.balanceCents)
+    }
+
+    @Test
+    fun categorySeedUpgradeAddsExternalCashflowFallbacksOnlyOnce() = runBlocking {
+        database.categoryDao().insertAll(
+            listOf(
+                CategoryEntity(
+                    id = "social",
+                    name = "人情往来",
+                    shortName = "人情",
+                    parentId = null,
+                    iconKey = "volunteer-activism",
+                    defaultNecessary = false,
+                    kind = "EXPENSE",
+                    sortOrder = 0,
+                    isCustom = false
+                ),
+                CategoryEntity(
+                    id = "income-salary",
+                    name = "工资",
+                    shortName = "工资",
+                    parentId = null,
+                    iconKey = "payments",
+                    defaultNecessary = null,
+                    kind = "INCOME",
+                    sortOrder = 1,
+                    isCustom = false
+                )
+            )
+        )
+
+        repository.seedDefaultCategoriesIfEmpty()
+
+        assertEquals("其他转赠", database.categoryDao().findById("social-other-gift")?.name)
+        assertEquals("其他收入", database.categoryDao().findById("income-other")?.name)
+
+        database.categoryDao().deleteById("income-other")
+        repository.seedDefaultCategoriesIfEmpty()
+
+        assertEquals(null, database.categoryDao().findById("income-other"))
+    }
+
+    @Test
+    fun transactionTrashPreviewsBalanceRestoresExactlyAndKeepsNotificationTombstoneAfterExpiry() = runBlocking {
+        val notification = pendingNotification("trash-expense")
+        database.rawNotificationDao().insert(notification)
+        repository.confirmNotification(
+            notificationId = notification.id,
+            accountId = "cash",
+            amountCents = 2_999L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "重复消费",
+            note = null
+        )
+        val transaction = database.transactionDao().all().single()
+        assertEquals(-2_999L, database.accountDao().find("cash")?.balanceCents)
+
+        val preview = repository.previewTransactionDeletion(listOf(transaction.id)).single()
+        assertEquals(-2_999L, preview.currentBalanceCents)
+        assertEquals(0L, preview.projectedBalanceCents)
+
+        val deletedAt = 10_000L
+        repository.deleteTransaction(transaction.id, deletedAt)
+        assertTrue(database.transactionDao().all().isEmpty())
+        assertEquals(transaction.id, repository.deletedTransactions.first().single().id)
+        assertEquals(0L, database.accountDao().find("cash")?.balanceCents)
+        assertEquals("IGNORED", database.rawNotificationDao().findById(notification.id)?.status)
+
+        repository.restoreTransactionFromTrash(transaction.id)
+        assertEquals(transaction.id, database.transactionDao().all().single().id)
+        assertEquals(-2_999L, database.accountDao().find("cash")?.balanceCents)
+        assertEquals("LINKED", database.rawNotificationDao().findById(notification.id)?.status)
+
+        repository.deleteTransaction(transaction.id, deletedAt)
+        assertEquals(1, repository.purgeExpiredTransactionTrash(deletedAt + 7L * 24 * 60 * 60 * 1000))
+        assertTrue(repository.deletedTransactions.first().isEmpty())
+        assertEquals(null, database.transactionDao().findIncludingDeleted(transaction.id))
+        assertEquals("IGNORED", database.rawNotificationDao().findById(notification.id)?.status)
+    }
+
+    @Test
+    fun restoringOldExpenseReplaysOnlyThatEventAndPreservesLaterIncome() = runBlocking {
+        repository.addTransaction(
+            accountId = "cash",
+            amountCents = 10_000L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "先发生的支出",
+            note = null,
+            occurredAt = 1_000L
+        )
+        val deletedId = database.transactionDao().all().single().id
+        repository.deleteTransaction(deletedId, deletedAt = 2_000L)
+        assertEquals(0L, database.accountDao().find("cash")?.balanceCents)
+
+        repository.addTransaction(
+            accountId = "cash",
+            amountCents = 20_000L,
+            type = TransactionType.INCOME,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "后来正常进账",
+            note = null,
+            occurredAt = 3_000L
+        )
+        assertEquals(20_000L, database.accountDao().find("cash")?.balanceCents)
+
+        repository.restoreTransactionFromTrash(deletedId)
+
+        assertEquals(10_000L, database.accountDao().find("cash")?.balanceCents)
+        assertEquals(2, database.transactionDao().all().size)
+    }
+
+    @Test
+    fun restoringLoanTransactionRefusesToOverwriteLoanChangesMadeAfterDeletion() = runBlocking {
+        database.accountDao().upsert(
+            AccountEntity(id = "guarded-loan", name = "恢复保护贷款", type = AccountType.LOAN.name, balanceCents = 300_000L)
+        )
+        database.loanPlanDao().upsert(
+            LoanPlanEntity(
+                id = "guarded-plan",
+                accountId = "guarded-loan",
+                principalCents = 300_000L,
+                startDateEpochDay = 20_000L,
+                repaymentMethod = "CUSTOM",
+                installmentsJson = "[]",
+                remainingPrincipalCents = 300_000L
+            )
+        )
+        repository.addLoanPrepayment(
+            cashAccountId = "cash",
+            planId = "guarded-plan",
+            principalCents = 100_000L,
+            note = null
+        )
+        val transaction = database.transactionDao().all().single()
+        repository.deleteTransaction(transaction.id)
+        val afterDelete = requireNotNull(database.loanPlanDao().findById("guarded-plan"))
+        database.loanPlanDao().upsert(afterDelete.copy(remainingPrincipalCents = 250_000L))
+
+        val result = runCatching { repository.restoreTransactionFromTrash(transaction.id) }
+
+        assertTrue(result.isFailure)
+        assertEquals(250_000L, database.loanPlanDao().findById("guarded-plan")?.remainingPrincipalCents)
+        assertEquals(transaction.id, repository.deletedTransactions.first().single().id)
+        assertTrue(database.transactionDao().all().isEmpty())
     }
 
     @Test
@@ -505,7 +676,13 @@ class LedgerRepositoryIntegrationTest {
 
         assertEquals(0L, database.transactionDao().findById(oldExpense.id)?.reimbursedCents)
         assertEquals(0L, database.transactionDao().findById(recentExpense.id)?.reimbursedCents)
-        assertTrue(database.reimbursementLinkDao().findByReimbursement(arrival.id).isEmpty())
+        assertEquals(2, database.reimbursementLinkDao().findByReimbursement(arrival.id).size)
+
+        repository.restoreTransactionFromTrash(arrival.id)
+
+        assertEquals(12_000L, database.transactionDao().findById(oldExpense.id)?.reimbursedCents)
+        assertEquals(8_000L, database.transactionDao().findById(recentExpense.id)?.reimbursedCents)
+        assertEquals(arrival.id, database.transactionDao().findById(arrival.id)?.id)
     }
 
     @Test
@@ -1114,6 +1291,15 @@ class LedgerRepositoryIntegrationTest {
             listOf("CREATED", "PAYMENT_MATCHED", "PAYMENT_MATCH_REVERSED"),
             database.creditCardInstallmentAuditDao().findByPlan(planId).map { it.eventType }
         )
+        assertTrue(database.transferDao().all().isEmpty())
+        assertTrue(database.transferDao().findIncludingDeleted(transferId)?.deletedAt != null)
+
+        repository.restoreTransferFromTrash(transferId)
+
+        assertEquals(1, database.transferDao().all().size)
+        assertEquals("AUTO_MATCHED", database.creditCardInstallmentPaymentMatchDao().all().single().status)
+        assertEquals(10_000L, database.creditCardInstallmentScheduleDao().findByPlan(planId).first().principalPaidCents)
+        assertEquals(110_000L, database.creditCardInstallmentDao().findById(planId)?.remainingPrincipalCents)
     }
 
     @Test

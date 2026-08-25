@@ -21,16 +21,22 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
     /** 批量处理所有 NEW 通知，返回处理数量。
      *  已学规则只用于编辑页预填；所有有效通知都进入 PENDING_CONFIRMATION。 */
     suspend fun invoke(): Int {
-        val newNotifications = repository.observeNewNotifications().first()
-        if (newNotifications.isEmpty()) return 0
-
         // 判重要跟「已在待确认箱里的」「已确认的」和「已忽略的」都比。
         // IGNORED 必须在内：补扫以新 id 重读收件箱，用户忽略过的短信不拦就会每次复活进箱
         // （REQ 监听 §12：已入箱/已确认/已永久删除的通知不得再次生成候选）。
         // IGNORED 记录本身就是永久墓碑；不能按时间裁剪，否则第 8 天补扫会把它复活。
-        val seen = repository.pendingNotifications.first().toMutableList()
         val linked = repository.linkedNotifications.first()
         val ignored = repository.ignoredNotifications.first()
+        // v0.1.4 以前已进入 PENDING_CONFIRMATION 的重复证据不会再走 NEW 处理。
+        // 每次恢复先收敛旧队列，确认/忽略留下的墓碑也能立即压掉历史副本。
+        val seen = reconcileExistingPending(
+            repository.pendingNotifications.first(),
+            linked,
+            ignored
+        ).toMutableList()
+        val newNotifications = repository.observeNewNotifications().first()
+        if (newNotifications.isEmpty()) return 0
+
         val statementEvidence = mutableListOf<RawNotificationEntity>()
         val accounts = repository.accounts.first().toMutableList()
 
@@ -235,6 +241,101 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
     fun suggestCategory(merchant: String?, note: String?): TransactionCategory =
         categorizer.categorize(merchant, note)
+
+    /**
+     * 收敛旧版已经进箱的副本，不删除原始证据：副本改为 IGNORED，保留审计链。
+     * 用户主动执行“拆分通知”会把 processingNote 置为空串；这类明确覆盖不自动合回去。
+     */
+    private suspend fun reconcileExistingPending(
+        pending: List<RawNotificationEntity>,
+        linked: List<RawNotificationEntity>,
+        ignored: List<RawNotificationEntity>
+    ): List<RawNotificationEntity> {
+        if (pending.size <= 1 && linked.isEmpty() && ignored.isEmpty()) return pending
+
+        val kept = mutableListOf<RawNotificationEntity>()
+        // 带 kept= 的 IGNORED 行只是某个候选的附属证据，不是独立的“用户已删除”墓碑；
+        // 否则它会反过来把自己的 keeper 也压掉，导致两条一起消失。
+        val tombstones = linked + ignored.filterNot {
+            it.processingNote?.contains("kept=") == true
+        }
+        val ordered = pending.sortedWith(
+            compareByDescending<RawNotificationEntity>(::evidenceQuality)
+                .thenBy { it.receivedAt }
+        )
+
+        for (notification in ordered) {
+            if (notification.wasExplicitlySplit()) {
+                kept += notification
+                continue
+            }
+
+            val handled = tombstones.firstOrNull { other ->
+                other.id != notification.id && isSameTransactionEvidence(notification, other)
+            }
+            if (handled != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(
+                    notification.id,
+                    "旧待确认副本与已确认/已忽略证据重复"
+                )
+                continue
+            }
+
+            val duplicate = kept.firstOrNull { other ->
+                !other.wasExplicitlySplit() &&
+                    other.id != notification.id &&
+                    isSameTransactionEvidence(notification, other)
+            }
+            if (duplicate != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(
+                    notification.id,
+                    "旧待确认副本已自动收敛 kept=${duplicate.id}"
+                )
+            } else {
+                kept += notification
+            }
+        }
+        return kept
+    }
+
+    private fun isSameTransactionEvidence(
+        a: RawNotificationEntity,
+        b: RawNotificationEntity
+    ): Boolean {
+        if (
+            NotificationMerge.isSameEvidence(
+                a.packageName,
+                a.id,
+                a.contentFingerprint,
+                a.postedAt,
+                b.packageName,
+                b.id,
+                b.contentFingerprint,
+                b.postedAt
+            )
+        ) return true
+
+        return NotificationMerge.isDuplicateAcrossSources(
+            a.packageName,
+            NotificationParser.parse(a.content, a.title),
+            a.postedAt,
+            b.packageName,
+            NotificationParser.parse(b.content, b.title),
+            b.postedAt
+        )
+    }
+
+    private fun evidenceQuality(entity: RawNotificationEntity): Int {
+        val parsed = NotificationParser.parse(entity.content, entity.title)
+        return (if (parsed.cardTail != null) 8 else 0) +
+            (if (parsed.balanceCents != null) 8 else 0) +
+            (if (parsed.merchant != null) 4 else 0) +
+            (if (parsed.paymentChannel != null) 2 else 0)
+    }
+
+    private fun RawNotificationEntity.wasExplicitlySplit(): Boolean = processingNote == ""
 
     private fun parseMerchant(entity: RawNotificationEntity): String? =
         NotificationParser.parse(entity.content, entity.title).merchant

@@ -54,7 +54,7 @@ object SmsRescan {
                 if (body.isBlank()) continue
                 // 只补能解析出金额的交易短信；验证码/营销/个人短信不进库
                 if (NotificationParser.parse(body, sender).amountCents == null) continue
-                repository.saveRawNotification(
+                val wasInserted = repository.saveRawNotification(
                     RawNotificationEntity(
                         id = "sms:rescan:$sender:$date",
                         packageName = "sms",
@@ -66,7 +66,7 @@ object SmsRescan {
                     ),
                     updateLastReceived = false
                 )
-                inserted++
+                if (wasInserted) inserted++
             }
         }
         SmsRescanResult(inserted = inserted, completed = true)

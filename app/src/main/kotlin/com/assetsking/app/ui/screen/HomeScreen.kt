@@ -78,6 +78,8 @@ fun HomeScreen(
     val notificationWhitelist by model.notificationWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val smsSenderWhitelist by model.smsSenderWhitelist.collectAsStateWithLifecycle(initialValue = emptySet<String>())
     val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
+    val deletedTransactions by model.deletedTransactions.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
+    val deletedTransfers by model.deletedTransfers.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.TransferEntity>())
     val context = LocalContext.current
     var showPendingBox by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
@@ -353,6 +355,12 @@ fun HomeScreen(
                     onSetSmsSenderWhitelist = { model.setSmsSenderWhitelist(it) },
                     freeSpendingCents = freeSpendingCents,
                     onSetFreeSpending = { model.setFreeSpendingCents(it) },
+                    deletedTransactions = deletedTransactions,
+                    deletedTransfers = deletedTransfers,
+                    onRestoreTransaction = { id, callback -> model.restoreTransactionFromTrash(id, callback) },
+                    onPermanentlyDeleteTransaction = { id, callback -> model.permanentlyDeleteTransactionFromTrash(id, callback) },
+                    onRestoreTransfer = { id, callback -> model.restoreTransferFromTrash(id, callback) },
+                    onPermanentlyDeleteTransfer = { id, callback -> model.permanentlyDeleteTransferFromTrash(id, callback) },
                     onRootStateChanged = { settingsAtRoot = it }
                 )
                 if (settingsAtRoot && privacyEnabled) {

@@ -113,15 +113,17 @@ object DefaultCategories {
         // ── 人情往来（REQ 分类§18，全非必要）──
         CategorySeed("social-red-packet", "红包礼金", "红包", "social", "redeem", false),
         CategorySeed("social-family", "孝敬家人", "孝敬", "social", "family-restroom", false),
-        CategorySeed("social-donation", "公益捐赠", "捐赠", "social", "volunteer-activism", false)
+        CategorySeed("social-donation", "公益捐赠", "捐赠", "social", "volunteer-activism", false),
+        CategorySeed("social-other-gift", "其他转赠", "转赠", "social", "redeem", false)
     )
 
-    /** 收入分类库（REQ 预期收入§4）：独立于消费分类的小型分类库，5 个一级默认；编辑器内可新增一级/二级收入分类。 */
+    /** 收入分类库：独立于消费分类；“其他收入”承接确属收入但不在既有来源中的外部转入。 */
     val incomeSeeds: List<CategorySeed> = listOf(
         CategorySeed("income-salary", "工资", "工资", null, "payments", kind = "INCOME"),
         CategorySeed("income-bonus", "年终奖", "年终", null, "savings", kind = "INCOME"),
         CategorySeed("income-parttime", "兼职劳务", "兼职", null, "work", kind = "INCOME"),
         CategorySeed("income-interest", "利息收益", "利息", null, "percent", kind = "INCOME"),
-        CategorySeed("income-gift", "红包赠与", "红包", null, "redeem", kind = "INCOME")
+        CategorySeed("income-gift", "红包赠与", "红包", null, "redeem", kind = "INCOME"),
+        CategorySeed("income-other", "其他收入", "其他", null, "more-horiz", kind = "INCOME")
     )
 }

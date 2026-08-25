@@ -46,6 +46,25 @@ class NotificationMergeTest {
     }
 
     @Test
+    fun `alipay merchant alias and bank sms are one strongly correlated purchase`() {
+        val alipay = NotificationParser.parse(
+            "你在百度地图打车有一笔21.49元的免密/自动扣款支付，点此查看详情。",
+            "交易提醒"
+        )
+        val bankSms = NotificationParser.parse(
+            "【招商银行】您账户3683于08月25日17:05在支付宝-支付宝-消费-北京百度网讯科技有限公司快捷支付21.49元，余额3210.13",
+            "招商银行"
+        )
+
+        assertTrue(
+            NotificationMerge.isDuplicateAcrossSources(
+                "com.eg.android.AlipayGphone", alipay, 100_000,
+                "sms", bankSms, 100_618
+            )
+        )
+    }
+
+    @Test
     fun `identical transactions from same app with different notification keys are not duplicates`() {
         val first = NotificationParser.parse("你有一笔2679.00元的支出，点此查看详情。", "交易提醒")
         val second = NotificationParser.parse("你有一笔2679.00元的支出，点此查看详情。", "交易提醒")
@@ -157,6 +176,27 @@ class NotificationMergeTest {
                 "0|com.eg.android.AlipayGphone|-29999941|null|10326:101000",
                 fp,
                 101_000
+            )
+        )
+    }
+
+    @Test
+    fun `sms receiver and rescan ids are the same evidence`() {
+        val fp = NotificationMerge.contentFingerprint(
+            "95555",
+            "【招商银行】您账户3683于08月25日17:47快捷支付35.00元，余额3138.74"
+        )
+
+        assertTrue(
+            NotificationMerge.isSameEvidence(
+                "sms",
+                "sms:95555:1787651241232",
+                fp,
+                1787651241232,
+                "sms",
+                "sms:rescan:95555:1787651241232",
+                fp,
+                1787651241232
             )
         )
     }

@@ -35,7 +35,7 @@ class DefaultCategoriesTest {
     @Test
     fun `income seeds are valid`() {
         val income = DefaultCategories.incomeSeeds
-        assertEquals(5, income.size)
+        assertEquals(6, income.size)
         // 两库 ID 全局唯一，播种到同一张 categories 表不冲突
         val allIds = (DefaultCategories.seeds + income).map { it.id }
         assertEquals(allIds.size, allIds.toSet().size)

@@ -1,0 +1,3 @@
+# Treat deletion as reversible event deactivation, not account rollback
+
+Assets King deactivates a posted transaction or transfer for seven days, reverses only that event's owned effects, and recomputes balances from checkpoints plus the remaining active events. Restoration reactivates the event in the current timeline instead of restoring an old account snapshot, so unrelated entries posted after deletion are preserved; stateful loan, reimbursement, and installment-payment dependencies use before/after snapshots and refuse restoration if later related changes would be overwritten. Pending evidence is a separate lifecycle and is ignored through a durable tombstone rather than entering the ledger trash.

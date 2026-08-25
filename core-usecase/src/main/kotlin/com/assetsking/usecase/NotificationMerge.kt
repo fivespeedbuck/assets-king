@@ -46,6 +46,9 @@ object NotificationMerge {
     ): Boolean {
         if (!isSameEvidence(aFp, aAt, bFp, bAt)) return false
         if (aPackage != bPackage) return true
+        // `sms` 是应用内部的合成来源，不是 Android 通知包。实时接收和短信补扫过去
+        // 使用不同 id 前缀；指纹与原始时间一致时，它们就是同一条短信而非两次发布。
+        if (aPackage == "sms") return true
         val aKey = notificationKey(aId)
         val bKey = notificationKey(bId)
         return aKey == null || bKey == null || aKey == bKey

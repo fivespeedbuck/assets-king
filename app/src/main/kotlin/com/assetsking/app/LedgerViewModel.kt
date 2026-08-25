@@ -12,6 +12,7 @@ import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.SnapshotEntity
 import com.assetsking.database.TransferEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.TransactionDeletionAccountPreview
 import com.assetsking.ledger.V5Metrics
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
@@ -122,6 +123,8 @@ class LedgerViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LedgerUiState())
 
     val budgets: Flow<List<BudgetEntity>> = repository.budgets
+    val deletedTransactions: Flow<List<TransactionEntity>> = repository.deletedTransactions
+    val deletedTransfers: Flow<List<com.assetsking.database.TransferEntity>> = repository.deletedTransfers
     val loanPlans: Flow<List<LoanPlanEntity>> = repository.loanPlans
     val reimbursable: Flow<List<TransactionEntity>> = repository.reimbursableTransactions
     val recurringRules: Flow<List<RecurringRuleEntity>> = repository.recurringRules
@@ -186,7 +189,11 @@ class LedgerViewModel(
 
     init {
         // 首次启动播种分类库；账户种子由既有流程负责，不动
-        viewModelScope.coroutineLaunch { repository.seedDefaultCategoriesIfEmpty() }
+        viewModelScope.coroutineLaunch {
+            repository.seedDefaultCategoriesIfEmpty()
+            repository.purgeExpiredTransactionTrash()
+            repository.purgeExpiredTransferTrash()
+        }
     }
     val monthlyIncomeCents: Flow<Long> = repository.monthlyIncomeCents
     /** 自动发现的通知来源：包名 → 应用名 */
@@ -250,6 +257,71 @@ class LedgerViewModel(
         viewModelScope.launch { repository.deleteTransaction(id) }
     }
 
+    suspend fun previewTransactionDeletion(ids: Collection<String>): List<TransactionDeletionAccountPreview> =
+        repository.previewTransactionDeletion(ids)
+
+    fun deleteTransactions(ids: Collection<String>, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching { repository.deleteTransactions(ids) })
+        }
+    }
+
+    fun linkTransactionToLoanDisbursement(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        merchant: String?,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching {
+                repository.linkTransactionToLoanDisbursement(id, planId, amountCents, merchant, note, accountId, occurredAt, channel)
+            })
+        }
+    }
+
+    fun linkTransactionToLoanPayment(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        feeCents: Long,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching {
+                repository.linkTransactionToLoanPayment(
+                    id, planId, amountCents, principalCents, interestCents, feeCents,
+                    note, accountId, occurredAt, channel
+                )
+            })
+        }
+    }
+
+    fun restoreTransactionFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching { repository.restoreTransactionFromTrash(id) })
+        }
+    }
+
+    fun permanentlyDeleteTransactionFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching { repository.permanentlyDeleteTransactionFromTrash(id) })
+        }
+    }
+
     fun saveBudget(budget: BudgetEntity) {
         viewModelScope.launch { repository.saveBudget(budget) }
     }
@@ -300,6 +372,29 @@ class LedgerViewModel(
         val cents = amount.toCentsOrNull() ?: return
         viewModelScope.launch {
             repository.addLoanDisbursement(accountId, cents, planId?.takeIf { it.isNotBlank() }, note, occurredAt)
+        }
+    }
+
+    /** 待确认借款到账：通知认领、现金入账和借款计划本金联动必须同一事务。 */
+    fun confirmLoanDisbursementNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
+    ) {
+        viewModelScope.launch {
+            repository.confirmLoanDisbursementNotification(
+                notificationId = notificationId,
+                cashAccountId = cashAccountId,
+                planId = planId,
+                amountCents = amountCents,
+                note = note,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
         }
     }
 
@@ -548,8 +643,21 @@ class LedgerViewModel(
         viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
     }
 
-    fun deleteTransfer(id: String) {
-        viewModelScope.launch { repository.deleteTransfer(id) }
+    fun deleteTransfer(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch { onResult(runCatching { repository.deleteTransfer(id) }) }
+    }
+
+    suspend fun previewTransferDeletion(id: String) = repository.previewTransferDeletion(id)
+
+    fun restoreTransferFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch { onResult(runCatching { repository.restoreTransferFromTrash(id) }) }
+    }
+
+    fun permanentlyDeleteTransferFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        if (!privacyDataWritesAllowed()) return
+        viewModelScope.coroutineLaunch { onResult(runCatching { repository.permanentlyDeleteTransferFromTrash(id) }) }
     }
 
     // ── 通知处理 ──

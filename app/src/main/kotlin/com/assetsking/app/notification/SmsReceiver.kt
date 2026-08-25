@@ -55,7 +55,7 @@ class SmsReceiver : BroadcastReceiver() {
         scope.launch {
             var saved = false
             try {
-                repository.saveRawNotification(
+                saved = repository.saveRawNotification(
                     RawNotificationEntity(
                         id = "sms:$sender:$timestamp",
                         packageName = "sms",
@@ -66,7 +66,6 @@ class SmsReceiver : BroadcastReceiver() {
                         receivedAt = System.currentTimeMillis()
                     )
                 )
-                saved = true
                 app.processPending.invoke()
             } catch (_: Exception) {
                 AssetsNotificationListenerService.reportIngestionFailure(statusRevision)

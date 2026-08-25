@@ -23,7 +23,7 @@ data class AccountEntity(
     val startDateEpochDay: Long? = null // 启用日期（REQ 账户对账§17）：新增账户当日
 )
 
-@Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt")])
+@Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt"), Index("deletedAt")])
 data class TransactionEntity(
     @PrimaryKey val id: String,
     val accountId: String,
@@ -44,7 +44,9 @@ data class TransactionEntity(
     val reimbursedCents: Long = 0,       // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
     val necessity: Boolean? = null,      // 本笔最终必要性（REQ 分类§2）：true=必要 false=非必要 null=按场景默认
     val channel: String? = null,         // 支付渠道（REQ 流水§5）：微信/支付宝/银行短信…与资金账户分开
-    val notificationId: String? = null   // 由通知确认生成的流水：删除时原通知回待确认箱（REQ 流水§9）
+    val notificationId: String? = null,  // 由通知确认生成的流水；进垃圾箱时证据保持忽略，恢复时重新 LINKED
+    val deletedAt: Long? = null,         // 非空=位于流水垃圾箱；保留 7 天后物理清除
+    val trashContextJson: String? = null // 删除前后联动快照；恢复前先核对，防止贷款/报销状态已变化时强行覆盖
 )
 
 // 一级/二级分类（REQ 初始分类库）：稳定 ID + 显示名可改 + 归档不物理删除
@@ -80,14 +82,20 @@ data class ReimbursementLinkEntity(
     val coveredCents: Long
 )
 
-@Entity(tableName = "transfers", indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt")])
+@Entity(
+    tableName = "transfers",
+    indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt"), Index("deletedAt")]
+)
 data class TransferEntity(
     @PrimaryKey val id: String,
     val fromAccountId: String,
     val toAccountId: String,
     val amountCents: Long,
     val occurredAt: Long,
-    val note: String? = null
+    val note: String? = null,
+    /** 正式划转也走 7 天软删除；恢复按当前事件时间线重放，不回滚整个账户快照。 */
+    val deletedAt: Long? = null,
+    val trashContextJson: String? = null
 )
 
 @Entity(tableName = "raw_notifications", indices = [Index("packageName"), Index("postedAt"), Index("status")])
