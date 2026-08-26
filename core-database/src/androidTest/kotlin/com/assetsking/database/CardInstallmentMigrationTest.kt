@@ -146,6 +146,90 @@ class CardInstallmentMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun version25BackfillsEvidenceWithoutInventingHistoricalCashEvents() {
+        openWith(
+            version = 25,
+            onCreate = { db ->
+                db.execSQL("CREATE TABLE `transactions` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `type` TEXT NOT NULL, `category` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `merchant` TEXT, `note` TEXT, `status` TEXT NOT NULL, `isReimbursable` INTEGER NOT NULL, `recurringRuleId` TEXT, `principalCents` INTEGER NOT NULL, `interestCents` INTEGER NOT NULL, `feeCents` INTEGER NOT NULL, `loanPlanId` TEXT, `refundOfId` TEXT, `reimbursedCents` INTEGER NOT NULL, `necessity` INTEGER, `channel` TEXT, `notificationId` TEXT, `deletedAt` INTEGER, `trashContextJson` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT INTO transactions VALUES ('sms-tx', 'cash', 1000, 'EXPENSE', 'UNCATEGORIZED', 100, NULL, NULL, 'CONFIRMED', 0, NULL, 0, 0, 0, NULL, NULL, 0, NULL, NULL, 'sms-1', NULL, NULL)")
+                db.execSQL("INSERT INTO transactions VALUES ('manual-tx', 'cash', 2000, 'INCOME', 'UNCATEGORIZED', 200, NULL, NULL, 'CONFIRMED', 0, NULL, 0, 0, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL)")
+                db.execSQL("CREATE TABLE `transfers` (`id` TEXT NOT NULL, `fromAccountId` TEXT NOT NULL, `toAccountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `occurredAt` INTEGER NOT NULL, `note` TEXT, `deletedAt` INTEGER, `trashContextJson` TEXT, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT INTO transfers VALUES ('tf', 'cash', 'saving', 3000, 300, NULL, NULL, NULL)")
+                db.execSQL("CREATE TABLE `loan_plans` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `principalCents` INTEGER NOT NULL, `startDateEpochDay` INTEGER NOT NULL, `repaymentMethod` TEXT NOT NULL, `installmentsJson` TEXT NOT NULL, `annualRateBps` INTEGER NOT NULL, `remainingPrincipalCents` INTEGER NOT NULL, `earlyRepaidCents` INTEGER NOT NULL, `repaymentDay` INTEGER, `status` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT INTO loan_plans VALUES ('old-loan', 'loan-account', 5000000, 20000, 'EQUAL_PAYMENT', '[]', 500, 4000000, 0, 20, 'ACTIVE')")
+            }
+        ).close()
+
+        val migrated = openWith(
+            version = 26,
+            onUpgrade = { db, oldVersion, newVersion ->
+                assertEquals(25, oldVersion)
+                assertEquals(26, newVersion)
+                AssetsKingDatabase.MIGRATION_25_26.migrate(db)
+            }
+        )
+        val db = migrated.writableDatabase
+
+        db.query("SELECT originType, disbursementTransactionId, ledgerBaselinePrincipalCents, ledgerBaselineAt FROM loan_plans WHERE id = 'old-loan'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("OPENING_BALANCE", cursor.getString(0))
+            assertTrue(cursor.isNull(1))
+            assertEquals(4_000_000L, cursor.getLong(2))
+            assertTrue(cursor.getLong(3) > 0L)
+        }
+        db.query("SELECT sourceType, sourceId FROM ledger_evidence_links WHERE subjectType = 'TRANSACTION' AND subjectId = 'sms-tx'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("RAW_NOTIFICATION", cursor.getString(0))
+            assertEquals("sms-1", cursor.getString(1))
+        }
+        db.query("SELECT sourceType FROM ledger_evidence_links WHERE subjectType = 'TRANSFER' AND subjectId = 'tf'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("LEGACY_IMPORT", cursor.getString(0))
+        }
+        db.query("SELECT sourceType FROM ledger_evidence_links WHERE subjectType = 'LOAN_PLAN' AND subjectId = 'old-loan'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("OPENING_BALANCE", cursor.getString(0))
+        }
+        db.query("SELECT COUNT(*) FROM ledger_lifecycle_events").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(4, cursor.getInt(0))
+        }
+        db.query("PRAGMA table_info(transactions)").use { cursor ->
+            val columns = buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+            }
+            assertTrue("lendingPlanId" in columns)
+        }
+        db.query("PRAGMA table_info(transfers)").use { cursor ->
+            val columns = buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+            }
+            assertTrue(setOf("lendingPlanId", "lendingRole").all { it in columns })
+        }
+        db.query("PRAGMA table_info(lending_plans)").use { cursor ->
+            val columns = buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+            }
+            assertTrue(
+                setOf(
+                    "receivableAccountId",
+                    "remainingPrincipalCents",
+                    "receivedInterestCents",
+                    "originType",
+                    "disbursementTransferId",
+                    "ledgerBaselinePrincipalCents",
+                    "ledgerBaselineInterestCents"
+                ).all { it in columns }
+            )
+        }
+        db.query("SELECT COUNT(*) FROM lending_plans").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(0, cursor.getInt(0))
+        }
+        migrated.close()
+    }
+
     private fun openWith(
         version: Int,
         onCreate: (SupportSQLiteDatabase) -> Unit = {},

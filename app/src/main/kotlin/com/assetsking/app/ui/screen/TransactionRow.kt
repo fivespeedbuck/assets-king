@@ -3,15 +3,18 @@ package com.assetsking.app.ui.screen
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.assetsking.database.AccountEntity
@@ -38,8 +42,10 @@ import com.assetsking.model.TransactionCategory
 import com.assetsking.ui.format.accountTypeLabel
 import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
+import com.assetsking.ui.format.formatClockTime
 import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.format.transactionCategoryLabel
+import com.assetsking.ui.component.IconLibrary
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.transactionCashFlowColor
 import com.assetsking.ui.theme.LoanPrincipalDebtColor
@@ -177,7 +183,11 @@ fun TransactionRow(
                 if (linkBadges.isNotEmpty()) {
                     Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)) {
                         linkBadges.forEach { badge ->
-                            val badgeColor = if (badge.colorKey == "recurring") RecurringDebitOrange else LoanPrincipalDebtColor
+                            val badgeColor = when (badge.colorKey) {
+                                "recurring" -> RecurringDebitOrange
+                                "lending" -> com.assetsking.ui.theme.IncomeGreen
+                                else -> LoanPrincipalDebtColor
+                            }
                             Text(
                                 badge.label,
                                 style = MaterialTheme.typography.labelSmall,
@@ -222,48 +232,72 @@ fun TransactionRow(
 }
 
 /** 转账行：钱从哪出 → 进到哪（transfers 表，与流水合并展示） */
+internal fun transferAccountLabel(name: String, cardTail: String?): String =
+    cardTail?.trim()?.takeIf { it.isNotEmpty() }?.let { "$name · $it" } ?: name
+
 @Composable
 fun TransferRow(
     fromName: String,
     toName: String,
     amountCents: Long,
     occurredAt: Long,
-    note: String?,
+    fromCardTail: String? = null,
+    toCardTail: String? = null,
     onClick: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    if (privacyEnabled) {
-                        "${privacyObfuscatedText(fromName, 850)} → ${privacyObfuscatedText(toName, 851)}"
-                    } else {
-                        "$fromName → $toName"
-                    },
-                    fontWeight = FontWeight.Medium,
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    if (privacyEnabled) "转账 · ${privacyFakeDateTime(852)}" else "转账 · ${formatTime(occurredAt)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                note?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        if (privacyEnabled) privacyObfuscatedText(it, 853) else it,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Text(
-                if (privacyEnabled) privacyFakeAmount(854) else formatMoney(amountCents),
-                fontWeight = FontWeight.SemiBold,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(start = 8.dp)
+    val fromLabel = transferAccountLabel(fromName, fromCardTail)
+    val toLabel = transferAccountLabel(toName, toCardTail)
+    val transferColor = MaterialTheme.colorScheme.primary
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp).clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier.size(40.dp).background(transferColor.copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                IconLibrary.byKey("account-balance-wallet"),
+                contentDescription = if (privacyEnabled) null else "划转",
+                modifier = Modifier.size(22.dp),
+                tint = transferColor
             )
         }
-        HorizontalDivider(modifier = Modifier.padding(top = 6.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                if (privacyEnabled) {
+                    "${privacyObfuscatedText(fromLabel, 850)} → ${privacyObfuscatedText(toLabel, 851)}"
+                } else {
+                    "$fromLabel → $toLabel"
+                },
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "转账 · 划转",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (privacyEnabled) privacyFakeDateTime(852, includeDate = false) else formatClockTime(occurredAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (privacyEnabled) privacyFakeAmount(854) else formatMoney(amountCents),
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodyLarge,
+            color = transferColor,
+            maxLines = 1
+        )
     }
 }

@@ -380,6 +380,16 @@ class NotificationParserTest {
         assertNull(NotificationParser.parse("[8条]微信支付: 已支付¥24.99", "微信支付").merchant)
     }
 
+    @Test
+    fun `在线支付里的线不能被识别为商户`() {
+        val parsed = NotificationParser.parse(
+            content = "您账户3683于08月26日18:20在线支付人民币30.30元，余额2946.82",
+            title = "招商银行"
+        )
+        assertEquals(3030L, parsed.amountCents)
+        assertNull(parsed.merchant)
+    }
+
     // ── 自动对账：银行自报余额 + 尾号 ──
     @Test
     fun `宁波银行短信同时给出余额和尾号`() {

@@ -15,9 +15,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionDeletionAccountPreview
 import com.assetsking.model.AccountType
+import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.format.formatMoney
 
 @Composable
@@ -31,6 +34,7 @@ internal fun TransactionDeletionPreviewDialog(
     onBalancesMatch: () -> Unit,
     onBalancesMismatch: () -> Unit
 ) {
+    val privacyEnabled = LocalPrivacyEnabled.current
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("删除前核对") },
@@ -45,20 +49,32 @@ internal fun TransactionDeletionPreviewDialog(
                         val debtAccount = account?.type in setOf(AccountType.CREDIT.name, AccountType.LOAN.name)
                         Column(Modifier.fillMaxWidth()) {
                             Text(
-                                account?.name ?: "未知账户",
+                                if (privacyEnabled) privacyObfuscatedText("账户", 6100 + index) else account?.name ?: "未知账户",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(if (debtAccount) "当前欠款" else "当前余额", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(formatMoney(preview.currentBalanceCents), fontWeight = FontWeight.Medium)
+                                Text(
+                                    if (privacyEnabled) privacyFakeAmount(6101 + index * 3) else formatMoney(preview.currentBalanceCents),
+                                    fontWeight = FontWeight.Medium
+                                )
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(if (debtAccount) "删除后预计欠款" else "删除后预计余额", fontWeight = FontWeight.Bold)
                                 Text(
-                                    formatMoney(preview.projectedBalanceCents),
+                                    if (privacyEnabled) privacyFakeAmount(6102 + index * 3) else formatMoney(preview.projectedBalanceCents),
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            if (!privacyEnabled && preview.anchoredBeforeCheckpointCount > 0 &&
+                                preview.currentBalanceCents == preview.projectedBalanceCents
+                            ) {
+                                Text(
+                                    "所选流水早于最近一次余额核对点，本次只删除历史记录，当前余额不会变化。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             if (preview.balanceStatus == "DISCREPANCY") {
@@ -79,8 +95,11 @@ internal fun TransactionDeletionPreviewDialog(
         },
         confirmButton = {
             Button(
-                onClick = onBalancesMatch,
-                enabled = previews != null && !busy
+                onClick = {
+                    if (previews?.any { it.balanceStatus == "DISCREPANCY" } == true) onBalancesMismatch()
+                    else onBalancesMatch()
+                },
+                enabled = previews != null && !busy && previews.none { it.balanceStatus == "DISCREPANCY" }
             ) { Text(if (busy) "处理中…" else "账目正确，删除") }
         },
         dismissButton = {

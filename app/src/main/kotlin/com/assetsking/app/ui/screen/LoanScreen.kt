@@ -61,6 +61,10 @@ import com.assetsking.database.CreditCardInstallmentScheduleEntity
 import com.assetsking.database.CreditCardInstallmentScheduleDraft
 import com.assetsking.database.CreditCardInstallmentTerms
 import com.assetsking.database.LoanPlanEntity
+import com.assetsking.database.LendingOriginType
+import com.assetsking.database.LendingPlanDraft
+import com.assetsking.database.LendingPlanEntity
+import com.assetsking.database.LendingPlanStatus
 import com.assetsking.database.TransactionEntity
 import com.assetsking.database.TransferEntity
 import com.assetsking.ledger.CardInstallmentAllocationRequest
@@ -211,6 +215,11 @@ fun LoanScreen(
     onPrepay: (String, String, Long, Long, String?) -> Unit = { _, _, _, _, _ -> },
     onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> },
     onUpdateInstallment: (String, Int, Long?, Long?, Long?, Long?, String?) -> Unit = { _, _, _, _, _, _, _ -> },
+    lendingPlans: List<LendingPlanEntity> = emptyList(),
+    onCreateLendingPlan: (LendingPlanDraft, (Result<String>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("未连接出借计划服务"))) },
+    onDeleteLendingPlan: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("未连接出借计划服务"))) },
+    onLendingDisbursement: (String, String, Long, String?, (Result<String>) -> Unit) -> Unit = { _, _, _, _, callback -> callback(Result.failure(IllegalStateException("未连接出借计划服务"))) },
+    onLendingRepayment: (String, String, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit = { _, _, _, _, _, callback -> callback(Result.failure(IllegalStateException("未连接出借计划服务"))) },
     transactions: List<com.assetsking.database.TransactionEntity> = emptyList()
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
@@ -232,6 +241,12 @@ fun LoanScreen(
     var fullPlan by remember { mutableStateOf<LoanPlanEntity?>(null) }
     var editingInstallment by remember { mutableStateOf<Pair<LoanPlanEntity, LoanInstallment>?>(null) }
     var deleteConfirm by remember { mutableStateOf<LoanPlanEntity?>(null) }
+    var showLendingPlanSheet by remember { mutableStateOf(false) }
+    var expandedLendingPlanId by remember { mutableStateOf<String?>(null) }
+    var disbursingLendingPlan by remember { mutableStateOf<LendingPlanEntity?>(null) }
+    var repayingLendingPlan by remember { mutableStateOf<LendingPlanEntity?>(null) }
+    var deletingLendingPlan by remember { mutableStateOf<LendingPlanEntity?>(null) }
+    var lendingMessage by remember { mutableStateOf<String?>(null) }
 
     // 本月还款列表（REQ 贷款页§2-3/§11）：逾期置顶 → 本月待还 → 本月已还（删除线）
     val todayDay = java.time.LocalDate.now().toEpochDay()
@@ -259,8 +274,9 @@ fun LoanScreen(
             accounts = accounts
         )
     }
+    val accountingPlans = plans.filter { it.status != "PENDING_DISBURSEMENT" }
     val repayRows = monthRepaymentItems(
-        plans = plans,
+        plans = accountingPlans,
         accounts = accounts,
         cardInstallments = cardInstallments,
         cardSchedules = cardInstallmentSchedules,
@@ -274,7 +290,7 @@ fun LoanScreen(
     val monthOutstandingCents = monthOutstandingRows.sumOf { it.amount }
     val monthPaidCents = repayRows.filter { it.paid }.sumOf { it.amount }
     val due7DaysCents = monthRepaymentItems(
-        plans = plans,
+        plans = accountingPlans,
         accounts = accounts,
         cardInstallments = cardInstallments,
         cardSchedules = cardInstallmentSchedules,
@@ -319,7 +335,7 @@ fun LoanScreen(
                 dashboard = dashboard,
                 metrics = v5,
                 transactions = transactions,
-                plans = validLoanPlans,
+                plans = validLoanPlans.filter { it.status != "PENDING_DISBURSEMENT" },
                 cardInstallmentForecastChargeCents = currentCardForecastChargeCents,
                 calendarCount = dueItems.size,
                 calendarExpanded = showDueCalendar,
@@ -582,6 +598,183 @@ fun LoanScreen(
                         }
                     }
             }
+
+        val lendingSection: @Composable () -> Unit = {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("出借计划", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Button(
+                        onClick = { showLendingPlanSheet = true },
+                        enabled = !privacyEnabled
+                    ) { Text("＋ 添加") }
+                }
+                lendingMessage?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (message.startsWith("失败")) DeficitRed else IncomeGreen
+                    )
+                }
+                if (lendingPlans.isEmpty()) {
+                    Text(
+                        "暂无出借计划",
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    lendingPlans
+                        .sortedWith(compareBy<LendingPlanEntity> { it.status == LendingPlanStatus.COMPLETED }.thenBy { it.expectedDueDateEpochDay ?: Long.MAX_VALUE })
+                        .forEach { plan ->
+                            val expanded = expandedLendingPlanId == plan.id
+                            val expectedDueDay = plan.expectedDueDateEpochDay
+                            val overdue = plan.status == LendingPlanStatus.ACTIVE &&
+                                plan.remainingPrincipalCents > 0L &&
+                                expectedDueDay != null &&
+                                expectedDueDay < todayDay
+                            val statusLabel = when (plan.status) {
+                                LendingPlanStatus.PENDING_DISBURSEMENT -> "待借出"
+                                LendingPlanStatus.COMPLETED -> "已收清"
+                                else -> if (overdue) "逾期未收回" else "收回中"
+                            }
+                            val statusColor = when (plan.status) {
+                                LendingPlanStatus.PENDING_DISBURSEMENT -> PendingOrange
+                                LendingPlanStatus.COMPLETED -> IncomeGreen
+                                else -> if (overdue) DeficitRed else RepaymentPurple
+                            }
+                            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                                Column(
+                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .defaultMinSize(minHeight = 48.dp)
+                                            .clickable(enabled = !privacyEnabled) {
+                                                expandedLendingPlanId = if (expanded) null else plan.id
+                                            },
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                if (privacyEnabled) privacyObfuscatedText(plan.label, 1_500 + plan.id.hashCode()) else plan.label,
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Clip
+                                            )
+                                            Text(
+                                                if (privacyEnabled) privacyObfuscatedText(plan.borrowerName, 1_510 + plan.id.hashCode()) else "借款人 · ${plan.borrowerName}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Text(statusLabel, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = statusColor)
+                                        Icon(
+                                            if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                            contentDescription = if (expanded) "收起出借详情" else "展开出借详情"
+                                        )
+                                    }
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text("剩余应收本金", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(
+                                                if (privacyEnabled) privacyFakeAmount(1_520 + plan.id.hashCode()) else formatMoney(plan.remainingPrincipalCents),
+                                                style = MaterialTheme.typography.titleLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (overdue) DeficitRed else IncomeGreen
+                                            )
+                                            Text(
+                                                "原始本金 ${if (privacyEnabled) privacyFakeAmount(1_530 + plan.id.hashCode()) else formatMoney(plan.principalCents)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text("预计收回", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(
+                                                if (privacyEnabled) privacyFakeDateTime(1_540 + plan.id.hashCode()).substringBefore(' ')
+                                                else plan.expectedDueDateEpochDay?.let { java.time.LocalDate.ofEpochDay(it).toString() } ?: "未设置",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = when {
+                                                    plan.expectedDueDateEpochDay == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                                    overdue -> DeficitRed
+                                                    else -> PendingOrange
+                                                }
+                                            )
+                                            Text(
+                                                "已收利息 ${if (privacyEnabled) privacyFakeAmount(1_550 + plan.id.hashCode()) else formatMoney(plan.receivedInterestCents)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = PendingOrange
+                                            )
+                                        }
+                                    }
+                                    if (expanded) {
+                                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            LoanPlanMetric(
+                                                label = "预计总利息",
+                                                value = if (privacyEnabled) privacyFakeAmount(1_560) else formatMoney(plan.expectedInterestCents),
+                                                color = PendingOrange,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            LoanPlanMetric(
+                                                label = "预计总收回",
+                                                value = if (privacyEnabled) privacyFakeAmount(1_561) else formatMoney(plan.principalCents + plan.expectedInterestCents),
+                                                color = IncomeGreen,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        when (plan.status) {
+                                            LendingPlanStatus.PENDING_DISBURSEMENT -> {
+                                                Button(
+                                                    onClick = { disbursingLendingPlan = plan },
+                                                    enabled = !privacyEnabled,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) { Text("确认已借出") }
+                                                OutlinedButton(
+                                                    onClick = { deletingLendingPlan = plan },
+                                                    enabled = !privacyEnabled,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) { Text("删除计划") }
+                                            }
+                                            LendingPlanStatus.ACTIVE -> {
+                                                Button(
+                                                    onClick = { repayingLendingPlan = plan },
+                                                    enabled = !privacyEnabled,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) { Text("记录收回本金 / 利息") }
+                                                OutlinedButton(
+                                                    onClick = { deletingLendingPlan = plan },
+                                                    enabled = !privacyEnabled,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) { Text("删除计划") }
+                                            }
+                                            LendingPlanStatus.COMPLETED -> OutlinedButton(
+                                                onClick = { deletingLendingPlan = plan },
+                                                enabled = !privacyEnabled,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) { Text("删除计划") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+        }
+
         item {
             GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
                 Column(
@@ -642,6 +835,15 @@ fun LoanScreen(
                 )
                 GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    if (plan.status == "PENDING_DISBURSEMENT") {
+                        Text(
+                            "等待到账流水 · 尚未计入实际贷款",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = PendingOrange
+                        )
+                        Spacer(Modifier.height(6.dp))
+                    }
                     val remaining = planRemaining(plan)
                     val unpaidInstallments = installments.filter { it.status != InstallmentStatus.PAID }
                     val remainingScheduledPrincipalCents = unpaidInstallments.sumOf { it.principal.cents }
@@ -836,23 +1038,26 @@ fun LoanScreen(
                             OutlinedButton(onClick = { fullPlan = plan }, enabled = !privacyEnabled, modifier = Modifier.fillMaxWidth()) {
                                 Text("查看完整计划")
                             }
-                            Button(
-                                onClick = { onRecordPayment(plan) },
-                                enabled = !privacyEnabled,
-                                colors = ButtonDefaults.buttonColors(containerColor = DeficitRed),
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("记录还款", maxLines = 1) }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { prepaying = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("提前还款", maxLines = 1) }
-                                OutlinedButton(onClick = { settling = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("结清", maxLines = 1) }
+                            if (plan.status != "PENDING_DISBURSEMENT") {
+                                Button(
+                                    onClick = { onRecordPayment(plan) },
+                                    enabled = !privacyEnabled,
+                                    colors = ButtonDefaults.buttonColors(containerColor = DeficitRed),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("记录还款", maxLines = 1) }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { prepaying = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("提前还款", maxLines = 1) }
+                                    OutlinedButton(onClick = { settling = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("结清", maxLines = 1) }
+                                }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(onClick = {
                                     editingPlan = plan
                                     showSheet = true
                                 }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("编辑") }
-                                // 永久删除需二次确认（REQ 贷款页§17）
-                                OutlinedButton(onClick = { deleteConfirm = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("删除") }
+                                if (plan.status == "PENDING_DISBURSEMENT") {
+                                    OutlinedButton(onClick = { deleteConfirm = plan }, enabled = !privacyEnabled, modifier = Modifier.weight(1f)) { Text("删除") }
+                                }
                             }
                         }
                     }
@@ -863,7 +1068,80 @@ fun LoanScreen(
                 }
             }
         }
+        item { lendingSection() }
 
+    }
+
+    if (showLendingPlanSheet && !privacyEnabled) {
+        LendingPlanSheet(
+            onCreate = { draft, callback ->
+                onCreateLendingPlan(draft) { result ->
+                    result.onSuccess {
+                        lendingMessage = if (draft.originType == LendingOriginType.OPENING_BALANCE) {
+                            "期初应收已建立，没有伪造现金流水"
+                        } else {
+                            "待借出计划已建立，确认真实转出后才计入应收"
+                        }
+                        showLendingPlanSheet = false
+                    }.onFailure { lendingMessage = "失败：${it.message ?: "无法创建出借计划"}" }
+                    callback(result)
+                }
+            },
+            onDismiss = { showLendingPlanSheet = false }
+        )
+    }
+
+    disbursingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
+        LendingDisbursementSheet(
+            plan = plan,
+            cashAccounts = accounts.filter { it.type == AccountType.ASSET.name && !it.archived && it.id != plan.receivableAccountId },
+            onConfirm = { cashId, note, callback ->
+                onLendingDisbursement(cashId, plan.id, plan.principalCents, note) { result ->
+                    result.onSuccess {
+                        lendingMessage = "借出本金已按资产划转入账，不计普通支出"
+                        disbursingLendingPlan = null
+                    }.onFailure { lendingMessage = "失败：${it.message ?: "无法确认借出"}" }
+                    callback(result)
+                }
+            },
+            onDismiss = { disbursingLendingPlan = null }
+        )
+    }
+
+    repayingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
+        LendingRepaymentSheet(
+            plan = plan,
+            cashAccounts = accounts.filter { it.type == AccountType.ASSET.name && !it.archived && it.id != plan.receivableAccountId },
+            onConfirm = { cashId, principal, interest, note, callback ->
+                onLendingRepayment(cashId, plan.id, principal, interest, note) { result ->
+                    result.onSuccess {
+                        lendingMessage = "收回已入账：本金回到资产，只有利息计收入"
+                        repayingLendingPlan = null
+                    }.onFailure { lendingMessage = "失败：${it.message ?: "无法记录收回"}" }
+                    callback(result)
+                }
+            },
+            onDismiss = { repayingLendingPlan = null }
+        )
+    }
+
+    deletingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
+        AlertDialog(
+            onDismissRequest = { deletingLendingPlan = null },
+            title = { Text("删除出借计划？") },
+            text = { Text("请先处理完相关流水并完成应收账户对账；只有该计划的关联影响已清理且专属应收余额恢复为零时，才能删除此计划。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteLendingPlan(plan.id) { result ->
+                        result.onSuccess {
+                            lendingMessage = "出借计划已删除"
+                            deletingLendingPlan = null
+                        }.onFailure { lendingMessage = "失败：${it.message ?: "无法删除计划"}" }
+                    }
+                }) { Text("删除", color = DeficitRed) }
+            },
+            dismissButton = { TextButton(onClick = { deletingLendingPlan = null }) { Text("取消") } }
+        )
     }
 
     if (showSheet && !privacyEnabled) {
@@ -1059,11 +1337,11 @@ fun LoanScreen(
     deleteConfirm?.takeUnless { privacyEnabled }?.let { plan ->
         AlertDialog(
             onDismissRequest = { deleteConfirm = null },
-            title = { Text("永久删除贷款计划？") },
+            title = { Text("删除未放款计划？") },
             text = {
                 val accountLabel = accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款"
                 Text(
-                    "「${if (privacyEnabled) privacyObfuscatedText(accountLabel, 700) else accountLabel}」的计划与还款历史将永久删除，已记流水保留。"
+                    "「${if (privacyEnabled) privacyObfuscatedText(accountLabel, 700) else accountLabel}」尚未产生到账或还款证据，可以永久删除合同草稿。"
                 )
             },
             confirmButton = {
@@ -2671,6 +2949,240 @@ private fun AdjustCardInstallmentSheet(
     }
 }
 
+@Composable
+private fun LendingPlanSheet(
+    onCreate: (LendingPlanDraft, (Result<String>) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var originType by remember { mutableStateOf(LendingOriginType.OPENING_BALANCE) }
+    var label by remember { mutableStateOf("") }
+    var borrower by remember { mutableStateOf("") }
+    var principal by remember { mutableStateOf("") }
+    var expectedInterest by remember { mutableStateOf("") }
+    var startDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
+    var expectedDueDate by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    val principalCents = moneyInputToCents(principal)
+    val expectedInterestCents = moneyInputToCents(expectedInterest, allowZero = true)
+    val parsedStart = runCatching { java.time.LocalDate.parse(startDate) }.getOrNull()
+    val parsedDue = expectedDueDate.takeIf(String::isNotBlank)?.let {
+        runCatching { java.time.LocalDate.parse(it) }.getOrNull()
+    }
+    val dueValid = expectedDueDate.isBlank() || (parsedDue != null && parsedStart != null && !parsedDue.isBefore(parsedStart))
+    val valid = label.isNotBlank() && borrower.isNotBlank() && principalCents != null &&
+        expectedInterestCents != null && parsedStart != null && dueValid
+
+    Sheet(title = "新增出借计划", onDismiss = onDismiss, swipeToDismissEnabled = false) {
+        Text("资金状态", fontWeight = FontWeight.Medium)
+        ChipRow(
+            items = listOf(LendingOriginType.OPENING_BALANCE, LendingOriginType.PENDING_DISBURSEMENT),
+            selected = originType,
+            onSelected = { originType = it; error = null },
+            label = { if (it == LendingOriginType.OPENING_BALANCE) "已有出借（期初）" else "准备借出" },
+            id = { it }
+        )
+        Text(
+            if (originType == LendingOriginType.OPENING_BALANCE) {
+                "适用于安装 App 前已经借出的本金：只建立应收资产，不补造银行卡转出。"
+            } else {
+                "先建立计划；真实转出后再通过“确认已借出”激活应收。"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        FormField(value = label, onValueChange = { label = it; error = null }, label = "计划名称")
+        Spacer(Modifier.height(8.dp))
+        FormField(value = borrower, onValueChange = { borrower = it; error = null }, label = "借款人")
+        Spacer(Modifier.height(8.dp))
+        FormField(
+            value = principal,
+            onValueChange = { principal = it.filter { c -> c.isDigit() || c == '.' }; error = null },
+            label = "出借本金",
+            isAmount = true
+        )
+        Spacer(Modifier.height(8.dp))
+        FormField(
+            value = expectedInterest,
+            onValueChange = { expectedInterest = it.filter { c -> c.isDigit() || c == '.' }; error = null },
+            label = "预计总利息（可为 0）",
+            isAmount = true
+        )
+        Spacer(Modifier.height(8.dp))
+        FormField(
+            value = startDate,
+            onValueChange = { startDate = it.filter { c -> c.isDigit() || c == '-' }.take(10); error = null },
+            label = if (originType == LendingOriginType.OPENING_BALANCE) "期初确认日（YYYY-MM-DD）" else "计划借出日（YYYY-MM-DD）"
+        )
+        Spacer(Modifier.height(8.dp))
+        FormField(
+            value = expectedDueDate,
+            onValueChange = { expectedDueDate = it.filter { c -> c.isDigit() || c == '-' }.take(10); error = null },
+            label = "预计收回日（可选）"
+        )
+        if (!dueValid) {
+            Text("预计收回日格式不正确，或早于开始日", style = MaterialTheme.typography.labelSmall, color = DeficitRed)
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed) }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                val start = parsedStart ?: return@Button
+                saving = true
+                error = null
+                onCreate(
+                    LendingPlanDraft(
+                        label = label.trim(),
+                        borrowerName = borrower.trim(),
+                        principalCents = principalCents ?: return@Button,
+                        expectedInterestCents = expectedInterestCents ?: return@Button,
+                        startDateEpochDay = start.toEpochDay(),
+                        expectedDueDateEpochDay = parsedDue?.toEpochDay(),
+                        originType = originType
+                    )
+                ) { result ->
+                    saving = false
+                    result.onFailure { error = it.message ?: "保存失败" }
+                }
+            },
+            enabled = valid && !saving,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (saving) "正在保存…" else "保存出借计划") }
+    }
+}
+
+@Composable
+private fun LendingDisbursementSheet(
+    plan: LendingPlanEntity,
+    cashAccounts: List<AccountEntity>,
+    onConfirm: (String, String?, (Result<String>) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var cashAccountId by remember(plan.id, cashAccounts) { mutableStateOf(cashAccounts.firstOrNull()?.id.orEmpty()) }
+    var note by remember(plan.id) { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val selectedAccount = cashAccounts.firstOrNull { it.id == cashAccountId }
+
+    Sheet(title = "确认已借出", onDismiss = onDismiss, swipeToDismissEnabled = false) {
+        Text(plan.label, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text(
+            "将 ${formatMoney(plan.principalCents)} 从资金账户划到“应收 · ${plan.borrowerName}”；本金不计普通支出。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        if (selectedAccount == null) {
+            Text("没有可用的现金资产账户，请先建立银行卡或现金账户。", color = DeficitRed)
+        } else {
+            SelectDropdownField(
+                label = "转出账户",
+                selectedLabel = selectedAccount.name,
+                options = cashAccounts.map { it.id to it.name },
+                onSelected = { cashAccountId = it; error = null }
+            )
+            Spacer(Modifier.height(8.dp))
+            FormField(value = note, onValueChange = { note = it; error = null }, label = "备注（可选）")
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed) }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                saving = true
+                onConfirm(cashAccountId, note.trim().takeIf(String::isNotEmpty)) { result ->
+                    saving = false
+                    result.onFailure { error = it.message ?: "确认失败" }
+                }
+            },
+            enabled = selectedAccount != null && !saving,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (saving) "正在入账…" else "确认划转 ${formatMoney(plan.principalCents)}") }
+    }
+}
+
+@Composable
+private fun LendingRepaymentSheet(
+    plan: LendingPlanEntity,
+    cashAccounts: List<AccountEntity>,
+    onConfirm: (String, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var cashAccountId by remember(plan.id, cashAccounts) { mutableStateOf(cashAccounts.firstOrNull()?.id.orEmpty()) }
+    var principal by remember(plan.id) { mutableStateOf("") }
+    var interest by remember(plan.id) { mutableStateOf("") }
+    var note by remember(plan.id) { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val selectedAccount = cashAccounts.firstOrNull { it.id == cashAccountId }
+    val principalCents = moneyInputToCents(principal, allowZero = true)
+    val interestCents = moneyInputToCents(interest, allowZero = true)
+    val totalCents = (principalCents ?: 0L) + (interestCents ?: 0L)
+    val valid = selectedAccount != null && principalCents != null && interestCents != null &&
+        totalCents > 0L && principalCents <= plan.remainingPrincipalCents
+
+    Sheet(title = "记录收回本金 / 利息", onDismiss = onDismiss, swipeToDismissEnabled = false) {
+        Text(plan.label, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text(
+            "剩余应收本金 ${formatMoney(plan.remainingPrincipalCents)}。本金按资产划转，利息才计收入。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        if (selectedAccount == null) {
+            Text("没有可用的收款资产账户。", color = DeficitRed)
+        } else {
+            SelectDropdownField(
+                label = "收款账户",
+                selectedLabel = selectedAccount.name,
+                options = cashAccounts.map { it.id to it.name },
+                onSelected = { cashAccountId = it; error = null }
+            )
+            Spacer(Modifier.height(8.dp))
+            FormField(
+                value = principal,
+                onValueChange = { principal = it.filter { c -> c.isDigit() || c == '.' }; error = null },
+                label = "本次收回本金",
+                isAmount = true
+            )
+            Spacer(Modifier.height(8.dp))
+            FormField(
+                value = interest,
+                onValueChange = { interest = it.filter { c -> c.isDigit() || c == '.' }; error = null },
+                label = "本次收到利息",
+                isAmount = true
+            )
+            Text(
+                "合计到账 ${formatMoney(totalCents)}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (valid) IncomeGreen else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (principalCents != null && principalCents > plan.remainingPrincipalCents) {
+                Text("收回本金不能超过剩余应收", style = MaterialTheme.typography.labelSmall, color = DeficitRed)
+            }
+            Spacer(Modifier.height(8.dp))
+            FormField(value = note, onValueChange = { note = it; error = null }, label = "备注（可选）")
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed) }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                val principalValue = principalCents ?: return@Button
+                val interestValue = interestCents ?: return@Button
+                saving = true
+                onConfirm(cashAccountId, principalValue, interestValue, note.trim().takeIf(String::isNotEmpty)) { result ->
+                    saving = false
+                    result.onFailure { error = it.message ?: "入账失败" }
+                }
+            },
+            enabled = valid && !saving,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (saving) "正在入账…" else "确认到账 ${formatMoney(totalCents)}") }
+    }
+}
+
 private fun moneyInputToCents(value: String, allowZero: Boolean = false): Long? = runCatching {
     java.math.BigDecimal(value.ifBlank { "0" }.trim())
         .movePointRight(2)
@@ -2694,6 +3206,9 @@ private fun LoanPlanSheet(
         mutableStateOf(initialLoanPlanAccountId(existingPlan?.accountId, accounts))
     }
     var principal by remember { mutableStateOf(existingPlan?.let { "%.2f".format(it.principalCents / 100.0) } ?: "") }
+    var originType by remember(existingPlan) {
+        mutableStateOf(existingPlan?.originType ?: "OPENING_BALANCE")
+    }
     var loanStartDate by remember(existingPlan) {
         mutableStateOf(
             existingPlan?.let { java.time.LocalDate.ofEpochDay(it.startDateEpochDay).toString() }
@@ -2791,6 +3306,37 @@ private fun LoanPlanSheet(
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = onAddLoanAccount) { Text("＋ 新建") }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("贷款来源", fontWeight = FontWeight.Medium)
+        if (existingPlan == null) {
+            ChipRow(
+                items = listOf("OPENING_BALANCE", "PENDING_DISBURSEMENT"),
+                selected = originType,
+                onSelected = { originType = it },
+                label = { if (it == "OPENING_BALANCE") "已有贷款（期初）" else "新贷款（待到账）" },
+                id = { it }
+            )
+            Text(
+                if (originType == "OPENING_BALANCE") {
+                    "适用于安装 App 前就存在的贷款：只建立当前负债，不伪造银行卡到账流水。"
+                } else {
+                    "先保存合同计划；确认真实到账流水后才变为已放款。"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                when (existingPlan.originType) {
+                    "PENDING_DISBURSEMENT" -> "新贷款 · 等待到账流水"
+                    "DISBURSEMENT_EVENT" -> "新贷款 · 已由到账流水激活"
+                    else -> "已有贷款 · 期初录入"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -2985,7 +3531,10 @@ private fun LoanPlanSheet(
                         annualRateBps = rateBps,
                         remainingPrincipalCents = if (remaining > 0) remaining else cents,
                         earlyRepaidCents = runCatching { java.math.BigDecimal(earlyRepaidStr.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull() ?: 0L,
-                        repaymentDay = repaymentDay
+                        repaymentDay = repaymentDay,
+                        status = existingPlan?.status ?: if (originType == "PENDING_DISBURSEMENT") "PENDING_DISBURSEMENT" else "ACTIVE",
+                        originType = existingPlan?.originType ?: originType,
+                        disbursementTransactionId = existingPlan?.disbursementTransactionId
                     )
                 )
             },

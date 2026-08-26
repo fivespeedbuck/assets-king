@@ -1,20 +1,30 @@
 package com.assetsking.ledger
 
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.ZoneId
+import kotlin.math.abs
 
 /**
  * 内容指纹（REQ 通知监听 §12）：去空白/标点后的规范化标题+正文。
  *
  * 同一条证据以不同 id 重生（补扫重读收件箱、通知重推产生新 postTime）时指纹相同，
- * 用于跨 id 的严格去重。只做归一化不做哈希——原始文本可直接当指纹，无碰撞且可调试。
+ * 用于跨 id 的严格去重。只做归一化不做哈希；保留小数点，避免金额边界被压成同一指纹。
  */
 object ContentFingerprint {
+    const val DEDUP_WINDOW_MS = 5 * 60_000L
+
     fun of(title: String?, content: String): String =
         buildString {
             if (!title.isNullOrBlank()) append(title)
             append('\n')
             append(content)
-        }.filter { it.isLetterOrDigit() }.lowercase()
+        }.map { char ->
+            when (char) {
+                '。', '．' -> '.'
+                else -> char
+            }
+        }.filter { it.isLetterOrDigit() || it == '.' }.joinToString("").lowercase()
 
     /**
      * 短信实时广播与短信箱补扫必须得到同一个主键。
@@ -23,8 +33,16 @@ object ContentFingerprint {
      * 稳定标签。银行交易短信正文通常自带交易时间/余额；日期再兜住极少数固定文案，
      * 避免隔天同文案被永久吞掉。SHA-256 只缩短并隐藏主键里的短信原文，不承担解析。
      */
-    fun stableSmsEvidenceId(sender: String?, content: String, postedAt: Long): String {
-        val epochDay = Math.floorDiv(postedAt, MILLIS_PER_DAY)
+    fun stableSmsEvidenceId(
+        sender: String?,
+        content: String,
+        postedAt: Long,
+        zone: ZoneId = ZoneId.systemDefault()
+    ): String {
+        val epochDay = Instant.ofEpochMilli(postedAt)
+            .atZone(zone)
+            .toLocalDate()
+            .toEpochDay()
         val seed = "$epochDay\n${of(sender, content)}"
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(seed.toByteArray(Charsets.UTF_8))
@@ -32,5 +50,37 @@ object ContentFingerprint {
         return "sms:$digest"
     }
 
-    private const val MILLIS_PER_DAY = 24L * 60 * 60 * 1_000
+    /**
+     * 判定两个已持久化来源是否是同一条证据重生。
+     *
+     * 普通 Android 通知同包不同系统 key 仍视为两次真实发布；内部 sms 来源没有稳定系统 key，
+     * 因此实时接收和短信箱补扫按指纹与原始时间合并。
+     */
+    fun isSameEvidence(
+        aPackage: String,
+        aId: String,
+        aFingerprint: String,
+        aPostedAt: Long,
+        bPackage: String,
+        bId: String,
+        bFingerprint: String,
+        bPostedAt: Long
+    ): Boolean {
+        if (aFingerprint.isBlank() || aFingerprint != bFingerprint) return false
+        if (aPackage == bPackage && aPackage != "sms") {
+            val aKey = notificationKey(aId)
+            val bKey = notificationKey(bId)
+            // 同一个系统通知 key 的尾部时间戳只是重投时间；即使隔了数小时或数天，
+            // 也仍是同一条证据。两个明确不同的 key 则必须保留为两次真实发布。
+            if (aKey != null && bKey != null) return aKey == bKey
+        }
+        return abs(aPostedAt - bPostedAt) < DEDUP_WINDOW_MS
+    }
+
+    private fun notificationKey(id: String): String? {
+        val separator = id.lastIndexOf(':')
+        if (separator <= 0 || id.substring(separator + 1).toLongOrNull() == null) return null
+        return id.substring(0, separator)
+    }
+
 }

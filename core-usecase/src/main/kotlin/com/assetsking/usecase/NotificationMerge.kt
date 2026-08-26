@@ -7,7 +7,7 @@ import kotlin.math.abs
  * 通知合并决策的纯函数（可信账务内核的判重口径）。
  *
  * 关键区分：
- * - 判重：同一笔被多个 app 各推一条（同额 + 同向 + 5 分钟内 + 商户不冲突）→ 合并。
+ * - 判重：同一笔被多个 app 各推一条（同额 + 同向 + 5 分钟内 + 至少一方缺商户）→ 合并。
  * - 退款对冲：下单又整单取消（同额 + 反向 + 其中一方带「退款」字样）→ 抵消。
  * - 转账：转出 + 转入（同额 + 反向 + 均无退款字样）→ 不是对冲，不能抵消（REQ §350）。
  *
@@ -16,7 +16,7 @@ import kotlin.math.abs
  * 判重会让同一条短信在待确认箱里出现两次。
  */
 object NotificationMerge {
-    const val DEDUP_WINDOW_MS = 5 * 60_000L
+    const val DEDUP_WINDOW_MS = ContentFingerprint.DEDUP_WINDOW_MS
     const val OFFSET_WINDOW_MS = 24 * 3600_000L
 
     /** 内容指纹（REQ 通知监听 §12），实现在 [[ContentFingerprint]]。 */
@@ -43,16 +43,41 @@ object NotificationMerge {
         bId: String,
         bFp: String,
         bAt: Long
-    ): Boolean {
-        if (!isSameEvidence(aFp, aAt, bFp, bAt)) return false
-        if (aPackage != bPackage) return true
-        // `sms` 是应用内部的合成来源，不是 Android 通知包。实时接收和短信补扫过去
-        // 使用不同 id 前缀；指纹与原始时间一致时，它们就是同一条短信而非两次发布。
-        if (aPackage == "sms") return true
-        val aKey = notificationKey(aId)
-        val bKey = notificationKey(bId)
-        return aKey == null || bKey == null || aKey == bKey
-    }
+    ): Boolean = ContentFingerprint.isSameEvidence(
+        aPackage,
+        aId,
+        aFp,
+        aAt,
+        bPackage,
+        bId,
+        bFp,
+        bAt
+    )
+
+    /**
+     * 持久化证据必须按当前规则从标题和正文重算指纹，不能信任旧版本保存的指纹。
+     */
+    fun isSameContentEvidence(
+        aPackage: String,
+        aId: String,
+        aTitle: String?,
+        aContent: String,
+        aAt: Long,
+        bPackage: String,
+        bId: String,
+        bTitle: String?,
+        bContent: String,
+        bAt: Long
+    ): Boolean = isSameEvidence(
+        aPackage,
+        aId,
+        contentFingerprint(aTitle, aContent),
+        aAt,
+        bPackage,
+        bId,
+        contentFingerprint(bTitle, bContent),
+        bAt
+    )
 
     /** 同一笔证据被多个 app 各推一条。 */
     fun isDuplicate(a: ParsedNotification, aAt: Long, b: ParsedNotification, bAt: Long): Boolean {
@@ -64,8 +89,8 @@ object NotificationMerge {
         // 真机样本：招商 3683 充值微信零钱 5 元、宁波 3721 充值支付宝 5 元，
         // 旧逻辑只看同额/同向/时间接近，错误吞掉了其中一笔。
         if (a.cardTail != null && b.cardTail != null && a.cardTail != b.cardTail) return false
-        // 商户一方为空就不冲突；两条都带且不同，才是两笔真消费
-        return a.merchant == null || b.merchant == null || a.merchant == b.merchant
+        // 只要双方都带商户名，就不能仅凭“同名”判定同一笔；同店同额也可能是两笔消费。
+        return a.merchant == null || b.merchant == null
     }
 
     /** 金额/方向判重只用于跨来源证据；同一 App 的两次发布先视为两笔真实事件。 */
@@ -88,9 +113,4 @@ object NotificationMerge {
         return a.isRefund || b.isRefund
     }
 
-    private fun notificationKey(id: String): String? {
-        val separator = id.lastIndexOf(':')
-        if (separator <= 0 || id.substring(separator + 1).toLongOrNull() == null) return null
-        return id.substring(0, separator)
-    }
 }

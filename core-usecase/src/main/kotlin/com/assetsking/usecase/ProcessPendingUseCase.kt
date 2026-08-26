@@ -6,6 +6,8 @@ import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.AccountType
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 处理待确认通知：解析、去重、分类、标记状态。
@@ -17,10 +19,13 @@ import kotlinx.coroutines.flow.first
  */
 class ProcessPendingUseCase(private val repository: LedgerRepository) {
     private val categorizer = RuleBasedCategorizer()
+    private val processingMutex = Mutex()
 
     /** 批量处理所有 NEW 通知，返回处理数量。
      *  已学规则只用于编辑页预填；所有有效通知都进入 PENDING_CONFIRMATION。 */
-    suspend fun invoke(): Int {
+    suspend fun invoke(): Int = processingMutex.withLock { processPendingOnce() }
+
+    private suspend fun processPendingOnce(): Int {
         // 判重要跟「已在待确认箱里的」「已确认的」和「已忽略的」都比。
         // IGNORED 必须在内：补扫以新 id 重读收件箱，用户忽略过的短信不拦就会每次复活进箱
         // （REQ 监听 §12：已入箱/已确认/已永久删除的通知不得再次生成候选）。
@@ -49,14 +54,16 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             if (creditStatement != null) {
                 val duplicateStatement = (seen + linked + ignored + statementEvidence).firstOrNull { other ->
                     other.id != notification.id &&
-                        NotificationMerge.isSameEvidence(
+                        NotificationMerge.isSameContentEvidence(
                             notification.packageName,
                             notification.id,
-                            notification.contentFingerprint,
+                            notification.title,
+                            notification.content,
                             notification.postedAt,
                             other.packageName,
                             other.id,
-                            other.contentFingerprint,
+                            other.title,
+                            other.content,
                             other.postedAt
                         )
                 }
@@ -127,19 +134,20 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
             // ── 内容指纹（REQ 监听 §12）：同一条证据以不同 id 重生 ──
             // 补扫重读收件箱、通知重推产生新 postTime，都会绕过主键 IGNORE。
-            // 指纹相同 + 5 分钟窗内 = 同一条证据，直接忽略（保留先入库的那条）。
-            // 时间窗防误杀：同一订阅内容相同的两次真实扣款间隔数小时，不判重。
-            val fp = notification.contentFingerprint
+            // 同一系统通知 key + 当前规则重算后的指纹相同 = 同一条证据，不受重投间隔限制。
+            // 明确不同的系统 key 仍保留为两次真实发布；跨来源才继续使用 5 分钟窗口。
             val sameEvidence = (seen + linked + ignored).firstOrNull { other ->
                 other.id != notification.id &&
-                    NotificationMerge.isSameEvidence(
+                    NotificationMerge.isSameContentEvidence(
                         notification.packageName,
                         notification.id,
-                        fp,
+                        notification.title,
+                        notification.content,
                         notification.postedAt,
                         other.packageName,
                         other.id,
-                        other.contentFingerprint,
+                        other.title,
+                        other.content,
                         other.postedAt
                     )
             }
@@ -169,7 +177,7 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             //  · 不能靠内容相似度：银行短信和通道通知的文字毫无相似之处；
             //  · 方向必须一致：账户间转账（宁波支出 1 元 ⇄ 微信收款 1 元）金额相同、时间相近，
             //    但那是一笔转账的两条腿，合掉就只剩一半；
-            //  · 商户名一方为空就算不冲突 —— 两条都带商户名且不同，才是两笔真消费。
+            //  · 只有一方没有商户名时才允许跨来源合并；双方都有商户名（即使同名）不猜同笔。
             // ponytail: 金额恰好相同、5 分钟内、两条都没有商户名的两笔真实消费会被误合成一笔。
             // 通知原文里没有任何能区分它们的信息，只能这么取舍：宁可漏记，不要虚增。
             val duplicate = seen.firstOrNull { other ->
@@ -305,16 +313,29 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         b: RawNotificationEntity
     ): Boolean {
         if (
-            NotificationMerge.isSameEvidence(
+            NotificationMerge.isSameContentEvidence(
                 a.packageName,
                 a.id,
-                a.contentFingerprint,
+                a.title,
+                a.content,
                 a.postedAt,
                 b.packageName,
                 b.id,
-                b.contentFingerprint,
+                b.title,
+                b.content,
                 b.postedAt
             )
+        ) return true
+
+        // v0.1.4 之前 Android 通知的系统 key 不稳定：同一条通知在重启/补扫后
+        // 可能留下不同 id，但正文、指纹和原始时间完全一致。仅用于启动时收敛
+        // 已存在的旧待确认队列；新通知仍保留“同包不同 key 视为两次真实发布”的严格口径。
+        if (
+            a.packageName == b.packageName &&
+            a.packageName != "sms" &&
+            NotificationMerge.contentFingerprint(a.title, a.content) ==
+                NotificationMerge.contentFingerprint(b.title, b.content) &&
+            kotlin.math.abs(a.postedAt - b.postedAt) < NotificationMerge.DEDUP_WINDOW_MS
         ) return true
 
         return NotificationMerge.isDuplicateAcrossSources(

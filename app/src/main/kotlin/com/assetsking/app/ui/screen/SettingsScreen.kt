@@ -65,6 +65,8 @@ import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
+import com.assetsking.database.EvidenceAuditReport
+import com.assetsking.database.EvidenceAuditStatus
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.TransactionEntity
 import com.assetsking.database.TransferEntity
@@ -78,6 +80,9 @@ import com.assetsking.ui.format.categoryLabel
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
+import com.assetsking.ui.theme.DeficitRed
+import com.assetsking.ui.theme.IncomeGreen
+import com.assetsking.ui.theme.PendingOrange
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -255,6 +260,7 @@ fun SettingsScreen(
     onPermanentlyDeleteTransaction: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("删除服务未连接"))) },
     onRestoreTransfer: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("恢复划转服务未连接"))) },
     onPermanentlyDeleteTransfer: (String, (Result<Unit>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("删除划转服务未连接"))) },
+    onRunEvidenceAudit: ((Result<EvidenceAuditReport>) -> Unit) -> Unit = { callback -> callback(Result.failure(IllegalStateException("证据链审计服务未连接"))) },
     onRootStateChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -283,6 +289,9 @@ fun SettingsScreen(
     var guideDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
     var activeSection by remember { mutableStateOf<SettingsSection?>(null) }
     var showTransactionTrash by remember { mutableStateOf(false) }
+    var evidenceAuditRunning by remember { mutableStateOf(false) }
+    var evidenceAuditReport by remember { mutableStateOf<EvidenceAuditReport?>(null) }
+    var evidenceAuditError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(activeSection) { onRootStateChanged(activeSection == null) }
 
     BackHandler(enabled = activeSection != null) { activeSection = null }
@@ -406,7 +415,7 @@ fun SettingsScreen(
             item {
                 SettingsGroupCard(
                     title = SettingsSection.DATA_PRIVACY.title,
-                    summary = "加密备份、恢复、CSV 导出与隐私说明",
+                    summary = "备份、垃圾箱、证据链检查与隐私说明",
                     onClick = { activeSection = SettingsSection.DATA_PRIVACY }
                 )
             }
@@ -844,6 +853,11 @@ fun SettingsScreen(
                         }, enabled = settingsWritable) { Text("立即备份") }
                         OutlinedButton(onClick = { backupLauncher.launch(arrayOf("*/*")) }, enabled = settingsWritable) { Text("恢复备份") }
                     }
+                    Text(
+                        "新版备份只生成一个 .akbackup 加密文件。恢复会先备份当前数据，再整库覆盖；不会追加或合并。旧版 .db.enc 备份仍可恢复。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = {
@@ -872,6 +886,25 @@ fun SettingsScreen(
                     ) {
                         val trashCount = deletedTransactions.size + deletedTransfers.size
                         Text(if (trashCount == 0) "流水垃圾箱（空）" else "流水垃圾箱（${trashCount}）")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            evidenceAuditRunning = true
+                            evidenceAuditError = null
+                            onRunEvidenceAudit { result ->
+                                evidenceAuditRunning = false
+                                result.onSuccess { evidenceAuditReport = it }
+                                    .onFailure { evidenceAuditError = it.message ?: "证据链检查失败" }
+                            }
+                        },
+                        enabled = settingsWritable && !evidenceAuditRunning,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (evidenceAuditRunning) "正在检查证据链…" else "证据链检查")
+                    }
+                    evidenceAuditError?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed)
                     }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
@@ -1087,6 +1120,90 @@ fun SettingsScreen(
             onPermanentlyDeleteTransfer = onPermanentlyDeleteTransfer,
             onDismiss = { showTransactionTrash = false }
         )
+    }
+
+    evidenceAuditReport?.let { report ->
+        EvidenceAuditSheet(
+            report = report,
+            onShare = {
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "资产大王账本证据链审计")
+                    putExtra(Intent.EXTRA_TEXT, report.toPlainText())
+                }
+                context.startActivity(Intent.createChooser(sendIntent, "分享证据链检查结果"))
+            },
+            onDismiss = { evidenceAuditReport = null }
+        )
+    }
+}
+
+@Composable
+private fun EvidenceAuditSheet(
+    report: EvidenceAuditReport,
+    onShare: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val statusLabel = when (report.status) {
+        EvidenceAuditStatus.COMPLETE -> "完整"
+        EvidenceAuditStatus.WARNING -> "需要核对"
+        EvidenceAuditStatus.BROKEN -> "存在断链"
+    }
+    val statusColor = when (report.status) {
+        EvidenceAuditStatus.COMPLETE -> IncomeGreen
+        EvidenceAuditStatus.WARNING -> PendingOrange
+        EvidenceAuditStatus.BROKEN -> DeficitRed
+    }
+    Sheet(title = "证据链检查", onDismiss = onDismiss) {
+        Text(statusLabel, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = statusColor)
+        Text(
+            "对象 ${report.subjectCount} · 来源关系 ${report.sourceLinkCount} · 生命周期 ${report.lifecycleEventCount}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            "断链 ${report.brokenCount} · 提醒 ${report.warningCount}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.height(12.dp))
+        if (report.issues.isEmpty()) {
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                Text("未发现证据链缺口。", Modifier.padding(14.dp), color = IncomeGreen, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            report.issues.forEachIndexed { index, issue ->
+                if (index > 0) Spacer(Modifier.height(8.dp))
+                GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "${index + 1}. ${issue.title}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (issue.severity.name == "BROKEN") DeficitRed else PendingOrange
+                        )
+                        Text(
+                            "${issue.subjectType} · ${issue.subjectId}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(issue.detail, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "处理建议",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(issue.recommendation, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onShare, modifier = Modifier.fillMaxWidth()) { Text("分享纯文本报告") }
     }
 }
 

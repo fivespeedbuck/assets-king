@@ -121,6 +121,12 @@ internal data class CategoryLibrarySummary(
     val merchantCount: Int
 )
 
+private data class LedgerListItem(
+    val occurredAt: Long,
+    val transaction: TransactionEntity? = null,
+    val transfer: com.assetsking.database.TransferEntity? = null
+)
+
 internal fun categoryLibrarySummary(
     categories: List<CategoryEntity>,
     merchants: List<MerchantEntity>
@@ -298,6 +304,7 @@ fun TransactionsScreen(
 
     // 筛选 + 搜索（REQ 流水§11-12）
     val accountNameOf = { id: String -> state.accounts.firstOrNull { it.id == id }?.name ?: "" }
+    val accountOf = { id: String -> state.accounts.firstOrNull { it.id == id } }
     val minCents = fMinCents.toDoubleOrNull()?.times(100)?.toLong()
     val maxCents = fMaxCents.toDoubleOrNull()?.times(100)?.toLong()
     val filtered = rangeTxs.filter { tx ->
@@ -330,6 +337,9 @@ fun TransactionsScreen(
                 transfer.note?.contains(searchQuery) == true ||
                 formatMoney(transfer.amountCents).contains(searchQuery))
     }.sortedByDescending { it.occurredAt }
+    val filteredLedgerItems = (filtered.map { LedgerListItem(it.occurredAt, transaction = it) } +
+        filteredTransfers.map { LedgerListItem(it.occurredAt, transfer = it) })
+        .sortedByDescending { it.occurredAt }
 
     Column(
         Modifier
@@ -533,12 +543,12 @@ fun TransactionsScreen(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                if (filtered.isEmpty() && filteredTransfers.isEmpty()) {
+                if (filteredLedgerItems.isEmpty()) {
                     item {
                         Text("没有符合条件的流水", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
-                    if (filtered.isNotEmpty()) filtered.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.entries.forEachIndexed { dayIndex, (day, dayTxs) ->
+                    if (filteredLedgerItems.isNotEmpty()) filteredLedgerItems.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.entries.forEachIndexed { dayIndex, (day, dayItems) ->
                         item(key = "day-$day") {
                             Column {
                                 Text(
@@ -552,66 +562,56 @@ fun TransactionsScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     contentPadding = Modifier
                                 ) {
-                                    dayTxs.forEachIndexed { index, tx ->
+                                    dayItems.forEachIndexed { index, ledgerItem ->
                                         ReversibleDeleteSwipe(
                                             onDelete = {
                                                 if (!multiSelect) {
-                                                    deleteIds = listOf(tx.id)
-                                                    deletionPreviews = null
-                                                    deletionRisk = false
-                                                    deletionError = null
+                                                    ledgerItem.transaction?.let { tx ->
+                                                        deleteIds = listOf(tx.id)
+                                                        deletionPreviews = null
+                                                        deletionRisk = false
+                                                        deletionError = null
+                                                    }
+                                                    ledgerItem.transfer?.let { transfer ->
+                                                        deleteTransferId = transfer.id
+                                                        transferDeletionPreviews = null
+                                                        transferDeletionRisk = false
+                                                        transferDeletionError = null
+                                                    }
                                                 }
                                             }
                                         ) {
                                             Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
-                                                TransactionListRow(
-                                                    tx = tx,
-                                                    accountName = accountNameOf(tx.accountId),
-                                                    category = categories.firstOrNull { it.name == tx.category },
-                                                    privacyIndex = dayIndex * 20 + index,
-                                                    multiSelect = multiSelect,
-                                                    checked = tx.id in selected,
-                                                    modifier = Modifier.padding(horizontal = 12.dp),
-                                                    onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
-                                                    onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
-                                                    onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
-                                                )
+                                                ledgerItem.transaction?.let { tx ->
+                                                    TransactionListRow(
+                                                        tx = tx,
+                                                        accountName = accountNameOf(tx.accountId),
+                                                        category = categories.firstOrNull { it.name == tx.category },
+                                                        privacyIndex = dayIndex * 20 + index,
+                                                        multiSelect = multiSelect,
+                                                        checked = tx.id in selected,
+                                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                                        onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
+                                                        onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
+                                                        onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
+                                                    )
+                                                }
+                                                ledgerItem.transfer?.let { transfer ->
+                                                    TransferRow(
+                                                        fromName = accountNameOf(transfer.fromAccountId),
+                                                        toName = accountNameOf(transfer.toAccountId),
+                                                        amountCents = transfer.amountCents,
+                                                        occurredAt = transfer.occurredAt,
+                                                        fromCardTail = accountOf(transfer.fromAccountId)?.cardTail,
+                                                        toCardTail = accountOf(transfer.toAccountId)?.cardTail,
+                                                        onClick = {}
+                                                    )
+                                                }
                                             }
                                         }
-                                        if (index < dayTxs.lastIndex) {
+                                        if (index < dayItems.lastIndex) {
                                             HorizontalDivider(Modifier.padding(start = 70.dp), color = MaterialTheme.colorScheme.outlineVariant)
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (filteredTransfers.isNotEmpty()) {
-                        item(key = "transfer-section") {
-                            Column {
-                                Text("划转", Modifier.padding(start = 2.dp, top = 8.dp, bottom = 6.dp), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                GlassCard(modifier = Modifier.fillMaxWidth(), contentPadding = Modifier) {
-                                    filteredTransfers.forEachIndexed { index, transfer ->
-                                        ReversibleDeleteSwipe(
-                                            onDelete = {
-                                                deleteTransferId = transfer.id
-                                                transferDeletionPreviews = null
-                                                transferDeletionRisk = false
-                                                transferDeletionError = null
-                                            }
-                                        ) {
-                                            Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer)) {
-                                                TransferRow(
-                                                    fromName = accountNameOf(transfer.fromAccountId),
-                                                    toName = accountNameOf(transfer.toAccountId),
-                                                    amountCents = transfer.amountCents,
-                                                    occurredAt = transfer.occurredAt,
-                                                    note = transfer.note,
-                                                    onClick = {}
-                                                )
-                                            }
-                                        }
-                                        if (index < filteredTransfers.lastIndex) HorizontalDivider(Modifier.padding(start = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
                                     }
                                 }
                             }
@@ -927,6 +927,7 @@ private fun TransactionListRow(
                 linkBadges.forEach { badge ->
                     val badgeColor = when (badge.colorKey) {
                         "recurring" -> RecurringDebitOrange
+                        "lending" -> IncomeGreen
                         else -> LoanPrincipalDebtColor
                     }
                     Text(

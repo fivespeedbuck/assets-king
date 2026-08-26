@@ -167,7 +167,7 @@ object NotificationParser {
         Regex("""你在\s*([^，。；、！【】]{1,40}?)\s*有一笔"""),
         // 招商银行短信常见写法：「在支付宝-李杰快捷支付10.00元」；商户位于
         // “在”和“快捷支付/消费/扣款”之间，不能只依赖支付 App 的通知格式。
-        Regex("""在\s*([^，。；、！\s【】(（]+?)\s*(快捷支付|消费|扣款|支付|付款|退款)"""),
+        Regex("""(?<![一-龥])在\s*([^，。；、！\s【】(（]+?)\s*(快捷支付|消费|扣款|支付|付款|退款)"""),
         Regex("""收款方[：:]\s*$NAME"""),
         Regex("""商户[：:]\s*$NAME"""),
         Regex("""商户全称[：:]\s*$NAME"""),
@@ -320,11 +320,17 @@ object NotificationParser {
             ?.substringBefore('(')
             ?.trim()
             ?: return null
-        return normalized.takeIf { it.isNotBlank() && it.length < 30 && it !in bankBlacklist }
+        return normalized.takeIf {
+            it.length >= 2 && it.length < 30 && it !in bankBlacklist && it !in merchantNoiseBlacklist
+        }
     }
 
     // 商户正则容易误匹配银行名，过滤掉
     private val bankBlacklist = setOf(
         "银行", "储蓄卡", "信用卡", "借记卡", "花呗", "借呗", "余额宝"
+    )
+
+    private val merchantNoiseBlacklist = setOf(
+        "在线", "在线支付", "网络支付", "银联在线", "支付", "付款", "扣款", "消费", "转账"
     )
 }

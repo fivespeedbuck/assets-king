@@ -14,6 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         AccountEntity::class, TransactionEntity::class, TransferEntity::class,
         RawNotificationEntity::class, BudgetEntity::class, LoanPlanEntity::class,
+        LendingPlanEntity::class,
         RecurringRuleEntity::class, SnapshotEntity::class,
         CreditCardInstallmentEntity::class,
         CreditCardInstallmentAllocationEntity::class,
@@ -23,9 +24,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WindfallEntity::class, MonthDebtAnchorEntity::class,
         BalanceCheckpointEntity::class, BalanceAdjustmentEntity::class,
         ReimbursementLinkEntity::class,
-        CategoryEntity::class, MerchantEntity::class
+        CategoryEntity::class, MerchantEntity::class,
+        LedgerEvidenceLinkEntity::class, LedgerLifecycleEventEntity::class
     ],
-    version = 25,
+    version = 26,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -35,6 +37,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun rawNotificationDao(): RawNotificationDao
     abstract fun budgetDao(): BudgetDao
     abstract fun loanPlanDao(): LoanPlanDao
+    abstract fun lendingPlanDao(): LendingPlanDao
     abstract fun recurringRuleDao(): RecurringRuleDao
     abstract fun snapshotDao(): SnapshotDao
     abstract fun creditCardInstallmentDao(): CreditCardInstallmentDao
@@ -49,6 +52,8 @@ abstract class AssetsKingDatabase : RoomDatabase() {
     abstract fun reimbursementLinkDao(): ReimbursementLinkDao
     abstract fun categoryDao(): CategoryDao
     abstract fun merchantDao(): MerchantDao
+    abstract fun ledgerEvidenceLinkDao(): LedgerEvidenceLinkDao
+    abstract fun ledgerLifecycleEventDao(): LedgerLifecycleEventDao
 
     companion object {
         @Volatile private var instance: AssetsKingDatabase? = null
@@ -188,6 +193,108 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v25→v26：建立跨来源/事件/生命周期的追加式证据层，并明确贷款的合法起源。
+         *
+         * 历史贷款统一迁移为 OPENING_BALANCE：它们可能早于 App 安装，不能伪造一笔现金到账。
+         * 历史流水/划转保留原值，只补 MIGRATED_* 证据；无法可靠反推的旧划转明确标 LEGACY_IMPORT，
+         * 交给完整性审计提示，而不是猜一条通知关系。
+         */
+        internal val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun hasTable(name: String): Boolean =
+                    db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name))
+                        .use { it.moveToFirst() }
+
+                if (hasTable("loan_plans")) {
+                    db.execSQL("ALTER TABLE loan_plans ADD COLUMN originType TEXT NOT NULL DEFAULT 'OPENING_BALANCE'")
+                    db.execSQL("ALTER TABLE loan_plans ADD COLUMN disbursementTransactionId TEXT")
+                    db.execSQL("ALTER TABLE loan_plans ADD COLUMN ledgerBaselinePrincipalCents INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE loan_plans ADD COLUMN ledgerBaselineAt INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL(
+                        "UPDATE loan_plans SET ledgerBaselinePrincipalCents = CASE WHEN remainingPrincipalCents > 0 THEN remainingPrincipalCents ELSE principalCents END, ledgerBaselineAt = ?",
+                        arrayOf(System.currentTimeMillis())
+                    )
+                }
+                if (hasTable("transactions")) {
+                    db.execSQL("ALTER TABLE transactions ADD COLUMN lendingPlanId TEXT")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS index_transactions_lendingPlanId ON transactions(lendingPlanId)")
+                }
+                if (hasTable("transfers")) {
+                    db.execSQL("ALTER TABLE transfers ADD COLUMN lendingPlanId TEXT")
+                    db.execSQL("ALTER TABLE transfers ADD COLUMN lendingRole TEXT")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS index_transfers_lendingPlanId ON transfers(lendingPlanId)")
+                }
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `lending_plans` (`id` TEXT NOT NULL, `receivableAccountId` TEXT NOT NULL, `label` TEXT NOT NULL, `borrowerName` TEXT NOT NULL, `principalCents` INTEGER NOT NULL, `remainingPrincipalCents` INTEGER NOT NULL, `expectedInterestCents` INTEGER NOT NULL, `receivedInterestCents` INTEGER NOT NULL, `startDateEpochDay` INTEGER NOT NULL, `expectedDueDateEpochDay` INTEGER, `status` TEXT NOT NULL, `originType` TEXT NOT NULL, `disbursementTransferId` TEXT, `ledgerBaselinePrincipalCents` INTEGER NOT NULL, `ledgerBaselineInterestCents` INTEGER NOT NULL, `ledgerBaselineAt` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_lending_plans_receivableAccountId` ON `lending_plans` (`receivableAccountId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_lending_plans_status` ON `lending_plans` (`status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_lending_plans_disbursementTransferId` ON `lending_plans` (`disbursementTransferId`)")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `ledger_evidence_links` (`groupId` TEXT NOT NULL, `subjectType` TEXT NOT NULL, `subjectId` TEXT NOT NULL, `subjectRole` TEXT NOT NULL, `sourceType` TEXT NOT NULL, `sourceId` TEXT NOT NULL, `linkedAt` INTEGER NOT NULL, PRIMARY KEY(`groupId`, `subjectType`, `subjectId`, `sourceType`, `sourceId`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_evidence_links_subjectType_subjectId` ON `ledger_evidence_links` (`subjectType`, `subjectId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_evidence_links_sourceType_sourceId` ON `ledger_evidence_links` (`sourceType`, `sourceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_evidence_links_groupId` ON `ledger_evidence_links` (`groupId`)")
+
+                db.execSQL("CREATE TABLE IF NOT EXISTS `ledger_lifecycle_events` (`id` TEXT NOT NULL, `subjectType` TEXT NOT NULL, `subjectId` TEXT NOT NULL, `action` TEXT NOT NULL, `occurredAt` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_lifecycle_events_subjectType_subjectId` ON `ledger_lifecycle_events` (`subjectType`, `subjectId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_lifecycle_events_occurredAt` ON `ledger_lifecycle_events` (`occurredAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ledger_lifecycle_events_action` ON `ledger_lifecycle_events` (`action`)")
+
+                if (hasTable("transactions")) {
+                    db.execSQL(
+                        """
+                        INSERT OR IGNORE INTO ledger_evidence_links
+                        SELECT
+                          CASE
+                            WHEN notificationId IS NOT NULL THEN 'notification:' || notificationId
+                            WHEN recurringRuleId IS NOT NULL THEN 'recurring:' || recurringRuleId || ':' || id
+                            ELSE 'legacy:transaction:' || id
+                          END,
+                          'TRANSACTION', id, 'POSTED_EVENT',
+                          CASE
+                            WHEN notificationId IS NOT NULL THEN 'RAW_NOTIFICATION'
+                            WHEN recurringRuleId IS NOT NULL THEN 'RECURRING_RULE'
+                            ELSE 'LEGACY_IMPORT'
+                          END,
+                          COALESCE(notificationId, recurringRuleId, 'legacy:transaction:' || id),
+                          occurredAt
+                        FROM transactions
+                        """.trimIndent()
+                    )
+                    db.execSQL(
+                        """
+                        INSERT OR IGNORE INTO ledger_lifecycle_events
+                        SELECT 'migration:v26:transaction:' || id, 'TRANSACTION', id,
+                               CASE WHEN deletedAt IS NULL THEN 'MIGRATED_ACTIVE' ELSE 'MIGRATED_TRASHED' END,
+                               COALESCE(deletedAt, occurredAt), '{}'
+                        FROM transactions
+                        """.trimIndent()
+                    )
+                }
+                if (hasTable("transfers")) {
+                    db.execSQL("INSERT OR IGNORE INTO ledger_evidence_links SELECT 'legacy:transfer:' || id, 'TRANSFER', id, 'POSTED_EVENT', 'LEGACY_IMPORT', 'legacy:transfer:' || id, occurredAt FROM transfers")
+                    db.execSQL("INSERT OR IGNORE INTO ledger_lifecycle_events SELECT 'migration:v26:transfer:' || id, 'TRANSFER', id, CASE WHEN deletedAt IS NULL THEN 'MIGRATED_ACTIVE' ELSE 'MIGRATED_TRASHED' END, COALESCE(deletedAt, occurredAt), '{}' FROM transfers")
+                }
+                if (hasTable("loan_plans")) {
+                    db.execSQL("INSERT OR IGNORE INTO ledger_evidence_links SELECT 'opening:loan:' || id, 'LOAN_PLAN', id, 'PLAN_ORIGIN', 'OPENING_BALANCE', 'opening:loan:' || id, startDateEpochDay * 86400000 FROM loan_plans")
+                    db.execSQL("INSERT OR IGNORE INTO ledger_lifecycle_events SELECT 'migration:v26:loan:' || id, 'LOAN_PLAN', id, 'MIGRATED_ACTIVE', startDateEpochDay * 86400000, '{}' FROM loan_plans")
+                }
+                if (hasTable("recurring_rules")) {
+                    db.execSQL("INSERT OR IGNORE INTO ledger_evidence_links SELECT 'legacy:recurring-rule:' || id, 'RECURRING_RULE', id, 'RULE_ORIGIN', 'LEGACY_IMPORT', 'legacy:recurring-rule:' || id, nextRunAt FROM recurring_rules")
+                    db.execSQL("INSERT OR IGNORE INTO ledger_lifecycle_events SELECT 'migration:v26:recurring-rule:' || id, 'RECURRING_RULE', id, 'MIGRATED_ACTIVE', nextRunAt, '{}' FROM recurring_rules")
+                }
+                if (hasTable("credit_card_installments")) {
+                    db.execSQL("INSERT OR IGNORE INTO ledger_evidence_links SELECT 'legacy:card-installment:' || id, 'CARD_INSTALLMENT', id, 'PLAN_ORIGIN', 'LEGACY_IMPORT', 'legacy:card-installment:' || id, CASE WHEN createdAt > 0 THEN createdAt ELSE startDateEpochDay * 86400000 END FROM credit_card_installments")
+                    db.execSQL("INSERT OR IGNORE INTO ledger_lifecycle_events SELECT 'migration:v26:card-installment:' || id, 'CARD_INSTALLMENT', id, 'MIGRATED_ACTIVE', CASE WHEN createdAt > 0 THEN createdAt ELSE startDateEpochDay * 86400000 END, '{}' FROM credit_card_installments")
+                }
+                if (hasTable("credit_card_installment_payment_matches") && hasTable("transfers")) {
+                    db.execSQL("INSERT OR IGNORE INTO ledger_evidence_links SELECT 'card-installment-payment:' || transferId || ':' || scheduleId, 'CARD_INSTALLMENT', planId, 'PAYMENT_BY_TRANSFER', 'LEDGER_EVENT', transferId, COALESCE(resolvedAt, createdAt) FROM credit_card_installment_payment_matches WHERE status IN ('AUTO_MATCHED', 'USER_CONFIRMED')")
+                    db.execSQL("INSERT OR IGNORE INTO ledger_lifecycle_events SELECT 'migration:v26:card-payment:' || transferId || ':' || scheduleId, 'CARD_INSTALLMENT', planId, 'LINKED', COALESCE(resolvedAt, createdAt), '{\"source\":\"MIGRATION\"}' FROM credit_card_installment_payment_matches WHERE status IN ('AUTO_MATCHED', 'USER_CONFIRMED')")
+                }
+            }
+        }
+
         /** v19→v20：categories 加 kind 列（收入分类库独立于消费分类，REQ 预期收入§4）。只加列，非破坏性。 */
         private val MIGRATION_19_20 = object : Migration(19, 20) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -301,7 +408,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26).build().also { instance = it }
         }
     }
 }

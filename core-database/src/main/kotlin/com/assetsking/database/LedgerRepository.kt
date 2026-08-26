@@ -43,7 +43,8 @@ data class TransactionDeletionAccountPreview(
     val accountId: String,
     val currentBalanceCents: Long,
     val projectedBalanceCents: Long,
-    val balanceStatus: String
+    val balanceStatus: String,
+    val anchoredBeforeCheckpointCount: Int = 0
 )
 
 data class TransferDeletionAccountPreview(
@@ -88,6 +89,8 @@ class LedgerRepository(
     private val database: AssetsKingDatabase,
     private val prefs: SharedPreferences
 ) {
+    private val evidenceRecorder = LedgerEvidenceRecorder(database)
+    private val evidenceAuditService = LedgerEvidenceAuditService(database)
     val accounts: Flow<List<AccountEntity>> = database.accountDao().observeAll()
     val transactions: Flow<List<TransactionEntity>> = database.transactionDao().observeAll()
     val deletedTransactions: Flow<List<TransactionEntity>> = database.transactionDao().observeDeleted()
@@ -100,6 +103,8 @@ class LedgerRepository(
         database.rawNotificationDao().observeByStatus("LINKED")
     val ignoredNotifications: Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("IGNORED")
+
+    suspend fun runEvidenceAudit(): EvidenceAuditReport = evidenceAuditService.run()
     private val _lastReceivedAt = MutableStateFlow(prefs.getLong("last_notification_received_at", 0L))
     val lastReceivedAt: Flow<Long> = _lastReceivedAt
     private val _lastListenerHealthyAt = MutableStateFlow(prefs.getLong("last_listener_healthy_at", 0L))
@@ -282,20 +287,14 @@ class LedgerRepository(
                     java.io.File(localDir, name).writeBytes(data)
                 }
             }
-            fun encFile(src: java.io.File, ext: String, required: Boolean = false) {
-                if (!src.exists()) {
-                    require(!required) { "必要的备份源文件不存在：${src.name}" }
-                    return
-                }
-                enc("${prefix}_${stamp}$ext", com.assetsking.ledger.PinCipher.encrypt(src.readBytes(), pin))
-            }
-            encFile(dbFile, ".db.enc", required = true)
-            encFile(java.io.File(dbFile.path + "-wal"), ".wal.enc")
-            encFile(java.io.File(dbFile.path + "-shm"), ".shm.enc")
             val prefsJson = JSONObject().apply {
                 prefs.all.forEach { (k, v) -> put(k, v) }
             }.toString()
-            enc("${prefix}_${stamp}.prefs.enc", com.assetsking.ledger.PinCipher.encrypt(prefsJson.toByteArray(Charsets.UTF_8), pin))
+            val bundle = com.assetsking.ledger.BackupBundle.pack(
+                database = dbFile.readBytes(),
+                preferencesJson = prefsJson.toByteArray(Charsets.UTF_8)
+            )
+            enc("${prefix}_${stamp}.akbackup", com.assetsking.ledger.PinCipher.encrypt(bundle, pin))
             if (!manual) {
                 pruneAutoBackups(safSub, localDir)
                 prefs.edit().putLong("last_auto_backup_epoch_day", java.time.LocalDate.now().toEpochDay()).apply()
@@ -307,17 +306,23 @@ class LedgerRepository(
     private fun pruneAutoBackups(safSub: androidx.documentfile.provider.DocumentFile?, localDir: java.io.File) {
         // 审核 §14 口径（用户拍板）：保留最近 7 份日备份 + 最近 3 份月备份；手动备份永不自动删除。
         // 日备份：每天只留最新一份，取最近 7 天；月备份：每月只留最新一份，取最近 3 个月；其余自动备份删除。
+        fun backupStamp(name: String): String? = when {
+            name.startsWith("auto_") && name.endsWith(".akbackup") ->
+                name.removePrefix("auto_").removeSuffix(".akbackup")
+            name.startsWith("auto_") && name.endsWith(".db.enc") ->
+                name.removePrefix("auto_").removeSuffix(".db.enc")
+            else -> null
+        }
         val stamps: List<String> = if (safSub != null) {
             safSub.listFiles()
-                .mapNotNull { f ->
-                    f.name?.takeIf { it.startsWith("auto_") && it.endsWith(".db.enc") }
-                        ?.removePrefix("auto_")?.removeSuffix(".db.enc")
-                }
-                .sortedDescending()
+                .mapNotNull { f -> f.name?.let(::backupStamp) }
+                .distinct()
+                .sortedByDescending(String::toLongOrNull)
         } else {
-            localDir.listFiles { f -> f.name.startsWith("auto_") && f.name.endsWith(".db.enc") }
-                ?.sortedByDescending { it.lastModified() }
-                ?.map { it.name.removePrefix("auto_").removeSuffix(".db.enc") }
+            localDir.listFiles()
+                ?.mapNotNull { backupStamp(it.name) }
+                ?.distinct()
+                ?.sortedByDescending(String::toLongOrNull)
                 ?: emptyList()
         }
         val zone = java.time.ZoneId.systemDefault()
@@ -337,7 +342,7 @@ class LedgerRepository(
             .toSet()
         val keep = dailyKeep + monthlyKeep
         stamps.filter { it !in keep }.forEach { stale ->
-            listOf(".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
+            listOf(".akbackup", ".db.enc", ".wal.enc", ".shm.enc", ".prefs.enc").forEach { ext ->
                 if (safSub != null) safSub.findFile("auto_$stale$ext")?.delete()
                 else java.io.File(localDir, "auto_$stale$ext").delete()
             }
@@ -422,13 +427,27 @@ class LedgerRepository(
                     context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: return@runCatching false
                 }
-                val dbBytes = com.assetsking.ledger.PinCipher.decrypt(content, pin)
+                val decrypted = com.assetsking.ledger.PinCipher.decrypt(content, pin)
+                val bundle = com.assetsking.ledger.BackupBundle.unpack(decrypted)
+                val dbBytes = bundle?.database ?: decrypted
                 // 兼容旧 XOR 备份时，错误 PIN 只会产出乱码；覆盖前必须先验证 SQLite 文件头。
                 val sqliteHeader = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
                 if (dbBytes.size < sqliteHeader.size || !dbBytes.copyOfRange(0, sqliteHeader.size).contentEquals(sqliteHeader)) {
                     return@runCatching false
                 }
                 if (!isHealthySqlite(dbBytes)) return@runCatching false
+                val restoredPreferences = bundle?.preferencesJson?.let {
+                    JSONObject(String(it, Charsets.UTF_8))
+                } ?: java.io.File(dir, "manual_$stamp.prefs.enc")
+                    .takeIf(java.io.File::exists)
+                    ?.let { prefsFile ->
+                        JSONObject(
+                            String(
+                                com.assetsking.ledger.PinCipher.decrypt(prefsFile.readBytes(), pin),
+                                Charsets.UTF_8
+                            )
+                        )
+                    }
                 // 恢复是破坏性操作：当前数据备份失败时绝不继续覆盖。
                 if (!backupNow(manual = true)) return@runCatching false
                 // 审核 BUG-2 修复：恢复前关闭数据库连接并删除 -wal/-shm。
@@ -439,15 +458,8 @@ class LedgerRepository(
                 java.io.File(dbFile.path + "-wal").delete()
                 java.io.File(dbFile.path + "-shm").delete()
                 dbFile.writeBytes(dbBytes)
-                // 偏好设置同步恢复：同名手动备份的 prefs 文件（若存在）
-                val prefsFile = java.io.File(dir, "manual_$stamp.prefs.enc")
-                if (prefsFile.exists()) {
-                    val json = String(
-                        com.assetsking.ledger.PinCipher.decrypt(prefsFile.readBytes(), pin),
-                        Charsets.UTF_8
-                    )
-                    val obj = JSONObject(json)
-                    prefs.edit().clear().apply()
+                restoredPreferences?.let { obj ->
+                    prefs.edit().clear().commit()
                     val editor = prefs.edit()
                     obj.keys().forEach { k ->
                         when (val v = obj.get(k)) {
@@ -464,7 +476,7 @@ class LedgerRepository(
                             )
                         }
                     }
-                    editor.apply()
+                    require(editor.commit()) { "应用偏好恢复失败" }
                 }
                 true
             }.getOrDefault(false)
@@ -552,7 +564,12 @@ class LedgerRepository(
                 }
                 val postedAt = database.rawNotificationDao().findById(outNotificationId)?.postedAt
                     ?: System.currentTimeMillis()
-                addTransfer(fromAccountId, toAccountId, amountCents, note, postedAt)
+                val sourceIds = listOf(outNotificationId, inNotificationId).sorted()
+                addTransfer(
+                    fromAccountId, toAccountId, amountCents, note, postedAt,
+                    evidenceSources = sourceIds.map { EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, it) },
+                    evidenceGroupId = "notifications:${sourceIds.joinToString("|")}"
+                )
                 listOf(outNotificationId, inNotificationId).forEach { id ->
                     database.rawNotificationDao().updateProcessingNote(id, "merged-transfer")
                     database.rawNotificationDao().updateStatus(id, "IGNORED")
@@ -585,7 +602,11 @@ class LedgerRepository(
                 }
                 val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
                     ?: System.currentTimeMillis()
-                addTransfer(fromAccountId, toAccountId, amountCents, note, postedAt)
+                addTransfer(
+                    fromAccountId, toAccountId, amountCents, note, postedAt,
+                    evidenceSources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
+                    evidenceGroupId = "notification:$notificationId"
+                )
                 if (feeCents > 0) {
                     addTransaction(
                         accountId = fromAccountId,
@@ -697,6 +718,25 @@ class LedgerRepository(
                         necessity = necessity, channel = channel, notificationId = notificationId
                     )
                 }
+            } else {
+                database.transactionDao().attachNotification(ruleTx.id, notificationId)
+                evidenceRecorder.link(
+                    groupId = "notification:$notificationId",
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = ruleTx.id,
+                    subjectRole = "CONFIRMED_RECURRING_EVENT",
+                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
+                    linkedAt = postedAt
+                )
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = ruleTx.id,
+                    action = EvidenceAction.LINKED,
+                    occurredAt = postedAt,
+                    payload = JSONObject()
+                        .put("notificationId", notificationId)
+                        .put("recurringRuleId", ruleTx.recurringRuleId)
+                )
             }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
@@ -900,18 +940,35 @@ class LedgerRepository(
     }
 
     suspend fun updateTransactionCategory(id: String, category: TransactionCategory) {
-        requireTransactionNotAllocated(id)
-        database.transactionDao().updateCategory(id, category.name)
+        setTransactionCategoryName(id, category.name)
     }
 
     suspend fun setTransactionCategoryName(id: String, categoryName: String) {
-        requireTransactionNotAllocated(id)
-        database.transactionDao().updateCategory(id, categoryName)
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            requireTransactionNotAllocated(id)
+            database.transactionDao().updateCategory(id, categoryName)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject().put("field", "category").put("before", old.category).put("after", categoryName)
+            )
+        }
     }
 
     suspend fun setTransactionNecessity(id: String, necessity: Boolean?) {
-        requireTransactionNotAllocated(id)
-        database.transactionDao().updateNecessity(id, necessity)
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            requireTransactionNotAllocated(id)
+            database.transactionDao().updateNecessity(id, necessity)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject().put("field", "necessity").put("before", old.necessity).put("after", necessity)
+            )
+        }
     }
 
     suspend fun updateTransaction(
@@ -932,6 +989,14 @@ class LedgerRepository(
         database.withTransaction {
             val old = requireNotNull(database.transactionDao().findById(id))
             requireTransactionNotAllocated(id)
+            require(old.lendingPlanId == null) { "已关联出借计划的流水不能普通编辑，请先处理关联" }
+            requireSufficientAssetBalance(
+                accountId = accountId,
+                amountCents = amountCents,
+                type = type,
+                occurredAt = occurredAt,
+                replacing = old
+            )
             // V5：借款/还款/提前还款流水不可编辑（联动了贷款计划），删除后重记
             val oldType = TransactionType.valueOf(old.type)
             val loanTypes = setOf(TransactionType.LOAN_DISBURSEMENT, TransactionType.LOAN_PAYMENT, TransactionType.LOAN_PREPAYMENT)
@@ -950,6 +1015,18 @@ class LedgerRepository(
                 )
                 recomputeBalance(old.accountId)
                 if (accountId != old.accountId) recomputeBalance(accountId)
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = id,
+                    action = EvidenceAction.EDITED,
+                    payload = JSONObject()
+                        .put("beforeType", old.type)
+                        .put("afterType", type.name)
+                        .put("beforeAmountCents", old.amountCents)
+                        .put("afterAmountCents", amountCents)
+                        .put("beforeAccountId", old.accountId)
+                        .put("afterAccountId", accountId)
+                )
             }
         }
     }
@@ -968,12 +1045,21 @@ class LedgerRepository(
         require(amountCents > 0L)
         database.withTransaction {
             val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
-            require(old.type == TransactionType.EXPENSE.name || old.type == TransactionType.INCOME.name) {
+            require(
+                old.type == TransactionType.EXPENSE.name ||
+                    old.type == TransactionType.INCOME.name ||
+                    old.type == TransactionType.LOAN_DISBURSEMENT.name
+            ) {
                 "只有普通收支流水可以补挂借款计划"
             }
             requireTransactionNotAllocated(id)
+            require(old.lendingPlanId == null) { "已关联出借计划的流水不能再挂借款计划" }
             require(database.reimbursementLinkDao().findByExpense(id).isEmpty()) { "已关联报销的流水不能改成借款到账" }
             val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "借款计划不存在" }
+            if (old.type == TransactionType.LOAN_DISBURSEMENT.name && old.loanPlanId != null) {
+                require(old.loanPlanId == plan.id) { "已入账的借款到账不能改挂到另一份贷款计划" }
+                require(old.amountCents == amountCents) { "已激活贷款计划后不能直接修改到账本金，请先处理计划关联" }
+            }
             val account = requireNotNull(database.accountDao().find(accountId)) { "到账账户不存在" }
             require(account.type == AccountType.ASSET.name) { "借款到账必须进入资产账户" }
             database.transactionDao().updateManagedFields(
@@ -992,7 +1078,14 @@ class LedgerRepository(
                 necessity = null,
                 channel = channel
             )
-            // 贷款计划的本金在建计划时已经存在；这里补的是实际到账证据，不能再次把本金加一遍。
+            activateLoanPlanFromDisbursement(plan, id, amountCents, occurredAt)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject().put("loanPlanId", plan.id).put("role", "LOAN_DISBURSEMENT")
+            )
             recomputeBalance(old.accountId)
             if (old.accountId != accountId) recomputeBalance(accountId)
         }
@@ -1017,7 +1110,15 @@ class LedgerRepository(
             val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
             require(old.type == TransactionType.EXPENSE.name) { "贷款还款必须从支出流水补挂" }
             requireTransactionNotAllocated(id)
+            requireSufficientAssetBalance(
+                accountId = accountId,
+                amountCents = amountCents,
+                type = TransactionType.LOAN_PAYMENT,
+                occurredAt = occurredAt,
+                replacing = old
+            )
             val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
+            require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以补挂还款" }
             require(principalCents + interestCents + feeCents == amountCents) { "本金+利息+手续费必须等于流水金额" }
             require(principalCents <= remainingEffective(plan)) { "本金超过贷款计划剩余本金" }
             val insts = jsonToInstallments(plan.installmentsJson)
@@ -1049,8 +1150,221 @@ class LedgerRepository(
                     status = if (principalCents >= remainingEffective(plan)) "PAID_OFF" else plan.status
                 )
             )
+            recordLoanEvent(plan.id, id, "LOAN_PAYMENT", occurredAt, principalCents, interestCents, feeCents)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("loanPlanId", plan.id)
+                    .put("role", "LOAN_PAYMENT")
+                    .put("principalCents", principalCents)
+                    .put("interestCents", interestCents)
+                    .put("feeCents", feeCents)
+            )
             recomputeBalance(old.accountId)
             if (old.accountId != accountId) recomputeBalance(accountId)
+        }
+    }
+
+    /** 把已确认的普通收入补挂为出借利息；不伪造本金支出，利息只计一次。 */
+    suspend fun linkTransactionToLendingInterest(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        merchant: String?,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?
+    ) {
+        require(amountCents > 0L)
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            require(old.type == TransactionType.INCOME.name) { "只有收入流水可以补挂出借利息" }
+            requireTransactionNotAllocated(id)
+            require(old.lendingPlanId == null || old.lendingPlanId == planId) { "流水已关联其他出借计划" }
+            require(old.loanPlanId == null) { "已关联贷款计划的流水不能再挂出借计划" }
+            val account = requireNotNull(database.accountDao().find(accountId)) { "到账账户不存在" }
+            require(account.type == AccountType.ASSET.name) { "出借利息必须进入资产账户" }
+            val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "出借计划不存在" }
+            require(plan.status != LendingPlanStatus.PENDING_DISBURSEMENT) { "待借出计划不能收取利息" }
+
+            val previousInterest = if (old.lendingPlanId == planId) old.amountCents else 0L
+            val delta = amountCents - previousInterest
+            val updatedAt = System.currentTimeMillis()
+            val reanchor = occurredAt <= plan.ledgerBaselineAt
+            database.transactionDao().update(
+                id = id,
+                amountCents = amountCents,
+                type = TransactionType.INCOME.name,
+                category = "利息收益",
+                merchant = merchant?.trim()?.takeIf { it.isNotEmpty() } ?: plan.borrowerName,
+                note = note?.trim()?.takeIf { it.isNotEmpty() },
+                accountId = accountId,
+                occurredAt = occurredAt,
+                necessity = null,
+                channel = channel
+            )
+            database.transactionDao().updateLendingPlanId(id, planId)
+            database.lendingPlanDao().upsert(
+                plan.copy(
+                    receivedInterestCents = (plan.receivedInterestCents + delta).coerceAtLeast(0L),
+                    ledgerBaselineInterestCents = if (reanchor) {
+                        (plan.ledgerBaselineInterestCents + delta).coerceAtLeast(0L)
+                    } else plan.ledgerBaselineInterestCents,
+                    ledgerBaselineAt = if (reanchor) updatedAt else plan.ledgerBaselineAt,
+                    updatedAt = updatedAt
+                )
+            )
+            evidenceRecorder.link(
+                groupId = "lending-interest:$id",
+                subjectType = EvidenceSubjectType.LENDING_PLAN,
+                subjectId = planId,
+                subjectRole = "INTEREST_RECEIPT_TRANSACTION",
+                sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, id)),
+                linkedAt = occurredAt
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject().put("lendingPlanId", planId).put("role", "INTEREST_RECEIPT")
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.LENDING_PLAN,
+                subjectId = planId,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject().put("transactionId", id).put("interestCents", amountCents)
+            )
+            recomputeBalance(old.accountId)
+            if (accountId != old.accountId) recomputeBalance(accountId)
+        }
+    }
+
+    /** 将已确认的本金+利息到账改造成本金划转与利息收入，现金净额保持不变。 */
+    suspend fun convertIncomeToLendingRepayment(
+        id: String,
+        planId: String,
+        totalCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?
+    ) {
+        require(totalCents > 0L)
+        require(principalCents >= 0L && interestCents >= 0L)
+        require(principalCents + interestCents == totalCents) { "本金与利息合计必须等于到账金额" }
+        require(principalCents > 0L) { "本金到账必须大于零" }
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            require(old.type == TransactionType.INCOME.name) { "只有收入流水可以转换为出借收回" }
+            require(old.lendingPlanId == null) { "该流水已经关联出借利息" }
+            requireTransactionNotAllocated(id)
+            val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "出借计划不存在" }
+            require(plan.status != LendingPlanStatus.PENDING_DISBURSEMENT) { "待借出计划不能收回" }
+            require(principalCents <= plan.remainingPrincipalCents) { "收回本金超过剩余应收" }
+            val account = requireNotNull(database.accountDao().find(accountId)) { "到账账户不存在" }
+            require(account.type == AccountType.ASSET.name && account.id != plan.receivableAccountId) { "请选择真实收款账户" }
+
+            if (interestCents > 0L) {
+                // 有实际利息时，原收入流水收敛为唯一的利息收入证据。
+                database.transactionDao().update(
+                    id = id,
+                    amountCents = interestCents,
+                    type = TransactionType.INCOME.name,
+                    category = "利息收益",
+                    merchant = old.merchant?.takeIf { it.isNotBlank() } ?: plan.borrowerName,
+                    note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    accountId = accountId,
+                    occurredAt = occurredAt,
+                    necessity = null,
+                    channel = channel
+                )
+                database.transactionDao().updateLendingPlanId(id, planId)
+            } else {
+                // 纯本金到账不应留下 0 元收入；本金只由下方应收→现金划转表达。
+                // 原收入对象保留生命周期/来源墓碑，防止通知补扫或审计把它当成可复活流水。
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = id,
+                    action = EvidenceAction.EFFECT_REVERSED,
+                    occurredAt = occurredAt,
+                    payload = JSONObject()
+                        .put("replacement", "LENDING_PRINCIPAL_REPAYMENT_TRANSFER")
+                        .put("transferPrincipalCents", principalCents)
+                )
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = id,
+                    action = EvidenceAction.PURGED,
+                    occurredAt = occurredAt,
+                    payload = JSONObject().put("reason", "纯本金收回不保留零元收入")
+                )
+                database.transactionDao().deleteById(id)
+            }
+            val transferId = addTransfer(
+                fromAccountId = plan.receivableAccountId,
+                toAccountId = accountId,
+                amountCents = principalCents,
+                note = note,
+                occurredAt = occurredAt,
+                lendingPlanId = planId,
+                lendingRole = LendingTransferRole.PRINCIPAL_REPAYMENT,
+                evidenceSources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, id)),
+                evidenceGroupId = "lending-conversion:$id",
+                evidenceRole = "LENDING_PRINCIPAL_REPAYMENT"
+            )
+            val updatedAt = System.currentTimeMillis()
+            val reanchor = occurredAt <= plan.ledgerBaselineAt
+            database.lendingPlanDao().upsert(
+                plan.copy(
+                    remainingPrincipalCents = plan.remainingPrincipalCents - principalCents,
+                    receivedInterestCents = plan.receivedInterestCents + interestCents,
+                    status = if (plan.remainingPrincipalCents == principalCents) LendingPlanStatus.COMPLETED else LendingPlanStatus.ACTIVE,
+                    ledgerBaselinePrincipalCents = if (reanchor) plan.remainingPrincipalCents - principalCents else plan.ledgerBaselinePrincipalCents,
+                    ledgerBaselineInterestCents = if (reanchor) plan.receivedInterestCents + interestCents else plan.ledgerBaselineInterestCents,
+                    ledgerBaselineAt = if (reanchor) updatedAt else plan.ledgerBaselineAt,
+                    updatedAt = updatedAt
+                )
+            )
+            evidenceRecorder.link(
+                groupId = "lending-conversion:$id",
+                subjectType = EvidenceSubjectType.LENDING_PLAN,
+                subjectId = planId,
+                subjectRole = "REPAYMENT_CONVERSION",
+                sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, id)),
+                linkedAt = occurredAt
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("lendingPlanId", planId)
+                    .put("transferId", transferId)
+                    .put("principalCents", principalCents)
+                    .put("interestCents", interestCents)
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.LENDING_PLAN,
+                subjectId = planId,
+                action = EvidenceAction.LINKED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("transactionId", id)
+                    .put("transferId", transferId)
+                    .put("role", "REPAYMENT_CONVERSION")
+            )
+            recomputeBalance(old.accountId)
+            if (accountId != old.accountId) recomputeBalance(accountId)
+            recomputeBalance(plan.receivableAccountId)
         }
     }
 
@@ -1070,7 +1384,10 @@ class LedgerRepository(
                 accountId = accountId,
                 currentBalanceCents = account.balanceCents,
                 projectedBalanceCents = account.balanceCents - removedDelta,
-                balanceStatus = account.balanceStatus
+                balanceStatus = account.balanceStatus,
+                anchoredBeforeCheckpointCount = accountTransactions.count {
+                    checkpoint != null && it.occurredAt <= checkpoint.checkedAt
+                }
             )
         }.sortedBy { it.accountId }
     }
@@ -1098,6 +1415,15 @@ class LedgerRepository(
             require(
                 transactions.mapNotNull { it.loanPlanId }.groupingBy { it }.eachCount().none { it.value > 1 }
             ) { "同一贷款计划的多笔流水请逐笔删除，避免恢复顺序破坏期次" }
+            require(
+                transactions.mapNotNull { it.lendingPlanId }.groupingBy { it }.eachCount().none { it.value > 1 }
+            ) { "同一出借计划的多笔流水请逐笔删除，避免恢复顺序破坏应收状态" }
+            val reimbursementExpenseIds = transactions
+                .filter { it.type == TransactionType.REIMBURSEMENT.name }
+                .flatMap { database.reimbursementLinkDao().findByReimbursement(it.id).map { link -> link.expenseTxId } }
+            require(
+                reimbursementExpenseIds.groupingBy { it }.eachCount().none { it.value > 1 }
+            ) { "同一垫付被多笔报销到账覆盖时请逐笔删除，避免恢复快照冲突" }
             val trashContexts = transactions.associate { tx ->
                 val before = captureTransactionEffectState(tx)
                 rollbackTransactionEffects(tx)
@@ -1110,11 +1436,44 @@ class LedgerRepository(
                 check(database.transactionDao().moveToTrash(tx.id, deletedAt, trashContexts[tx.id]) == 1) {
                     "流水状态已变化，请刷新后重试"
                 }
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = tx.id,
+                    action = EvidenceAction.TRASHED,
+                    occurredAt = deletedAt,
+                    payload = JSONObject()
+                        .put("type", tx.type)
+                        .put("amountCents", tx.amountCents)
+                        .put("accountId", tx.accountId)
+                )
+                tx.loanPlanId?.let { planId ->
+                    evidenceRecorder.lifecycle(
+                        subjectType = EvidenceSubjectType.LOAN_PLAN,
+                        subjectId = planId,
+                        action = EvidenceAction.EFFECT_REVERSED,
+                        occurredAt = deletedAt,
+                        payload = JSONObject()
+                            .put("transactionId", tx.id)
+                            .put("transactionType", tx.type)
+                            .put("reason", "TRANSACTION_TRASHED")
+                    )
+                }
+                tx.lendingPlanId?.let { planId ->
+                    evidenceRecorder.lifecycle(
+                        subjectType = EvidenceSubjectType.LENDING_PLAN,
+                        subjectId = planId,
+                        action = EvidenceAction.EFFECT_REVERSED,
+                        occurredAt = deletedAt,
+                        payload = JSONObject()
+                            .put("transactionId", tx.id)
+                            .put("reason", "INTEREST_TRANSACTION_TRASHED")
+                    )
+                }
                 tx.notificationId?.let { nid ->
-                    database.rawNotificationDao().updateStatus(nid, "IGNORED")
+                    database.rawNotificationDao().updateStatus(nid, "PENDING_CONFIRMATION")
                     database.rawNotificationDao().updateProcessingNote(
                         nid,
-                        "关联流水已移入垃圾箱；保留忽略墓碑，防止通知补扫复活"
+                        "关联流水已移入垃圾箱；通知回到待确认箱，可按原始证据重新记账"
                     )
                 }
             }
@@ -1126,6 +1485,20 @@ class LedgerRepository(
             // V5 回滚：借款/还款/提前还款与贷款计划的联动还原，保持真相源对称
             when (TransactionType.valueOf(tx.type)) {
                 TransactionType.EXPENSE -> Unit
+                TransactionType.INCOME -> tx.lendingPlanId?.let { planId ->
+                    database.lendingPlanDao().findById(planId)?.let { plan ->
+                        val receivedInterest = (plan.receivedInterestCents - tx.amountCents).coerceAtLeast(0L)
+                        val reanchorAt = System.currentTimeMillis()
+                        database.lendingPlanDao().upsert(
+                            plan.copy(
+                                receivedInterestCents = receivedInterest,
+                                ledgerBaselineInterestCents = if (tx.occurredAt <= plan.ledgerBaselineAt) receivedInterest else plan.ledgerBaselineInterestCents,
+                                ledgerBaselineAt = if (tx.occurredAt <= plan.ledgerBaselineAt) reanchorAt else plan.ledgerBaselineAt,
+                                updatedAt = reanchorAt
+                            )
+                        )
+                    }
+                }
                 TransactionType.LOAN_PAYMENT -> tx.loanPlanId?.let { planId ->
                     database.loanPlanDao().findById(planId)?.let { plan ->
                         val current = jsonToInstallments(plan.installmentsJson)
@@ -1147,8 +1520,25 @@ class LedgerRepository(
                         )
                     }
                 }
-                // 借款计划建档时已经记录了本金；借款到账流水只是资金证据，删除它不能再次改动计划本金。
-                TransactionType.LOAN_DISBURSEMENT -> Unit
+                TransactionType.LOAN_DISBURSEMENT -> tx.loanPlanId?.let { planId ->
+                    database.loanPlanDao().findById(planId)?.let { plan ->
+                        if (plan.originType == "DISBURSEMENT_EVENT" && plan.disbursementTransactionId == tx.id) {
+                            val downstream = database.transactionDao().findActiveByLoanPlan(planId).filter {
+                                it.id != tx.id && (it.type == TransactionType.LOAN_PAYMENT.name || it.type == TransactionType.LOAN_PREPAYMENT.name)
+                            }
+                            require(downstream.isEmpty()) {
+                                "这笔到账后已有还款或提前还款；请先处理后续流水，或把贷款迁移为期初存量贷款"
+                            }
+                            database.loanPlanDao().upsert(
+                                plan.copy(
+                                    originType = "PENDING_DISBURSEMENT",
+                                    disbursementTransactionId = null,
+                                    status = "PENDING_DISBURSEMENT"
+                                )
+                            )
+                        }
+                    }
+                }
                 TransactionType.LOAN_PREPAYMENT -> tx.loanPlanId?.let { planId ->
                     database.loanPlanDao().findById(planId)?.let { plan ->
                         database.loanPlanDao().upsert(
@@ -1178,8 +1568,37 @@ class LedgerRepository(
         database.withTransaction {
             val tx = requireNotNull(database.transactionDao().findIncludingDeleted(id)) { "垃圾箱中没有这条流水" }
             require(tx.deletedAt != null) { "这条流水不在垃圾箱" }
+            tx.notificationId?.let { notificationId ->
+                require(database.transactionDao().findActiveByNotificationId(notificationId) == null) {
+                    "同一通知已重新记账，不能恢复旧垃圾箱流水"
+                }
+            }
             restoreTransactionEffectsFromSnapshot(tx)
             check(database.transactionDao().restoreFromTrash(id) == 1) { "流水状态已变化，请刷新后重试" }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = tx.id,
+                action = EvidenceAction.RESTORED,
+                payload = JSONObject().put("restoredIntoCurrentTimeline", true)
+            )
+            tx.loanPlanId?.let { planId ->
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.LOAN_PLAN,
+                    subjectId = planId,
+                    action = EvidenceAction.EFFECT_RESTORED,
+                    payload = JSONObject()
+                        .put("transactionId", tx.id)
+                        .put("transactionType", tx.type)
+                )
+            }
+            tx.lendingPlanId?.let { planId ->
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.LENDING_PLAN,
+                    subjectId = planId,
+                    action = EvidenceAction.EFFECT_RESTORED,
+                    payload = JSONObject().put("transactionId", tx.id)
+                )
+            }
             recomputeBalance(tx.accountId)
             tx.notificationId?.let { nid ->
                 database.rawNotificationDao().updateStatus(nid, "LINKED")
@@ -1189,13 +1608,14 @@ class LedgerRepository(
     }
 
     private suspend fun restoreTransactionEffectsFromSnapshot(tx: TransactionEntity) {
-        val effectful = tx.loanPlanId != null || TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT
+        val effectful = tx.loanPlanId != null || tx.lendingPlanId != null ||
+            TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT
         if (!effectful) return
         val context = requireNotNull(tx.trashContextJson) { "缺少删除联动快照，无法安全恢复" }
         val root = JSONObject(context)
-        val expectedAfter = root.getJSONObject("after").toString()
+        val expectedAfter = root.getJSONObject("after")
         val current = requireNotNull(captureTransactionEffectState(tx)) { "关联数据不存在，无法安全恢复" }
-        require(JSONObject(current).toString() == JSONObject(expectedAfter).toString()) {
+        require(jsonStructurallyEquals(JSONObject(current), expectedAfter)) {
             "删除后关联贷款或报销数据已变化，不能强行恢复这条流水"
         }
         applyTransactionEffectState(root.getJSONObject("before"))
@@ -1207,6 +1627,13 @@ class LedgerRepository(
             return JSONObject()
                 .put("kind", "LOAN")
                 .put("plan", loanPlanToTrashJson(plan))
+                .toString()
+        }
+        tx.lendingPlanId?.let { planId ->
+            val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "关联出借计划不存在" }
+            return JSONObject()
+                .put("kind", "LENDING")
+                .put("plan", lendingPlanToTrashJson(plan))
                 .toString()
         }
         if (TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT) {
@@ -1231,6 +1658,7 @@ class LedgerRepository(
     private suspend fun applyTransactionEffectState(state: JSONObject) {
         when (state.getString("kind")) {
             "LOAN" -> database.loanPlanDao().upsert(trashJsonToLoanPlan(state.getJSONObject("plan")))
+            "LENDING" -> database.lendingPlanDao().upsert(trashJsonToLendingPlan(state.getJSONObject("plan")))
             "REIMBURSEMENT" -> {
                 val expenses = state.getJSONArray("expenses")
                 for (index in 0 until expenses.length()) {
@@ -1242,33 +1670,6 @@ class LedgerRepository(
             }
         }
     }
-
-    private fun loanPlanToTrashJson(plan: LoanPlanEntity): JSONObject = JSONObject()
-        .put("id", plan.id)
-        .put("accountId", plan.accountId)
-        .put("principalCents", plan.principalCents)
-        .put("startDateEpochDay", plan.startDateEpochDay)
-        .put("repaymentMethod", plan.repaymentMethod)
-        .put("installmentsJson", plan.installmentsJson)
-        .put("annualRateBps", plan.annualRateBps)
-        .put("remainingPrincipalCents", plan.remainingPrincipalCents)
-        .put("earlyRepaidCents", plan.earlyRepaidCents)
-        .put("repaymentDay", plan.repaymentDay ?: JSONObject.NULL)
-        .put("status", plan.status)
-
-    private fun trashJsonToLoanPlan(json: JSONObject): LoanPlanEntity = LoanPlanEntity(
-        id = json.getString("id"),
-        accountId = json.getString("accountId"),
-        principalCents = json.getLong("principalCents"),
-        startDateEpochDay = json.getLong("startDateEpochDay"),
-        repaymentMethod = json.getString("repaymentMethod"),
-        installmentsJson = json.getString("installmentsJson"),
-        annualRateBps = json.getInt("annualRateBps"),
-        remainingPrincipalCents = json.getLong("remainingPrincipalCents"),
-        earlyRepaidCents = json.getLong("earlyRepaidCents"),
-        repaymentDay = if (json.isNull("repaymentDay")) null else json.getInt("repaymentDay"),
-        status = json.getString("status")
-    )
 
     suspend fun permanentlyDeleteTransactionFromTrash(id: String) {
         database.withTransaction {
@@ -1289,8 +1690,14 @@ class LedgerRepository(
         if (TransactionType.valueOf(tx.type) == TransactionType.REIMBURSEMENT) {
             database.reimbursementLinkDao().deleteByReimbursement(tx.id)
         }
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.TRANSACTION,
+            subjectId = tx.id,
+            action = EvidenceAction.PURGED,
+            payload = JSONObject().put("notificationTombstoneRetained", tx.notificationId != null)
+        )
         database.transactionDao().deleteById(tx.id)
-        // 原始通知墓碑故意保留；否则短信箱补扫会把永久删除的流水再次变成待确认。
+        // 原始通知继续保留在待确认箱；用户可按原始证据重新记账，稳定证据 ID 仍阻止重复插入。
     }
 
     /** 待确认贷款扣款：通知认领、真实还款、期次推进和状态更新必须同一事务。 */
@@ -1350,7 +1757,7 @@ class LedgerRepository(
             require(cashAccount.type == AccountType.ASSET.name) { "借款到账必须进入资产账户" }
             val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
                 ?: System.currentTimeMillis()
-            addTransaction(
+            val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = amountCents,
                 type = TransactionType.LOAN_DISBURSEMENT,
@@ -1361,7 +1768,7 @@ class LedgerRepository(
                 loanPlanId = plan.id,
                 notificationId = notificationId
             )
-            // 借款计划本金在建计划时已存在；确认这里只落到账事件，不能重复增加负债。
+            activateLoanPlanFromDisbursement(plan, transactionId, amountCents, postedAt)
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             if (bankBalanceCents != null && bankCardTail != null) {
                 applyBankBalance(cashAccountId, bankCardTail, bankBalanceCents, postedAt)
@@ -1392,16 +1799,27 @@ class LedgerRepository(
         refundOfId: String? = null,
         necessity: Boolean? = null,
         channel: String? = null,
-        notificationId: String? = null
-    ) {
+        notificationId: String? = null,
+        lendingPlanId: String? = null,
+        evidenceSources: List<EvidenceSourceRef>? = null,
+        evidenceGroupId: String? = null,
+        evidenceRole: String = "POSTED_EVENT"
+    ): String {
         require(amountCents > 0)
-        database.withTransaction {
-            requireNotNull(database.accountDao().find(accountId))
+        return database.withTransaction {
+            val account = requireNotNull(database.accountDao().find(accountId))
+            requireSufficientAssetBalance(
+                accountId = account.id,
+                amountCents = amountCents,
+                type = type,
+                occurredAt = occurredAt
+            )
             // 退款只使用用户在编辑器里明确选中的原消费；不再按金额猜测，避免冲错分类和预算。
             val linkedRefund = refundOfId.takeIf { type == TransactionType.REFUND }
+            val transactionId = UUID.randomUUID().toString()
             database.transactionDao().insert(
                 TransactionEntity(
-                    id = UUID.randomUUID().toString(),
+                    id = transactionId,
                     accountId = accountId,
                     amountCents = amountCents,
                     type = type.name,
@@ -1418,10 +1836,76 @@ class LedgerRepository(
                     principalCents = principalCents,
                     interestCents = interestCents,
                     feeCents = feeCents,
-                    loanPlanId = loanPlanId
+                    loanPlanId = loanPlanId,
+                    lendingPlanId = lendingPlanId
                 )
             )
+            val sources = evidenceSources ?: when {
+                notificationId != null -> listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId))
+                recurringRuleId != null -> listOf(EvidenceSourceRef(EvidenceSourceType.RECURRING_RULE, recurringRuleId))
+                else -> listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:transaction:$transactionId"))
+            }
+            val groupId = evidenceGroupId ?: when {
+                notificationId != null -> "notification:$notificationId"
+                recurringRuleId != null -> "recurring:$recurringRuleId:$transactionId"
+                else -> "manual:transaction:$transactionId"
+            }
+            evidenceRecorder.link(
+                groupId = groupId,
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = transactionId,
+                subjectRole = evidenceRole,
+                sources = sources,
+                linkedAt = occurredAt
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = transactionId,
+                action = EvidenceAction.CREATED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("type", type.name)
+                    .put("amountCents", amountCents)
+                    .put("accountId", accountId)
+                    .put("principalCents", principalCents)
+                    .put("interestCents", interestCents)
+                    .put("feeCents", feeCents)
+                    .put("lendingPlanId", lendingPlanId ?: JSONObject.NULL)
+            )
             recomputeBalance(accountId)
+            transactionId
+        }
+    }
+
+    /**
+     * 资产账户不能在当前余额基础上继续产生负数余额。
+     * 负债账户（信用卡/贷款）允许支出增加欠款；早于最近余额检查点的历史事件已包含在锚点中，
+     * 修改它不会再次改变当前可用余额。编辑同一事件时先撤销旧事件对当前余额的影响，再校验新值。
+     */
+    private suspend fun requireSufficientAssetBalance(
+        accountId: String,
+        amountCents: Long,
+        type: TransactionType,
+        occurredAt: Long,
+        replacing: TransactionEntity? = null
+    ) {
+        val account = requireNotNull(database.accountDao().find(accountId)) { "资金账户不存在" }
+        if (account.type != AccountType.ASSET.name) return
+        val checkpoint = database.balanceCheckpointDao().latestFor(accountId)
+        fun effectiveDelta(txType: TransactionType, cents: Long, at: Long): Long =
+            if (checkpoint == null || at > checkpoint.checkedAt) {
+                BalanceMath.transactionDelta(AccountType.ASSET, txType, cents)
+            } else 0L
+
+        val availableBefore = account.balanceCents - (replacing
+            ?.takeIf { it.accountId == accountId }
+            ?.let { effectiveDelta(TransactionType.valueOf(it.type), it.amountCents, it.occurredAt) }
+            ?: 0L)
+        val proposedDelta = effectiveDelta(type, amountCents, occurredAt)
+        val projected = availableBefore + proposedDelta
+        require(projected >= 0L) {
+            val shortfall = -projected
+            "资产账户余额不足，还差 ${shortfall / 100}.${(shortfall % 100).toString().padStart(2, '0')} 元"
         }
     }
 
@@ -1436,7 +1920,8 @@ class LedgerRepository(
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
         expenseIds: List<String>,
-        source: String? = null
+        source: String? = null,
+        notificationId: String? = null
     ) {
         require(amountCents > 0)
         database.withTransaction {
@@ -1462,8 +1947,27 @@ class LedgerRepository(
                     category = TransactionCategory.UNCATEGORIZED.name,
                     occurredAt = occurredAt,
                     merchant = source?.trim()?.takeIf { it.isNotEmpty() },
-                    note = note?.trim()?.takeIf { it.isNotEmpty() }
+                    note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    notificationId = notificationId
                 )
+            )
+            val evidenceSource = notificationId?.let {
+                EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, it)
+            } ?: EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:transaction:$txId")
+            evidenceRecorder.link(
+                groupId = notificationId?.let { "notification:$it" } ?: "manual:transaction:$txId",
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = txId,
+                subjectRole = "REIMBURSEMENT_RECEIPT",
+                sources = listOf(evidenceSource),
+                linkedAt = occurredAt
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = txId,
+                action = EvidenceAction.CREATED,
+                occurredAt = occurredAt,
+                payload = JSONObject().put("type", TransactionType.REIMBURSEMENT.name).put("amountCents", amountCents)
             )
             expenses.zip(covers).forEach { (expense, cover) ->
                 if (cover > 0) {
@@ -1546,13 +2050,34 @@ class LedgerRepository(
             )
             recomputeBalance(old.accountId)
             if (accountId != old.accountId) recomputeBalance(accountId)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject()
+                    .put("role", "REIMBURSEMENT_RECEIPT")
+                    .put("beforeAmountCents", old.amountCents)
+                    .put("afterAmountCents", amountCents)
+                    .put("linkedExpenseCount", expenses.size)
+            )
         }
     }
 
-    suspend fun addTransfer(fromAccountId: String, toAccountId: String, amountCents: Long, note: String?, occurredAt: Long) {
+    suspend fun addTransfer(
+        fromAccountId: String,
+        toAccountId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long,
+        lendingPlanId: String? = null,
+        lendingRole: String? = null,
+        evidenceSources: List<EvidenceSourceRef>? = null,
+        evidenceGroupId: String? = null,
+        evidenceRole: String = "POSTED_EVENT"
+    ): String {
         require(amountCents > 0)
         require(fromAccountId != toAccountId)
-        database.withTransaction {
+        return database.withTransaction {
             requireNotNull(database.accountDao().find(fromAccountId))
             requireNotNull(database.accountDao().find(toAccountId))
             val transferId = UUID.randomUUID().toString()
@@ -1563,12 +2088,37 @@ class LedgerRepository(
                     toAccountId = toAccountId,
                     amountCents = amountCents,
                     occurredAt = occurredAt,
-                    note = note?.trim()?.takeIf { it.isNotEmpty() }
+                    note = note?.trim()?.takeIf { it.isNotEmpty() },
+                    lendingPlanId = lendingPlanId,
+                    lendingRole = lendingRole
                 )
+            )
+            val sources = evidenceSources
+                ?: listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:transfer:$transferId"))
+            evidenceRecorder.link(
+                groupId = evidenceGroupId ?: "manual:transfer:$transferId",
+                subjectType = EvidenceSubjectType.TRANSFER,
+                subjectId = transferId,
+                subjectRole = evidenceRole,
+                sources = sources,
+                linkedAt = occurredAt
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSFER,
+                subjectId = transferId,
+                action = EvidenceAction.CREATED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("fromAccountId", fromAccountId)
+                    .put("toAccountId", toAccountId)
+                    .put("amountCents", amountCents)
+                    .put("lendingPlanId", lendingPlanId ?: JSONObject.NULL)
+                    .put("lendingRole", lendingRole ?: JSONObject.NULL)
             )
             cardInstallmentService.autoMatchTransfer(transferId)
             recomputeBalance(fromAccountId)
             recomputeBalance(toAccountId)
+            transferId
         }
     }
 
@@ -1600,9 +2150,33 @@ class LedgerRepository(
             val tf = database.transferDao().findById(id) ?: return@withTransaction
             val before = captureTransferEffectState(id)
             cardInstallmentService.reverseTransferMatches(id)
+            rollbackLendingTransferEffects(tf)
             val after = captureTransferEffectState(id)
             check(database.transferDao().moveToTrash(id, deletedAt, JSONObject().put("before", JSONObject(before)).put("after", JSONObject(after)).toString()) == 1) {
                 "划转状态已变化，请刷新后重试"
+            }
+            updateRawNotificationLifecycleForTransfer(
+                transferId = tf.id,
+                status = "IGNORED",
+                note = "关联划转已移入垃圾箱；保留忽略墓碑，防止通知补扫复活"
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSFER,
+                subjectId = tf.id,
+                action = EvidenceAction.TRASHED,
+                occurredAt = deletedAt,
+                payload = JSONObject().put("amountCents", tf.amountCents)
+            )
+            tf.lendingPlanId?.let { planId ->
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.LENDING_PLAN,
+                    subjectId = planId,
+                    action = EvidenceAction.EFFECT_REVERSED,
+                    occurredAt = deletedAt,
+                    payload = JSONObject()
+                        .put("transferId", id)
+                        .put("lendingRole", tf.lendingRole ?: JSONObject.NULL)
+                )
             }
             recomputeBalance(tf.fromAccountId)
             recomputeBalance(tf.toAccountId)
@@ -1616,11 +2190,44 @@ class LedgerRepository(
             val context = requireNotNull(tf.trashContextJson) { "缺少划转联动快照，无法安全恢复" }
             val root = JSONObject(context)
             val current = captureTransferEffectState(id)
-            require(current == root.getJSONObject("after").toString()) {
+            require(jsonStructurallyEquals(JSONObject(current), root.getJSONObject("after"))) {
                 "删除后信用卡分期状态已变化，不能强行恢复这条划转"
             }
             applyTransferEffectState(root.getJSONObject("before").toString())
             check(database.transferDao().restoreFromTrash(id) == 1) { "划转状态已变化，请刷新后重试" }
+            updateRawNotificationLifecycleForTransfer(
+                transferId = tf.id,
+                status = "LINKED",
+                note = "关联划转已从垃圾箱恢复"
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSFER,
+                subjectId = tf.id,
+                action = EvidenceAction.RESTORED,
+                payload = JSONObject().put("restoredIntoCurrentTimeline", true)
+            )
+            database.creditCardInstallmentPaymentMatchDao().findByTransfer(id)
+                .filter { it.status == "AUTO_MATCHED" || it.status == "USER_CONFIRMED" }
+                .map { it.planId }
+                .distinct()
+                .forEach { planId ->
+                    evidenceRecorder.lifecycle(
+                        subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+                        subjectId = planId,
+                        action = EvidenceAction.EFFECT_RESTORED,
+                        payload = JSONObject().put("transferId", id)
+                    )
+                }
+            tf.lendingPlanId?.let { planId ->
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.LENDING_PLAN,
+                    subjectId = planId,
+                    action = EvidenceAction.EFFECT_RESTORED,
+                    payload = JSONObject()
+                        .put("transferId", id)
+                        .put("lendingRole", tf.lendingRole ?: JSONObject.NULL)
+                )
+            }
             recomputeBalance(tf.fromAccountId)
             recomputeBalance(tf.toAccountId)
         }
@@ -1630,15 +2237,44 @@ class LedgerRepository(
         database.withTransaction {
             val tf = requireNotNull(database.transferDao().findIncludingDeleted(id)) { "垃圾箱中没有这条划转" }
             require(tf.deletedAt != null) { "只能永久删除垃圾箱中的划转" }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSFER,
+                subjectId = tf.id,
+                action = EvidenceAction.PURGED
+            )
             database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(id)
             database.transferDao().delete(id)
         }
+    }
+
+    private suspend fun updateRawNotificationLifecycleForTransfer(
+        transferId: String,
+        status: String,
+        note: String
+    ) {
+        database.ledgerEvidenceLinkDao()
+            .findBySubject(EvidenceSubjectType.TRANSFER, transferId)
+            .asSequence()
+            .filter { it.sourceType == EvidenceSourceType.RAW_NOTIFICATION }
+            .map { it.sourceId }
+            .distinct()
+            .forEach { notificationId ->
+                database.rawNotificationDao().updateStatus(notificationId, status)
+                database.rawNotificationDao().updateProcessingNote(notificationId, note)
+            }
     }
 
     suspend fun purgeExpiredTransferTrash(now: Long = System.currentTimeMillis()): Int =
         database.withTransaction {
             val expired = database.transferDao().deletedAtOrBefore(now - TRANSACTION_TRASH_RETENTION_MS)
             expired.forEach {
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSFER,
+                    subjectId = it.id,
+                    action = EvidenceAction.PURGED,
+                    occurredAt = now,
+                    payload = JSONObject().put("expired", true)
+                )
                 database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(it.id)
                 database.transferDao().delete(it.id)
             }
@@ -1650,80 +2286,81 @@ class LedgerRepository(
         val planIds = matches.map { it.planId }.toSet()
         val schedules = planIds.flatMap { database.creditCardInstallmentScheduleDao().findByPlan(it) }
         val plans = planIds.mapNotNull { database.creditCardInstallmentDao().findById(it) }
+        val transfer = database.transferDao().findIncludingDeleted(transferId)
+        val lendingPlan = transfer?.lendingPlanId?.let { database.lendingPlanDao().findById(it) }
         return JSONObject()
-            .put("matches", JSONArray().apply { matches.sortedWith(compareBy({ it.scheduleId }, { it.planId })).forEach { put(matchToJson(it)) } })
-            .put("schedules", JSONArray().apply { schedules.sortedBy { it.id }.forEach { put(scheduleToJson(it)) } })
-            .put("plans", JSONArray().apply { plans.sortedBy { it.id }.forEach { put(installmentPlanToJson(it)) } })
+            .put("matches", JSONArray().apply { matches.sortedWith(compareBy({ it.scheduleId }, { it.planId })).forEach { put(installmentMatchToTrashJson(it)) } })
+            .put("schedules", JSONArray().apply { schedules.sortedBy { it.id }.forEach { put(installmentScheduleToTrashJson(it)) } })
+            .put("plans", JSONArray().apply { plans.sortedBy { it.id }.forEach { put(installmentPlanToTrashJson(it)) } })
+            .put("lendingPlan", lendingPlan?.let(::lendingPlanToTrashJson) ?: JSONObject.NULL)
             .toString()
     }
 
     private suspend fun applyTransferEffectState(state: String) {
         val root = JSONObject(state)
+        if (!root.isNull("lendingPlan")) {
+            database.lendingPlanDao().upsert(trashJsonToLendingPlan(root.getJSONObject("lendingPlan")))
+        }
         val plans = root.getJSONArray("plans")
         for (index in 0 until plans.length()) {
-            database.creditCardInstallmentDao().upsert(jsonToInstallmentPlan(plans.getJSONObject(index)))
+            database.creditCardInstallmentDao().upsert(trashJsonToInstallmentPlan(plans.getJSONObject(index)))
         }
         val schedules = root.getJSONArray("schedules")
         val scheduleRows = buildList {
-            for (index in 0 until schedules.length()) add(jsonToSchedule(schedules.getJSONObject(index)))
+            for (index in 0 until schedules.length()) add(trashJsonToInstallmentSchedule(schedules.getJSONObject(index)))
         }
         if (scheduleRows.isNotEmpty()) database.creditCardInstallmentScheduleDao().upsertAll(scheduleRows)
         val matches = root.getJSONArray("matches")
         val matchRows = buildList {
-            for (index in 0 until matches.length()) add(jsonToMatch(matches.getJSONObject(index)))
+            for (index in 0 until matches.length()) add(trashJsonToInstallmentMatch(matches.getJSONObject(index)))
         }
         if (matchRows.isNotEmpty()) database.creditCardInstallmentPaymentMatchDao().upsertAll(matchRows)
     }
 
-    private fun matchToJson(value: CreditCardInstallmentPaymentMatchEntity) = JSONObject()
-        .put("transferId", value.transferId).put("scheduleId", value.scheduleId).put("planId", value.planId)
-        .put("paymentCents", value.paymentCents).put("principalCents", value.principalCents)
-        .put("status", value.status).put("source", value.source).put("createdAt", value.createdAt)
-        .put("resolvedAt", value.resolvedAt ?: JSONObject.NULL)
-
-    private fun jsonToMatch(value: JSONObject) = CreditCardInstallmentPaymentMatchEntity(
-        transferId = value.getString("transferId"), scheduleId = value.getString("scheduleId"), planId = value.getString("planId"),
-        paymentCents = value.getLong("paymentCents"), principalCents = value.getLong("principalCents"),
-        status = value.getString("status"), source = value.getString("source"), createdAt = value.getLong("createdAt"),
-        resolvedAt = if (value.isNull("resolvedAt")) null else value.getLong("resolvedAt")
-    )
-
-    private fun scheduleToJson(value: CreditCardInstallmentScheduleEntity) = JSONObject()
-        .put("id", value.id).put("planId", value.planId).put("revision", value.revision).put("number", value.number)
-        .put("dueDateEpochDay", value.dueDateEpochDay).put("principalDueCents", value.principalDueCents)
-        .put("expectedInterestCents", value.expectedInterestCents).put("expectedFeeCents", value.expectedFeeCents)
-        .put("expectedUnclassifiedChargeCents", value.expectedUnclassifiedChargeCents)
-        .put("principalPaidCents", value.principalPaidCents).put("interestPaidCents", value.interestPaidCents)
-        .put("feePaidCents", value.feePaidCents).put("status", value.status)
-
-    private fun jsonToSchedule(value: JSONObject) = CreditCardInstallmentScheduleEntity(
-        id = value.getString("id"), planId = value.getString("planId"), revision = value.getInt("revision"), number = value.getInt("number"),
-        dueDateEpochDay = value.getLong("dueDateEpochDay"), principalDueCents = value.getLong("principalDueCents"),
-        expectedInterestCents = value.getLong("expectedInterestCents"), expectedFeeCents = value.getLong("expectedFeeCents"),
-        expectedUnclassifiedChargeCents = value.getLong("expectedUnclassifiedChargeCents"), principalPaidCents = value.getLong("principalPaidCents"),
-        interestPaidCents = value.getLong("interestPaidCents"), feePaidCents = value.getLong("feePaidCents"), status = value.getString("status")
-    )
-
-    private fun installmentPlanToJson(value: CreditCardInstallmentEntity) = JSONObject()
-        .put("id", value.id).put("cardAccountId", value.cardAccountId).put("label", value.label)
-        .put("originalPrincipalCents", value.originalPrincipalCents).put("remainingPrincipalCents", value.remainingPrincipalCents)
-        .put("monthlyPaymentCents", value.monthlyPaymentCents).put("feeCentsPerPeriod", value.feeCentsPerPeriod)
-        .put("periodsRemaining", value.periodsRemaining).put("startDateEpochDay", value.startDateEpochDay)
-        .put("installmentType", value.installmentType).put("installmentCount", value.installmentCount)
-        .put("nextDueDateEpochDay", value.nextDueDateEpochDay ?: JSONObject.NULL)
-        .put("statementCycleStartEpochDay", value.statementCycleStartEpochDay ?: JSONObject.NULL)
-        .put("status", value.status).put("scheduleRevision", value.scheduleRevision).put("createdAt", value.createdAt).put("updatedAt", value.updatedAt)
-
-    private fun jsonToInstallmentPlan(value: JSONObject) = CreditCardInstallmentEntity(
-        id = value.getString("id"), cardAccountId = value.getString("cardAccountId"), label = value.getString("label"),
-        originalPrincipalCents = value.getLong("originalPrincipalCents"), remainingPrincipalCents = value.getLong("remainingPrincipalCents"),
-        monthlyPaymentCents = value.getLong("monthlyPaymentCents"), feeCentsPerPeriod = value.getLong("feeCentsPerPeriod"),
-        periodsRemaining = value.getInt("periodsRemaining"), startDateEpochDay = value.getLong("startDateEpochDay"),
-        installmentType = value.getString("installmentType"), installmentCount = value.getInt("installmentCount"),
-        nextDueDateEpochDay = if (value.isNull("nextDueDateEpochDay")) null else value.getLong("nextDueDateEpochDay"),
-        statementCycleStartEpochDay = if (value.isNull("statementCycleStartEpochDay")) null else value.getLong("statementCycleStartEpochDay"),
-        status = value.getString("status"), scheduleRevision = value.getInt("scheduleRevision"), createdAt = value.getLong("createdAt"), updatedAt = value.getLong("updatedAt")
-    )
+    private suspend fun rollbackLendingTransferEffects(transfer: TransferEntity) {
+        val planId = transfer.lendingPlanId ?: return
+        val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "关联出借计划不存在" }
+        when (transfer.lendingRole) {
+            LendingTransferRole.DISBURSEMENT -> {
+                require(plan.disbursementTransferId == transfer.id && plan.originType == LendingOriginType.DISBURSEMENT_TRANSFER) {
+                    "借出划转与出借计划来源不一致"
+                }
+                val downstreamTransfers = database.transferDao().findActiveByLendingPlan(planId)
+                    .filter { it.id != transfer.id && it.lendingRole == LendingTransferRole.PRINCIPAL_REPAYMENT }
+                val downstreamInterest = database.transactionDao().findActiveByLendingPlan(planId)
+                require(downstreamTransfers.isEmpty() && downstreamInterest.isEmpty()) {
+                    "借出后已有本金或利息收回；请先处理后续流水，或把计划迁移为期初应收"
+                }
+                database.lendingPlanDao().upsert(
+                    plan.copy(
+                        remainingPrincipalCents = 0L,
+                        status = LendingPlanStatus.PENDING_DISBURSEMENT,
+                        originType = LendingOriginType.PENDING_DISBURSEMENT,
+                        disbursementTransferId = null,
+                        ledgerBaselinePrincipalCents = 0L,
+                        ledgerBaselineInterestCents = 0L,
+                        ledgerBaselineAt = transfer.occurredAt,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            LendingTransferRole.PRINCIPAL_REPAYMENT -> {
+                val restoredRemaining = plan.remainingPrincipalCents + transfer.amountCents
+                require(restoredRemaining <= plan.principalCents) { "恢复后的应收本金超过原始本金" }
+                val reanchorAt = System.currentTimeMillis()
+                database.lendingPlanDao().upsert(
+                    plan.copy(
+                        remainingPrincipalCents = restoredRemaining,
+                        status = LendingPlanStatus.ACTIVE,
+                        ledgerBaselinePrincipalCents = if (transfer.occurredAt <= plan.ledgerBaselineAt) restoredRemaining else plan.ledgerBaselinePrincipalCents,
+                        ledgerBaselineAt = if (transfer.occurredAt <= plan.ledgerBaselineAt) reanchorAt else plan.ledgerBaselineAt,
+                        updatedAt = reanchorAt
+                    )
+                )
+            }
+            else -> error("出借划转缺少有效角色")
+        }
+    }
 
     // ── Reimbursement ──
 
@@ -1731,11 +2368,40 @@ class LedgerRepository(
         database.transactionDao().observeReimbursable()
 
     suspend fun toggleReimbursable(id: String, isReimbursable: Boolean) {
-        database.transactionDao().updateReimbursable(id, isReimbursable)
+        database.withTransaction {
+            val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
+            database.transactionDao().updateReimbursable(id, isReimbursable)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject().put("field", "isReimbursable").put("before", old.isReimbursable).put("after", isReimbursable)
+            )
+        }
     }
 
     suspend fun linkToRecurringRule(transactionId: String, ruleId: String?) {
-        database.transactionDao().updateRecurringRuleId(transactionId, ruleId)
+        database.withTransaction {
+            val transaction = requireNotNull(database.transactionDao().findById(transactionId)) { "流水不存在" }
+            if (ruleId != null) requireNotNull(database.recurringRuleDao().findById(ruleId)) { "周期规则不存在" }
+            database.transactionDao().updateRecurringRuleId(transactionId, ruleId)
+            if (ruleId != null) {
+                evidenceRecorder.link(
+                    groupId = "recurring:$ruleId:$transactionId",
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = transactionId,
+                    subjectRole = "RECURRING_OCCURRENCE",
+                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.RECURRING_RULE, ruleId)),
+                    linkedAt = transaction.occurredAt
+                )
+            }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = transactionId,
+                action = EvidenceAction.LINKED,
+                payload = JSONObject().put("recurringRuleId", ruleId ?: JSONObject.NULL)
+            )
+        }
     }
 
     suspend fun transactionsByRule(ruleId: String): List<TransactionEntity> =
@@ -1958,11 +2624,44 @@ class LedgerRepository(
     val recurringRules: Flow<List<RecurringRuleEntity>> = database.recurringRuleDao().observeAll()
 
     suspend fun saveRecurringRule(rule: RecurringRuleEntity) {
-        database.recurringRuleDao().upsert(rule)
+        database.withTransaction {
+            val existing = database.recurringRuleDao().findById(rule.id)
+            val occurredAt = System.currentTimeMillis()
+            database.recurringRuleDao().upsert(rule)
+            if (existing == null) {
+                evidenceRecorder.link(
+                    groupId = "manual:recurring-rule:${rule.id}",
+                    subjectType = EvidenceSubjectType.RECURRING_RULE,
+                    subjectId = rule.id,
+                    subjectRole = "RULE_ORIGIN",
+                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:recurring-rule:${rule.id}")),
+                    linkedAt = occurredAt
+                )
+            }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.RECURRING_RULE,
+                subjectId = rule.id,
+                action = if (existing == null) EvidenceAction.CREATED else EvidenceAction.EDITED,
+                occurredAt = occurredAt,
+                payload = JSONObject()
+                    .put("accountId", rule.accountId)
+                    .put("amountCents", rule.amountCents)
+                    .put("nextRunAt", rule.nextRunAt)
+            )
+        }
     }
 
     suspend fun deleteRecurringRule(id: String) {
-        database.recurringRuleDao().deleteById(id)
+        database.withTransaction {
+            requireNotNull(database.recurringRuleDao().findById(id)) { "周期规则不存在" }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.RECURRING_RULE,
+                subjectId = id,
+                action = EvidenceAction.PURGED,
+                payload = JSONObject().put("historicalOccurrencesRetained", true)
+            )
+            database.recurringRuleDao().deleteById(id)
+        }
     }
 
     /**
@@ -1985,6 +2684,20 @@ class LedgerRepository(
                     if (existing != null) {
                         if (existing.recurringRuleId == null) {
                             database.transactionDao().updateRecurringRuleId(existing.id, rule.id)
+                            evidenceRecorder.link(
+                                groupId = "recurring:${rule.id}:${existing.id}",
+                                subjectType = EvidenceSubjectType.TRANSACTION,
+                                subjectId = existing.id,
+                                subjectRole = "RECURRING_OCCURRENCE",
+                                sources = listOf(EvidenceSourceRef(EvidenceSourceType.RECURRING_RULE, rule.id)),
+                                linkedAt = existing.occurredAt
+                            )
+                            evidenceRecorder.lifecycle(
+                                subjectType = EvidenceSubjectType.TRANSACTION,
+                                subjectId = existing.id,
+                                action = EvidenceAction.LINKED,
+                                payload = JSONObject().put("recurringRuleId", rule.id)
+                            )
                             linked++
                         }
                         cursor = nextRun(cursor, rule.interval)
@@ -2097,11 +2810,77 @@ class LedgerRepository(
     val loanPlans: Flow<List<LoanPlanEntity>> = database.loanPlanDao().observeAll()
 
     suspend fun saveLoanPlan(plan: LoanPlanEntity) {
-        database.loanPlanDao().upsert(plan)
+        database.withTransaction {
+            val existing = database.loanPlanDao().findById(plan.id)
+            val now = System.currentTimeMillis()
+            val normalizedOrigin = when (plan.originType) {
+                "OPENING_BALANCE" -> plan.copy(status = if (plan.status == "PAID_OFF") "PAID_OFF" else "ACTIVE", disbursementTransactionId = null)
+                "PENDING_DISBURSEMENT" -> plan.copy(status = "PENDING_DISBURSEMENT", disbursementTransactionId = null)
+                "DISBURSEMENT_EVENT" -> {
+                    require(!plan.disbursementTransactionId.isNullOrBlank()) { "真实放款计划必须关联到账流水" }
+                    plan.copy(status = if (plan.status == "PAID_OFF") "PAID_OFF" else "ACTIVE")
+                }
+                else -> error("未知贷款来源：${plan.originType}")
+            }
+            val effectiveRemaining = remainingEffective(normalizedOrigin)
+            val resetsBaseline = existing == null ||
+                existing.originType != normalizedOrigin.originType ||
+                existing.remainingPrincipalCents != effectiveRemaining
+            val normalized = normalizedOrigin.copy(
+                remainingPrincipalCents = effectiveRemaining,
+                ledgerBaselinePrincipalCents = when {
+                    normalizedOrigin.originType == "PENDING_DISBURSEMENT" -> 0L
+                    resetsBaseline -> effectiveRemaining
+                    else -> existing!!.ledgerBaselinePrincipalCents
+                },
+                ledgerBaselineAt = if (resetsBaseline) now else existing!!.ledgerBaselineAt
+            )
+            database.loanPlanDao().upsert(normalized)
+            if (existing == null) {
+                val source = if (normalized.originType == "OPENING_BALANCE") {
+                    EvidenceSourceRef(EvidenceSourceType.OPENING_BALANCE, "opening:loan:${normalized.id}")
+                } else {
+                    EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:loan-contract:${normalized.id}")
+                }
+                evidenceRecorder.link(
+                    groupId = source.id,
+                    subjectType = EvidenceSubjectType.LOAN_PLAN,
+                    subjectId = normalized.id,
+                    subjectRole = "PLAN_ORIGIN",
+                    sources = listOf(source),
+                    linkedAt = normalized.startDateEpochDay * 86_400_000L
+                )
+            }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.LOAN_PLAN,
+                subjectId = normalized.id,
+                action = if (existing == null) EvidenceAction.CREATED else EvidenceAction.EDITED,
+                payload = JSONObject()
+                    .put("originType", normalized.originType)
+                    .put("status", normalized.status)
+                    .put("principalCents", normalized.principalCents)
+                    .put("remainingPrincipalCents", normalized.remainingPrincipalCents)
+            )
+        }
     }
 
     suspend fun deleteLoanPlan(id: String) {
-        database.loanPlanDao().deleteById(id)
+        database.withTransaction {
+            val plan = requireNotNull(database.loanPlanDao().findById(id)) { "贷款计划不存在" }
+            require(plan.status == "PENDING_DISBURSEMENT" && plan.originType == "PENDING_DISBURSEMENT") {
+                "已有负债或还款证据的贷款计划不能永久删除；结清后保留历史证据"
+            }
+            require(database.transactionDao().findIncludingDeletedByLoanPlan(id).isEmpty()) {
+                "该计划已有流水证据，不能永久删除"
+            }
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.LOAN_PLAN,
+                subjectId = id,
+                action = EvidenceAction.PURGED,
+                payload = JSONObject().put("reason", "UNFUNDED_PLAN_REMOVED")
+            )
+            database.loanPlanDao().deleteById(id)
+        }
     }
 
     /** 编辑单期（REQ 贷款页§5/§15）：任意一期单独改金额/状态；改完剩余本金按未还期次重算。 */
@@ -2114,28 +2893,40 @@ class LedgerRepository(
         feeCents: Long?,
         status: String?
     ) {
-        val plan = database.loanPlanDao().findById(planId) ?: return
-        val insts = jsonToInstallments(plan.installmentsJson).map { inst ->
-            if (inst.number != number) inst else inst.copy(
-                dueDateEpochDay = dueDateEpochDay ?: inst.dueDateEpochDay,
-                principal = principalCents?.let { Money(it) } ?: inst.principal,
-                interest = interestCents?.let { Money(it) } ?: inst.interest,
-                fee = feeCents?.let { Money(it) } ?: inst.fee,
-                status = status?.let { s -> runCatching { InstallmentStatus.valueOf(s) }.getOrDefault(inst.status) } ?: inst.status
+        database.withTransaction {
+            val plan = database.loanPlanDao().findById(planId) ?: return@withTransaction
+            require(plan.status != "PENDING_DISBURSEMENT") { "待到账计划尚不能编辑还款期次" }
+            val insts = jsonToInstallments(plan.installmentsJson).map { inst ->
+                if (inst.number != number) inst else inst.copy(
+                    dueDateEpochDay = dueDateEpochDay ?: inst.dueDateEpochDay,
+                    principal = principalCents?.let { Money(it) } ?: inst.principal,
+                    interest = interestCents?.let { Money(it) } ?: inst.interest,
+                    fee = feeCents?.let { Money(it) } ?: inst.fee,
+                    status = status?.let { s -> runCatching { InstallmentStatus.valueOf(s) }.getOrDefault(inst.status) } ?: inst.status
+                )
+            }
+            val unpaidSum = insts.filter { it.status != InstallmentStatus.PAID }.sumOf { it.principal.cents }
+            val editedAt = System.currentTimeMillis()
+            database.loanPlanDao().upsert(
+                plan.copy(
+                    installmentsJson = installmentsToJson(insts),
+                    remainingPrincipalCents = unpaidSum,
+                    earlyRepaidCents = 0L,
+                    ledgerBaselinePrincipalCents = unpaidSum,
+                    ledgerBaselineAt = editedAt
+                )
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.LOAN_PLAN,
+                subjectId = planId,
+                action = EvidenceAction.EDITED,
+                occurredAt = editedAt,
+                payload = JSONObject()
+                    .put("role", "INSTALLMENT_EDITED")
+                    .put("installmentNumber", number)
+                    .put("remainingPrincipalCents", unpaidSum)
             )
         }
-        val unpaidSum = insts.filter { it.status != InstallmentStatus.PAID }.sumOf { it.principal.cents }
-        // 审核 BUG-4 修复：编辑期次 = 用户以最新期次计划为准，剩余本金直接取未还期次本金和；
-        // 同时把 earlyRepaidCents 归零——否则部分提前还款（addLoanPrepayment 只加 earlyRepaidCents、
-        // 不重排期次）后，这里用旧期次的 unpaidSum 覆盖会把已提前还掉的本金重新加回剩余本金，
-        // 导致总负债虚高。编辑期次即视为新计划已体现提前还款，旧 earlyRepaidCents 不再适用。
-        database.loanPlanDao().upsert(
-            plan.copy(
-                installmentsJson = installmentsToJson(insts),
-                remainingPrincipalCents = unpaidSum,
-                earlyRepaidCents = 0L
-            )
-        )
     }
 
     // ── V5 借款到账 / 贷款还款（铁律：借款不是收入，还款不是消费）──
@@ -2150,7 +2941,9 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
-            addTransaction(
+            val requiredPlanId = requireNotNull(planId) { "借款到账必须关联贷款计划" }
+            val plan = requireNotNull(database.loanPlanDao().findById(requiredPlanId)) { "贷款计划不存在" }
+            val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = amountCents,
                 type = TransactionType.LOAN_DISBURSEMENT,
@@ -2158,9 +2951,51 @@ class LedgerRepository(
                 merchant = null,
                 note = note,
                 occurredAt = occurredAt,
-                loanPlanId = planId
+                loanPlanId = requiredPlanId
             )
-            // 贷款计划创建时已经登记本金；这笔流水只证明资金到账，不能再次增加负债。
+            activateLoanPlanFromDisbursement(plan, transactionId, amountCents, occurredAt)
+        }
+    }
+
+    private suspend fun activateLoanPlanFromDisbursement(
+        plan: LoanPlanEntity,
+        transactionId: String,
+        amountCents: Long,
+        occurredAt: Long
+    ) {
+        when (plan.originType) {
+            "PENDING_DISBURSEMENT" -> {
+                require(amountCents == plan.principalCents) { "到账金额必须与待放款本金一致；如有扣费请先按合同本金核对" }
+                val activated = plan.copy(
+                    originType = "DISBURSEMENT_EVENT",
+                    disbursementTransactionId = transactionId,
+                    status = "ACTIVE",
+                    remainingPrincipalCents = amountCents,
+                    ledgerBaselinePrincipalCents = amountCents,
+                    ledgerBaselineAt = occurredAt
+                )
+                database.loanPlanDao().upsert(activated)
+                evidenceRecorder.link(
+                    groupId = "loan-disbursement:$transactionId",
+                    subjectType = EvidenceSubjectType.LOAN_PLAN,
+                    subjectId = plan.id,
+                    subjectRole = "ACTIVATED_BY_DISBURSEMENT",
+                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, transactionId)),
+                    linkedAt = occurredAt
+                )
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.LOAN_PLAN,
+                    subjectId = plan.id,
+                    action = EvidenceAction.LINKED,
+                    occurredAt = occurredAt,
+                    payload = JSONObject().put("disbursementTransactionId", transactionId)
+                )
+            }
+            "OPENING_BALANCE" -> error("期初存量贷款不能再补造到账流水；新到账请创建待放款计划")
+            "DISBURSEMENT_EVENT" -> require(plan.disbursementTransactionId == transactionId) {
+                "贷款计划已经关联另一笔到账流水"
+            }
+            else -> error("未知贷款来源：${plan.originType}")
         }
     }
 
@@ -2179,10 +3014,11 @@ class LedgerRepository(
         require(totalCents > 0)
         require(principalCents >= 0 && interestCents >= 0 && feeCents >= 0)
         require(principalCents + interestCents + feeCents == totalCents) { "本金+利息+手续费必须等于总额" }
-        val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
-        require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
         database.withTransaction {
-            addTransaction(
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
+            require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以还款" }
+            require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
+            val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = totalCents,
                 type = TransactionType.LOAN_PAYMENT,
@@ -2214,6 +3050,7 @@ class LedgerRepository(
                     installmentsJson = installmentsToJson(insts)
                 )
             )
+            recordLoanEvent(planId, transactionId, "LOAN_PAYMENT", occurredAt, principalCents, interestCents, feeCents)
         }
     }
 
@@ -2248,10 +3085,11 @@ class LedgerRepository(
     ) {
         require(principalCents > 0)
         require(feeCents >= 0)
-        val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
-        require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
         database.withTransaction {
-            addTransaction(
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
+            require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以提前还款" }
+            require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
+            val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = principalCents + feeCents,
                 type = TransactionType.LOAN_PREPAYMENT,
@@ -2269,6 +3107,7 @@ class LedgerRepository(
                     earlyRepaidCents = plan.earlyRepaidCents + principalCents
                 )
             )
+            recordLoanEvent(planId, transactionId, "LOAN_PREPAYMENT", occurredAt, principalCents, 0L, feeCents)
         }
     }
 
@@ -2284,10 +3123,11 @@ class LedgerRepository(
     ) {
         require(principalCents >= 0 && interestCents >= 0 && feeCents >= 0)
         require(principalCents + interestCents + feeCents > 0) { "结清金额必须大于 0" }
-        val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
-        require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
         database.withTransaction {
-            addTransaction(
+            val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
+            require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以结清" }
+            require(principalCents == remainingEffective(plan)) { "结清本金必须等于当前剩余本金" }
+            val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = principalCents + interestCents + feeCents,
                 type = TransactionType.LOAN_PAYMENT,
@@ -2309,7 +3149,412 @@ class LedgerRepository(
                     status = "PAID_OFF"
                 )
             )
+            recordLoanEvent(planId, transactionId, "LOAN_SETTLEMENT", occurredAt, principalCents, interestCents, feeCents)
         }
+    }
+
+    private suspend fun recordLoanEvent(
+        planId: String,
+        transactionId: String,
+        role: String,
+        occurredAt: Long,
+        principalCents: Long,
+        interestCents: Long,
+        feeCents: Long
+    ) {
+        evidenceRecorder.link(
+            groupId = "loan-event:$transactionId",
+            subjectType = EvidenceSubjectType.LOAN_PLAN,
+            subjectId = planId,
+            subjectRole = role,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, transactionId)),
+            linkedAt = occurredAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.LOAN_PLAN,
+            subjectId = planId,
+            action = EvidenceAction.LINKED,
+            occurredAt = occurredAt,
+            payload = JSONObject()
+                .put("role", role)
+                .put("transactionId", transactionId)
+                .put("principalCents", principalCents)
+                .put("interestCents", interestCents)
+                .put("feeCents", feeCents)
+        )
+    }
+
+    // ── 出借计划：本金是应收资产划转，只有利息进入收入 ──
+
+    val lendingPlans: Flow<List<LendingPlanEntity>> = database.lendingPlanDao().observeAll()
+
+    suspend fun auditEvidence(): EvidenceAuditReport = LedgerEvidenceAuditService(database).run()
+
+    suspend fun createLendingPlan(draft: LendingPlanDraft): String = database.withTransaction {
+        require(draft.label.isNotBlank()) { "出借名称不能为空" }
+        require(draft.borrowerName.isNotBlank()) { "借款人不能为空" }
+        require(draft.principalCents > 0L) { "出借本金必须大于零" }
+        require(draft.expectedInterestCents >= 0L) { "预计利息不能为负数" }
+        require(draft.originType in setOf(LendingOriginType.OPENING_BALANCE, LendingOriginType.PENDING_DISBURSEMENT)) {
+            "新建出借只能选择期初存量或待借出"
+        }
+        require(draft.expectedDueDateEpochDay == null || draft.expectedDueDateEpochDay >= draft.startDateEpochDay) {
+            "预计收回日不能早于开始日"
+        }
+
+        val createdAt = System.currentTimeMillis()
+        val planId = UUID.randomUUID().toString()
+        val accountId = UUID.randomUUID().toString()
+        val openingPrincipal = if (draft.originType == LendingOriginType.OPENING_BALANCE) draft.principalCents else 0L
+        val status = if (draft.originType == LendingOriginType.OPENING_BALANCE) {
+            LendingPlanStatus.ACTIVE
+        } else {
+            LendingPlanStatus.PENDING_DISBURSEMENT
+        }
+        database.accountDao().upsert(
+            AccountEntity(
+                id = accountId,
+                name = "应收 · ${draft.borrowerName.trim()}",
+                type = AccountType.ASSET.name,
+                balanceCents = openingPrincipal,
+                balanceStatus = "CONFIRMED",
+                lastCheckedAt = createdAt,
+                groupName = "资产",
+                startDateEpochDay = draft.startDateEpochDay
+            )
+        )
+        database.balanceCheckpointDao().upsert(
+            BalanceCheckpointEntity(
+                id = "opening_$accountId",
+                accountId = accountId,
+                balanceCents = openingPrincipal,
+                checkedAt = Long.MIN_VALUE,
+                source = if (openingPrincipal > 0L) "OPENING_LENDING" else "OPENING"
+            )
+        )
+        val plan = LendingPlanEntity(
+            id = planId,
+            receivableAccountId = accountId,
+            label = draft.label.trim(),
+            borrowerName = draft.borrowerName.trim(),
+            principalCents = draft.principalCents,
+            remainingPrincipalCents = openingPrincipal,
+            expectedInterestCents = draft.expectedInterestCents,
+            startDateEpochDay = draft.startDateEpochDay,
+            expectedDueDateEpochDay = draft.expectedDueDateEpochDay,
+            status = status,
+            originType = draft.originType,
+            ledgerBaselinePrincipalCents = openingPrincipal,
+            ledgerBaselineAt = createdAt,
+            createdAt = createdAt,
+            updatedAt = createdAt
+        )
+        database.lendingPlanDao().upsert(plan)
+        val source = if (draft.originType == LendingOriginType.OPENING_BALANCE) {
+            EvidenceSourceRef(EvidenceSourceType.OPENING_BALANCE, "opening:lending:$planId")
+        } else {
+            EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:lending-contract:$planId")
+        }
+        evidenceRecorder.link(
+            groupId = source.id,
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = planId,
+            subjectRole = "PLAN_ORIGIN",
+            sources = listOf(source),
+            linkedAt = createdAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = planId,
+            action = EvidenceAction.CREATED,
+            occurredAt = createdAt,
+            payload = JSONObject()
+                .put("originType", draft.originType)
+                .put("principalCents", draft.principalCents)
+                .put("receivableAccountId", accountId)
+        )
+        planId
+    }
+
+    suspend fun deleteLendingPlan(id: String) = database.withTransaction {
+        val plan = requireNotNull(database.lendingPlanDao().findById(id)) { "出借计划不存在" }
+        require(database.transferDao().findActiveByLendingPlan(id).isEmpty() &&
+            database.transactionDao().findActiveByLendingPlan(id).isEmpty()) {
+            "请先删除该计划关联的借出、收回或利息流水"
+        }
+        val receivableAccount = requireNotNull(database.accountDao().find(plan.receivableAccountId)) { "出借计划账户不存在" }
+        require(
+            receivableAccount.balanceStatus == "CONFIRMED" &&
+                receivableAccount.balanceCents == 0L
+        ) {
+            "请先完成应收账户对账，确认该计划余额已恢复为零后才能删除"
+        }
+        database.transactionDao().findIncludingDeletedByLendingPlan(id)
+            .filter { it.deletedAt != null }
+            .forEach { permanentlyDeleteTrashedTransaction(it) }
+        database.transferDao().findIncludingDeletedByLendingPlan(id)
+            .filter { it.deletedAt != null }
+            .forEach { transfer ->
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSFER,
+                    subjectId = transfer.id,
+                    action = EvidenceAction.PURGED,
+                    payload = JSONObject().put("lendingPlanDeleted", id)
+                )
+                database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(transfer.id)
+                database.transferDao().delete(transfer.id)
+            }
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = id,
+            action = EvidenceAction.PURGED,
+            payload = JSONObject().put("reason", "LENDING_PLAN_REMOVED_AFTER_RECONCILIATION")
+        )
+        database.lendingPlanDao().deleteById(id)
+        database.balanceAdjustmentDao().deleteByAccount(plan.receivableAccountId)
+        database.balanceCheckpointDao().deleteByAccount(plan.receivableAccountId)
+        database.accountDao().deleteById(plan.receivableAccountId)
+    }
+
+    suspend fun addLendingDisbursement(
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis()
+    ): String = database.withTransaction {
+        val groupId = "manual:lending-disbursement:${UUID.randomUUID()}"
+        recordLendingDisbursement(
+            cashAccountId = cashAccountId,
+            planId = planId,
+            amountCents = amountCents,
+            note = note,
+            occurredAt = occurredAt,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, groupId)),
+            groupId = groupId
+        )
+    }
+
+    suspend fun confirmLendingDisbursementNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
+    ) = database.withTransaction {
+        if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) return@withTransaction
+        val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt ?: System.currentTimeMillis()
+        recordLendingDisbursement(
+            cashAccountId = cashAccountId,
+            planId = planId,
+            amountCents = amountCents,
+            note = note,
+            occurredAt = postedAt,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
+            groupId = "notification:$notificationId"
+        )
+        database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+        if (bankBalanceCents != null && bankCardTail != null) {
+            applyBankBalance(cashAccountId, bankCardTail, bankBalanceCents, postedAt)
+        }
+    }
+
+    private suspend fun recordLendingDisbursement(
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long,
+        sources: List<EvidenceSourceRef>,
+        groupId: String
+    ): String {
+        require(amountCents > 0L)
+        val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "出借计划不存在" }
+        require(plan.status == LendingPlanStatus.PENDING_DISBURSEMENT && plan.originType == LendingOriginType.PENDING_DISBURSEMENT) {
+            "只有待借出计划能关联新的借出划转"
+        }
+        require(amountCents == plan.principalCents) { "借出金额必须等于计划本金" }
+        val cash = requireNotNull(database.accountDao().find(cashAccountId)) { "资金账户不存在" }
+        require(cash.type == AccountType.ASSET.name && cashAccountId != plan.receivableAccountId) { "请选择真实资金账户" }
+        val transferId = addTransfer(
+            fromAccountId = cashAccountId,
+            toAccountId = plan.receivableAccountId,
+            amountCents = amountCents,
+            note = note,
+            occurredAt = occurredAt,
+            lendingPlanId = planId,
+            lendingRole = LendingTransferRole.DISBURSEMENT,
+            evidenceSources = sources,
+            evidenceGroupId = groupId,
+            evidenceRole = "LENDING_DISBURSEMENT"
+        )
+        database.lendingPlanDao().upsert(
+            plan.copy(
+                remainingPrincipalCents = amountCents,
+                status = LendingPlanStatus.ACTIVE,
+                originType = LendingOriginType.DISBURSEMENT_TRANSFER,
+                disbursementTransferId = transferId,
+                ledgerBaselinePrincipalCents = amountCents,
+                ledgerBaselineInterestCents = plan.receivedInterestCents,
+                ledgerBaselineAt = occurredAt,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+        linkLendingPlanEvent(planId, transferId, "DISBURSEMENT_TRANSFER", groupId, occurredAt)
+        return transferId
+    }
+
+    suspend fun addLendingRepayment(
+        cashAccountId: String,
+        planId: String,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis()
+    ) = database.withTransaction {
+        val groupId = "manual:lending-repayment:${UUID.randomUUID()}"
+        recordLendingRepayment(
+            cashAccountId = cashAccountId,
+            planId = planId,
+            principalCents = principalCents,
+            interestCents = interestCents,
+            note = note,
+            occurredAt = occurredAt,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, groupId)),
+            groupId = groupId
+        )
+    }
+
+    suspend fun confirmLendingRepaymentNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        totalCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
+    ) = database.withTransaction {
+        require(principalCents + interestCents == totalCents) { "本金与利息合计必须等于到账金额" }
+        if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) return@withTransaction
+        val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt ?: System.currentTimeMillis()
+        recordLendingRepayment(
+            cashAccountId = cashAccountId,
+            planId = planId,
+            principalCents = principalCents,
+            interestCents = interestCents,
+            note = note,
+            occurredAt = postedAt,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
+            groupId = "notification:$notificationId"
+        )
+        database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+        if (bankBalanceCents != null && bankCardTail != null) {
+            applyBankBalance(cashAccountId, bankCardTail, bankBalanceCents, postedAt)
+        }
+    }
+
+    private suspend fun recordLendingRepayment(
+        cashAccountId: String,
+        planId: String,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        occurredAt: Long,
+        sources: List<EvidenceSourceRef>,
+        groupId: String
+    ) {
+        require(principalCents >= 0L && interestCents >= 0L && principalCents + interestCents > 0L)
+        val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "出借计划不存在" }
+        require(plan.status != LendingPlanStatus.PENDING_DISBURSEMENT) { "尚未借出的计划不能登记收回" }
+        require(principalCents <= plan.remainingPrincipalCents) { "收回本金超过剩余应收" }
+        val cash = requireNotNull(database.accountDao().find(cashAccountId)) { "资金账户不存在" }
+        require(cash.type == AccountType.ASSET.name && cashAccountId != plan.receivableAccountId) { "请选择真实收款账户" }
+
+        if (principalCents > 0L) {
+            val transferId = addTransfer(
+                fromAccountId = plan.receivableAccountId,
+                toAccountId = cashAccountId,
+                amountCents = principalCents,
+                note = note,
+                occurredAt = occurredAt,
+                lendingPlanId = planId,
+                lendingRole = LendingTransferRole.PRINCIPAL_REPAYMENT,
+                evidenceSources = sources,
+                evidenceGroupId = groupId,
+                evidenceRole = "LENDING_PRINCIPAL_REPAYMENT"
+            )
+            linkLendingPlanEvent(planId, transferId, "PRINCIPAL_REPAYMENT_TRANSFER", groupId, occurredAt)
+        }
+        if (interestCents > 0L) {
+            val transactionId = addTransaction(
+                accountId = cashAccountId,
+                amountCents = interestCents,
+                type = TransactionType.INCOME,
+                category = "利息收益",
+                merchant = plan.borrowerName,
+                note = note,
+                occurredAt = occurredAt,
+                lendingPlanId = planId,
+                evidenceSources = sources,
+                evidenceGroupId = groupId,
+                evidenceRole = "LENDING_INTEREST_RECEIPT"
+            )
+            linkLendingPlanEvent(planId, transactionId, "INTEREST_RECEIPT_TRANSACTION", groupId, occurredAt)
+        }
+        val remaining = plan.remainingPrincipalCents - principalCents
+        val receivedInterest = plan.receivedInterestCents + interestCents
+        val updatedAt = System.currentTimeMillis()
+        val reanchor = occurredAt <= plan.ledgerBaselineAt
+        database.lendingPlanDao().upsert(
+            plan.copy(
+                remainingPrincipalCents = remaining,
+                receivedInterestCents = receivedInterest,
+                status = if (remaining == 0L) LendingPlanStatus.COMPLETED else LendingPlanStatus.ACTIVE,
+                ledgerBaselinePrincipalCents = if (reanchor) remaining else plan.ledgerBaselinePrincipalCents,
+                ledgerBaselineInterestCents = if (reanchor) receivedInterest else plan.ledgerBaselineInterestCents,
+                ledgerBaselineAt = if (reanchor) updatedAt else plan.ledgerBaselineAt,
+                updatedAt = updatedAt
+            )
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = planId,
+            action = EvidenceAction.LINKED,
+            occurredAt = occurredAt,
+            payload = JSONObject()
+                .put("groupId", groupId)
+                .put("principalCents", principalCents)
+                .put("interestCents", interestCents)
+                .put("remainingPrincipalCents", remaining)
+        )
+    }
+
+    private suspend fun linkLendingPlanEvent(
+        planId: String,
+        eventId: String,
+        role: String,
+        groupId: String,
+        linkedAt: Long
+    ) {
+        evidenceRecorder.link(
+            groupId = groupId,
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = planId,
+            subjectRole = role,
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, eventId)),
+            linkedAt = linkedAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.LENDING_PLAN,
+            subjectId = planId,
+            action = EvidenceAction.LINKED,
+            occurredAt = linkedAt,
+            payload = JSONObject().put("eventId", eventId).put("role", role)
+        )
     }
 
     // ── V5 月度负债锚点 / 年终奖 / 信用卡分期 ──
@@ -2347,7 +3592,10 @@ class LedgerRepository(
                 category = TransactionCategory.UNCATEGORIZED.name,
                 merchant = null,
                 note = "${wf.name} 到账",
-                loanPlanId = null
+                loanPlanId = null,
+                evidenceSources = listOf(EvidenceSourceRef(EvidenceSourceType.SYSTEM_EVENT, "windfall:${wf.id}")),
+                evidenceGroupId = "windfall:${wf.id}",
+                evidenceRole = "WINDFALL_RECEIPT"
             )
             database.windfallDao().upsert(
                 wf.copy(
@@ -2372,14 +3620,51 @@ class LedgerRepository(
         database.creditCardInstallmentPaymentMatchDao().observeAll()
 
     suspend fun deleteCardInstallment(id: String) {
-        cardInstallmentService.cancel(id)
+        database.withTransaction {
+            cardInstallmentService.cancel(id)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject().put("status", "CANCELLED")
+            )
+        }
     }
 
-    suspend fun createCardInstallment(draft: CreditCardInstallmentDraft): String =
-        cardInstallmentService.create(draft)
+    suspend fun createCardInstallment(draft: CreditCardInstallmentDraft): String = database.withTransaction {
+        val id = cardInstallmentService.create(draft)
+        val plan = requireNotNull(database.creditCardInstallmentDao().findById(id))
+        val allocationSources = database.creditCardInstallmentAllocationDao().findByPlan(id)
+            .map { EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, it.transactionId) }
+            .ifEmpty { listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:card-installment:$id")) }
+        evidenceRecorder.link(
+            groupId = "card-installment:$id",
+            subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+            subjectId = id,
+            subjectRole = "PLAN_ORIGIN",
+            sources = allocationSources,
+            linkedAt = plan.createdAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+            subjectId = id,
+            action = EvidenceAction.CREATED,
+            occurredAt = plan.createdAt,
+            payload = JSONObject().put("originalPrincipalCents", plan.originalPrincipalCents)
+        )
+        id
+    }
 
     suspend fun adjustCardInstallmentTerms(id: String, terms: CreditCardInstallmentTerms) {
-        cardInstallmentService.adjustTerms(id, terms)
+        database.withTransaction {
+            cardInstallmentService.adjustTerms(id, terms)
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+                subjectId = id,
+                action = EvidenceAction.EDITED,
+                payload = JSONObject().put("role", "TERMS_ADJUSTED")
+            )
+        }
     }
 
     suspend fun confirmCardInstallmentPaymentMatch(

@@ -44,6 +44,7 @@ import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CreditCardInstallmentEntity
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.LendingPlanEntity
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
@@ -62,6 +63,7 @@ fun HomeScreen(
     val state by model.state.collectAsStateWithLifecycle()
     val budgets by model.budgets.collectAsStateWithLifecycle(initialValue = emptyList<BudgetEntity>())
     val loanPlans by model.loanPlans.collectAsStateWithLifecycle(initialValue = emptyList<LoanPlanEntity>())
+    val lendingPlans by model.lendingPlans.collectAsStateWithLifecycle(initialValue = emptyList<LendingPlanEntity>())
     val recurringRules by model.recurringRules.collectAsStateWithLifecycle(initialValue = emptyList<RecurringRuleEntity>())
     val categories by model.categories.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.CategoryEntity>())
     val merchants by model.merchants.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.MerchantEntity>())
@@ -299,6 +301,7 @@ fun HomeScreen(
             3 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
                 LoanScreen(
                     plans = loanPlans, accounts = state.accounts,
+                    lendingPlans = lendingPlans,
                     onSave = { model.saveLoanPlan(it) },
                     onDelete = { model.deleteLoanPlan(it) },
                     onAddLoanAccount = { if (!privacyEnabled) addingAccountType = AccountType.LOAN },
@@ -333,6 +336,14 @@ fun HomeScreen(
                     },
                     onUpdateInstallment = { planId, number, dueDay, p, i, f, st ->
                         model.updateLoanInstallment(planId, number, dueDay, p, i, f, st)
+                    },
+                    onCreateLendingPlan = { draft, callback -> model.createLendingPlan(draft, callback) },
+                    onDeleteLendingPlan = { id, callback -> model.deleteLendingPlan(id, callback) },
+                    onLendingDisbursement = { cashId, planId, amount, note, callback ->
+                        model.addLendingDisbursement(cashId, planId, amount, note, onResult = callback)
+                    },
+                    onLendingRepayment = { cashId, planId, principal, interest, note, callback ->
+                        model.addLendingRepayment(cashId, planId, principal, interest, note, onResult = callback)
                     }
                 )
             }
@@ -361,6 +372,7 @@ fun HomeScreen(
                     onPermanentlyDeleteTransaction = { id, callback -> model.permanentlyDeleteTransactionFromTrash(id, callback) },
                     onRestoreTransfer = { id, callback -> model.restoreTransferFromTrash(id, callback) },
                     onPermanentlyDeleteTransfer = { id, callback -> model.permanentlyDeleteTransferFromTrash(id, callback) },
+                    onRunEvidenceAudit = { callback -> model.runEvidenceAudit(callback) },
                     onRootStateChanged = { settingsAtRoot = it }
                 )
                 if (settingsAtRoot && privacyEnabled) {
@@ -478,6 +490,7 @@ fun HomeScreen(
             categories = categories,
             merchants = merchants,
             loanPlans = loanPlans,
+            lendingPlans = lendingPlans,
             transactions = state.transactions,
             reimbursableTxs = outstandingReimbursements(reimbursable),
             merchantLastAccount = state.merchantLastAccount,

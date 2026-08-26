@@ -148,13 +148,16 @@ fun computeV5Metrics(
     val monthEnd = ym.atEndOfMonth()
 
     // ── ① 总负债：卡余额 + 无计划覆盖的 LOAN 账户 + 计划剩余本金 + 已到期未付利息 ──
+    // 待到账计划已经占用一个贷款账户，但尚未形成真实负债：账户与计划都不能计入总欠款。
+    // plannedAccountIds 仍包含它，避免用户建计划时随手填写的账户余额先一步进入负债。
     val plannedAccountIds = plans.map { it.accountId }.toSet()
+    val accountingPlans = plans.filter { it.status != "PENDING_DISBURSEMENT" }
     val cardDebt = accounts.filter { it.type == "CREDIT" }.sumOf { it.balanceCents }
     val loanAccountDebt = accounts
         .filter { it.type == "LOAN" && it.id !in plannedAccountIds }
         .sumOf { it.balanceCents }
-    val loanPlanDebt = plans.sumOf { it.remainingEffectiveCents }
-    val accruedInterest = plans.sumOf { plan ->
+    val loanPlanDebt = accountingPlans.sumOf { it.remainingEffectiveCents }
+    val accruedInterest = accountingPlans.sumOf { plan ->
         plan.installments
             .filter { !it.isPaid && LocalDate.ofEpochDay(it.dueDateEpochDay) <= today }
             .sumOf { it.interestCents + it.feeCents }
@@ -183,7 +186,7 @@ fun computeV5Metrics(
     val cardRepayPart = accounts
         .filter { it.type == "CREDIT" }
         .sumOf { remainingStatementDue(it) }
-    val loanRepayPart = plans.sumOf { plan ->
+    val loanRepayPart = accountingPlans.sumOf { plan ->
         plan.installments
             .filter { !it.isPaid }
             .filter { LocalDate.ofEpochDay(it.dueDateEpochDay) <= monthEnd }
@@ -228,7 +231,7 @@ fun computeV5Metrics(
     // ── ⑩ 未来 7/30 天应还 ──
     fun dueInWindow(days: Int): Long {
         val end = today.plusDays(days.toLong())
-        val loanPart = plans.sumOf { plan ->
+        val loanPart = accountingPlans.sumOf { plan ->
             plan.installments
                 .filter { !it.isPaid }
                 .filter { LocalDate.ofEpochDay(it.dueDateEpochDay) in today..end }
@@ -251,7 +254,7 @@ fun computeV5Metrics(
     val runwayDays = expectedWindfall?.let { it.expectedDateEpochDay - todayEpochDay }
 
     // ── ⑫ 24 个月清债模拟（方向正确即可，允许不精确）──
-    val weightedRate = plans.let { ps ->
+    val weightedRate = accountingPlans.let { ps ->
         val sumRemaining = ps.sumOf { it.remainingEffectiveCents }
         if (sumRemaining <= 0) 0.0
         else ps.sumOf { it.remainingEffectiveCents.toDouble() * it.annualRateBps } / sumRemaining / 10000.0

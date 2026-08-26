@@ -102,6 +102,11 @@ class NotificationMergeTest {
     }
 
     @Test
+    fun `same merchant and same amount are not duplicate without stronger evidence`() {
+        assertFalse(NotificationMerge.isDuplicate(notif(3500, true, "瑞幸咖啡"), 100_000, notif(3500, true, "瑞幸咖啡"), 100_000 + 60_000))
+    }
+
+    @Test
     fun `beyond 5 minutes is not duplicate`() {
         assertFalse(NotificationMerge.isDuplicate(notif(3500, true), 100_000, notif(3500, true), 100_000 + 6 * 60_000))
     }
@@ -176,6 +181,58 @@ class NotificationMergeTest {
                 "0|com.eg.android.AlipayGphone|-29999941|null|10326:101000",
                 fp,
                 101_000
+            )
+        )
+    }
+
+    @Test
+    fun `same system notification key repost days apart is one evidence`() {
+        val fp = NotificationMerge.contentFingerprint("交易提醒", "支出40.00元")
+        assertTrue(
+            NotificationMerge.isSameEvidence(
+                "com.android.mms.service",
+                "0|com.android.mms.service|95555|null|1000:100000",
+                fp,
+                100_000,
+                "com.android.mms.service",
+                "0|com.android.mms.service|95555|null|1000:259300000",
+                fp,
+                259_300_000
+            )
+        )
+    }
+
+    @Test
+    fun `persisted evidence is compared with current fingerprint rules`() {
+        assertTrue(
+            NotificationMerge.isSameContentEvidence(
+                "com.android.mms.service",
+                "0|com.android.mms.service|95555|null|1000:100000",
+                "招商银行",
+                "支出4.00元，余额2934.82元",
+                100_000,
+                "com.android.mms.service",
+                "0|com.android.mms.service|95555|null|1000:259300000",
+                "招商银行",
+                "支出4.00元，余额2934.82元",
+                259_300_000
+            )
+        )
+    }
+
+    @Test
+    fun `different system notification keys remain separate days apart`() {
+        val fp = NotificationMerge.contentFingerprint("交易提醒", "支出40.00元")
+        assertFalse(
+            NotificationMerge.isSameEvidence(
+                "com.android.mms.service",
+                "0|com.android.mms.service|95555|null|1000:100000",
+                fp,
+                100_000,
+                "com.android.mms.service",
+                "0|com.android.mms.service|95556|null|1000:259300000",
+                fp,
+                259_300_000
             )
         )
     }

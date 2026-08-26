@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
+import com.assetsking.database.EvidenceAuditReport
+import com.assetsking.database.LendingPlanDraft
+import com.assetsking.database.LendingPlanEntity
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RawNotificationEntity
 import com.assetsking.database.RecurringRuleEntity
@@ -91,6 +94,17 @@ class LedgerViewModel(
         return this.coroutineLaunch(block = block)
     }
 
+    private fun <T> launchWrite(
+        onResult: (Result<T>) -> Unit,
+        block: suspend () -> T
+    ) {
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能修改真实账本")))
+            return
+        }
+        viewModelScope.coroutineLaunch { onResult(runCatching { block() }) }
+    }
+
     // V5 指标在 ViewModel 里算（一个 Flow 发射 → 一套新数字），严禁在 Composable 内现算
     val state = combine(
         repository.accounts,
@@ -126,6 +140,7 @@ class LedgerViewModel(
     val deletedTransactions: Flow<List<TransactionEntity>> = repository.deletedTransactions
     val deletedTransfers: Flow<List<com.assetsking.database.TransferEntity>> = repository.deletedTransfers
     val loanPlans: Flow<List<LoanPlanEntity>> = repository.loanPlans
+    val lendingPlans: Flow<List<LendingPlanEntity>> = repository.lendingPlans
     val reimbursable: Flow<List<TransactionEntity>> = repository.reimbursableTransactions
     val recurringRules: Flow<List<RecurringRuleEntity>> = repository.recurringRules
     val snapshots: Flow<List<SnapshotEntity>> = repository.snapshots
@@ -243,13 +258,16 @@ class LedgerViewModel(
         category: String, merchant: String?, note: String?,
         accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?,
         isReimbursable: Boolean,
-        refundOfId: String? = null
+        refundOfId: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
         viewModelScope.coroutineLaunch {
-            repository.updateTransaction(
-                id, amountCents, type, category, merchant, note,
-                accountId, occurredAt, necessity, channel, isReimbursable, refundOfId
-            )
+            onResult(runCatching {
+                repository.updateTransaction(
+                    id, amountCents, type, category, merchant, note,
+                    accountId, occurredAt, necessity, channel, isReimbursable, refundOfId
+                )
+            })
         }
     }
 
@@ -261,7 +279,10 @@ class LedgerViewModel(
         repository.previewTransactionDeletion(ids)
 
     fun deleteTransactions(ids: Collection<String>, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能删除流水")))
+            return
+        }
         viewModelScope.coroutineLaunch {
             onResult(runCatching { repository.deleteTransactions(ids) })
         }
@@ -308,6 +329,48 @@ class LedgerViewModel(
         }
     }
 
+    fun linkTransactionToLendingInterest(
+        id: String,
+        planId: String,
+        amountCents: Long,
+        merchant: String?,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching {
+                repository.linkTransactionToLendingInterest(
+                    id, planId, amountCents, merchant, note, accountId, occurredAt, channel
+                )
+            })
+        }
+    }
+
+    fun convertIncomeToLendingRepayment(
+        id: String,
+        planId: String,
+        totalCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        accountId: String,
+        occurredAt: Long,
+        channel: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching {
+                repository.convertIncomeToLendingRepayment(
+                    id, planId, totalCents, principalCents, interestCents,
+                    note, accountId, occurredAt, channel
+                )
+            })
+        }
+    }
+
     fun restoreTransactionFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
         if (!privacyDataWritesAllowed()) return
         viewModelScope.coroutineLaunch {
@@ -336,6 +399,84 @@ class LedgerViewModel(
 
     fun deleteLoanPlan(id: String) {
         viewModelScope.launch { repository.deleteLoanPlan(id) }
+    }
+
+    fun createLendingPlan(draft: LendingPlanDraft, onResult: (Result<String>) -> Unit = {}) {
+        viewModelScope.launch { onResult(runCatching { repository.createLendingPlan(draft) }) }
+    }
+
+    fun deleteLendingPlan(id: String, onResult: (Result<Unit>) -> Unit = {}) {
+        viewModelScope.launch { onResult(runCatching { repository.deleteLendingPlan(id) }) }
+    }
+
+    fun addLendingDisbursement(
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        onResult: (Result<String>) -> Unit = {}
+    ) {
+        launchWrite(onResult) { repository.addLendingDisbursement(cashAccountId, planId, amountCents, note, occurredAt) }
+    }
+
+    fun addLendingRepayment(
+        cashAccountId: String,
+        planId: String,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        launchWrite(onResult) {
+            repository.addLendingRepayment(cashAccountId, planId, principalCents, interestCents, note, occurredAt)
+        }
+    }
+
+    fun confirmLendingDisbursementNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        amountCents: Long,
+        note: String?,
+        bankBalanceCents: Long?,
+        bankCardTail: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        launchWrite(onResult) {
+            repository.confirmLendingDisbursementNotification(
+                notificationId, cashAccountId, planId, amountCents, note, bankBalanceCents, bankCardTail
+            )
+            Unit
+        }
+    }
+
+    fun confirmLendingRepaymentNotification(
+        notificationId: String,
+        cashAccountId: String,
+        planId: String,
+        totalCents: Long,
+        principalCents: Long,
+        interestCents: Long,
+        note: String?,
+        bankBalanceCents: Long?,
+        bankCardTail: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        launchWrite(onResult) {
+            repository.confirmLendingRepaymentNotification(
+                notificationId, cashAccountId, planId, totalCents, principalCents, interestCents,
+                note, bankBalanceCents, bankCardTail
+            )
+            Unit
+        }
+    }
+
+    fun runEvidenceAudit(onResult: (Result<EvidenceAuditReport>) -> Unit) {
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching { repository.auditEvidence() })
+        }
     }
 
     fun toggleReimbursable(id: String, isReimbursable: Boolean) {
@@ -368,9 +509,9 @@ class LedgerViewModel(
     // ── V5 借款与还款 ──
 
     /** 借款到账：现金+、关联计划剩余本金+；不是收入（铁律 1） */
-    fun addLoanDisbursement(accountId: String, amount: String, planId: String?, note: String?, occurredAt: Long = System.currentTimeMillis()) {
-        val cents = amount.toCentsOrNull() ?: return
-        viewModelScope.launch {
+    fun addLoanDisbursement(accountId: String, amount: String, planId: String?, note: String?, occurredAt: Long = System.currentTimeMillis(), onResult: (Result<Unit>) -> Unit = {}) {
+        val cents = amount.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("金额格式不正确")))
+        launchWrite(onResult) {
             repository.addLoanDisbursement(accountId, cents, planId?.takeIf { it.isNotBlank() }, note, occurredAt)
         }
     }
@@ -383,9 +524,10 @@ class LedgerViewModel(
         amountCents: Long,
         note: String?,
         bankBalanceCents: Long? = null,
-        bankCardTail: String? = null
+        bankCardTail: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.confirmLoanDisbursementNotification(
                 notificationId = notificationId,
                 cashAccountId = cashAccountId,
@@ -402,13 +544,14 @@ class LedgerViewModel(
     fun addLoanPayment(
         accountId: String, planId: String,
         total: String, principal: String, interest: String, fee: String,
-        note: String?, occurredAt: Long = System.currentTimeMillis()
+        note: String?, occurredAt: Long = System.currentTimeMillis(),
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        val t = total.toCentsOrNull() ?: return
-        val p = principal.toCentsOrNull(allowZero = true) ?: return
-        val i = interest.toCentsOrNull(allowZero = true) ?: return
-        val f = fee.toCentsOrNull(allowZero = true) ?: return
-        viewModelScope.launch {
+        val t = total.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("总金额格式不正确")))
+        val p = principal.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("本金格式不正确")))
+        val i = interest.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("利息格式不正确")))
+        val f = fee.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("费用格式不正确")))
+        launchWrite(onResult) {
             repository.addLoanPayment(accountId, planId, t, p, i, f, note, occurredAt)
         }
     }
@@ -469,9 +612,10 @@ class LedgerViewModel(
         feeCents: Long,
         note: String?,
         bankBalanceCents: Long?,
-        bankCardTail: String?
+        bankCardTail: String?,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.confirmLoanPaymentNotification(
                 notificationId = notificationId,
                 cashAccountId = accountId,
@@ -547,14 +691,16 @@ class LedgerViewModel(
         isReimbursable: Boolean = false,
         necessity: Boolean? = null,
         channel: String? = null,
-        refundOfId: String? = null
+        refundOfId: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.addTransaction(
                 accountId, amountCents, type, category, merchant, note,
                 occurredAt = occurredAt, isReimbursable = isReimbursable,
                 necessity = necessity, channel = channel, refundOfId = refundOfId
             )
+            Unit
         }
     }
 
@@ -564,9 +710,10 @@ class LedgerViewModel(
         source: String?,
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
-        expenseIds: List<String>
+        expenseIds: List<String>,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds, source) }
+        launchWrite(onResult) { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds, source) }
     }
 
     fun updateReimbursement(
@@ -576,10 +723,13 @@ class LedgerViewModel(
         source: String?,
         note: String?,
         occurredAt: Long,
-        expenseIds: List<String>
+        expenseIds: List<String>,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
-            repository.updateReimbursement(id, accountId, amountCents, source, note, occurredAt, expenseIds)
+        viewModelScope.coroutineLaunch {
+            onResult(runCatching {
+                repository.updateReimbursement(id, accountId, amountCents, source, note, occurredAt, expenseIds)
+            })
         }
     }
 
@@ -621,9 +771,10 @@ class LedgerViewModel(
         toAccountId: String,
         amountCents: Long,
         feeCents: Long,
-        note: String?
+        note: String?,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.confirmTransferFromNotification(
                 notificationId, fromAccountId, toAccountId, amountCents, feeCents, note
             )
@@ -638,13 +789,16 @@ class LedgerViewModel(
 
     suspend fun adjustmentsFor(accountId: String) = repository.adjustmentsFor(accountId)
 
-    fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis()) {
-        val cents = amount.toCentsOrNull() ?: return
-        viewModelScope.launch { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
+    fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis(), onResult: (Result<Unit>) -> Unit = {}) {
+        val cents = amount.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("金额格式不正确")))
+        launchWrite(onResult) { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
     }
 
     fun deleteTransfer(id: String, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能删除划转")))
+            return
+        }
         viewModelScope.coroutineLaunch { onResult(runCatching { repository.deleteTransfer(id) }) }
     }
 
@@ -684,9 +838,10 @@ class LedgerViewModel(
         bankCardTail: String? = null,
         necessity: Boolean? = null,
         channel: String? = null,
-        refundOfId: String? = null
+        refundOfId: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.confirmNotification(
                 notificationId, accountId, amountCents, type, category, merchant, note,
                 bankBalanceCents, bankCardTail, necessity, channel, refundOfId

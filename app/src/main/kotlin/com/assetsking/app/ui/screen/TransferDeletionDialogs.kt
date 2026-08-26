@@ -14,9 +14,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransferDeletionAccountPreview
 import com.assetsking.model.AccountType
+import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.format.formatMoney
 
 @Composable
@@ -29,6 +32,7 @@ internal fun TransferDeletionPreviewDialog(
     onBalancesMatch: () -> Unit,
     onBalancesMismatch: () -> Unit
 ) {
+    val privacyEnabled = LocalPrivacyEnabled.current
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("删除划转前核对") },
@@ -40,14 +44,24 @@ internal fun TransferDeletionPreviewDialog(
                     val account = accounts.firstOrNull { it.id == preview.accountId }
                     val debt = account?.type in setOf(AccountType.CREDIT.name, AccountType.LOAN.name)
                     Column(Modifier.fillMaxWidth()) {
-                        Text(account?.name ?: "未知账户", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (privacyEnabled) privacyObfuscatedText("账户", 6200 + index) else account?.name ?: "未知账户",
+                            fontWeight = FontWeight.Bold
+                        )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(if (debt) "当前欠款" else "当前余额", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(formatMoney(preview.currentBalanceCents))
+                            Text(if (privacyEnabled) privacyFakeAmount(6201 + index * 3) else formatMoney(preview.currentBalanceCents))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(if (debt) "删除后预计欠款" else "删除后预计余额", fontWeight = FontWeight.Bold)
-                            Text(formatMoney(preview.projectedBalanceCents), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                if (privacyEnabled) privacyFakeAmount(6202 + index * 3) else formatMoney(preview.projectedBalanceCents),
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        if (preview.balanceStatus == "DISCREPANCY") {
+                            Text("该账户当前已有对账差额", color = MaterialTheme.colorScheme.error)
                         }
                     }
                     if (index != previews.lastIndex) HorizontalDivider()
@@ -55,7 +69,15 @@ internal fun TransferDeletionPreviewDialog(
                 errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
-        confirmButton = { Button(onClick = onBalancesMatch, enabled = previews != null && !busy) { Text(if (busy) "处理中…" else "账目正确，删除") } },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (previews?.any { it.balanceStatus == "DISCREPANCY" } == true) onBalancesMismatch()
+                    else onBalancesMatch()
+                },
+                enabled = previews != null && !busy && previews.none { it.balanceStatus == "DISCREPANCY" }
+            ) { Text(if (busy) "处理中…" else "账目正确，删除") }
+        },
         dismissButton = {
             Row {
                 TextButton(onClick = onBalancesMismatch, enabled = previews != null && !busy) { Text("账对不上") }

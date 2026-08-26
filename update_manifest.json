@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.5",
-  "name": "资产大王 v0.1.5",
-  "body": "数据安全与流水闭环收口：通知去重与忽略墓碑、流水垃圾箱与可恢复删除、贷款/信用分期/退款/报销/划转关联保护，以及基础分类补齐。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.5",
+  "tag_name": "v0.1.6",
+  "name": "资产大王 v0.1.6",
+  "body": "可信账务与可读性收口：修复通知重复入库、编辑与删除边界，补齐出借计划及退款关联规则，统一划转流水呈现，并将数据库与设置升级为单个加密备份文件。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.6",
   "assets": [
     {
-      "name": "assets-king-v0.1.5.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.5/assets-king-v0.1.5.apk",
-      "size": 31253774,
-      "digest": "sha256:4687ab08f5958002558dbf8a50dd007f669dfa8db90dca64a64469f23458573e"
+      "name": "assets-king-v0.1.6.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.6/assets-king-v0.1.6.apk",
+      "size": 31384846,
+      "digest": "sha256:0bdbb28448b77c957b1b3ede51f3fba5d0713e664b487054c4c4192b14b1f789"
     }
   ]
 }

@@ -48,6 +48,9 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun findIncludingDeleted(id: String): TransactionEntity?
 
+    @Query("SELECT * FROM transactions WHERE notificationId = :notificationId AND deletedAt IS NULL LIMIT 1")
+    suspend fun findActiveByNotificationId(notificationId: String): TransactionEntity?
+
     @Query("UPDATE transactions SET category = :category WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateCategory(id: String, category: String)
 
@@ -75,11 +78,29 @@ interface TransactionDao {
     @Query("UPDATE transactions SET recurringRuleId = :ruleId WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateRecurringRuleId(id: String, ruleId: String?)
 
+    @Query("UPDATE transactions SET notificationId = :notificationId WHERE id = :id AND deletedAt IS NULL AND notificationId IS NULL")
+    suspend fun attachNotification(id: String, notificationId: String): Int
+
     @Query("UPDATE transactions SET refundOfId = :refundOfId WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateRefundOfId(id: String, refundOfId: String?)
 
     @Query("SELECT * FROM transactions WHERE recurringRuleId = :ruleId AND deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun findByRecurringRule(ruleId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE loanPlanId = :loanPlanId AND deletedAt IS NULL ORDER BY occurredAt")
+    suspend fun findActiveByLoanPlan(loanPlanId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE loanPlanId = :loanPlanId ORDER BY occurredAt")
+    suspend fun findIncludingDeletedByLoanPlan(loanPlanId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE lendingPlanId = :lendingPlanId AND deletedAt IS NULL ORDER BY occurredAt")
+    suspend fun findActiveByLendingPlan(lendingPlanId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE lendingPlanId = :lendingPlanId ORDER BY occurredAt")
+    suspend fun findIncludingDeletedByLendingPlan(lendingPlanId: String): List<TransactionEntity>
+
+    @Query("UPDATE transactions SET lendingPlanId = :lendingPlanId WHERE id = :id AND deletedAt IS NULL")
+    suspend fun updateLendingPlanId(id: String, lendingPlanId: String?)
 
     @Query("SELECT * FROM transactions WHERE deletedAt IS NULL AND occurredAt BETWEEN :start AND :end ORDER BY occurredAt DESC")
     suspend fun findInRange(start: Long, end: Long): List<TransactionEntity>
@@ -89,6 +110,9 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transactions WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun all(): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions ORDER BY occurredAt DESC")
+    suspend fun allIncludingDeleted(): List<TransactionEntity>
 
     @Query("UPDATE transactions SET isReimbursable = :isReimbursable WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateReimbursable(id: String, isReimbursable: Boolean)
@@ -158,6 +182,9 @@ interface TransferDao {
     @Query("SELECT * FROM transfers WHERE deletedAt IS NULL ORDER BY occurredAt DESC")
     suspend fun all(): List<TransferEntity>
 
+    @Query("SELECT * FROM transfers ORDER BY occurredAt DESC")
+    suspend fun allIncludingDeleted(): List<TransferEntity>
+
     @Query("SELECT * FROM transfers WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
     fun observeDeleted(): Flow<List<TransferEntity>>
 
@@ -187,6 +214,12 @@ interface TransferDao {
 
     @Query("SELECT COUNT(*) FROM transfers WHERE deletedAt IS NULL")
     suspend fun countAll(): Int
+
+    @Query("SELECT * FROM transfers WHERE lendingPlanId = :lendingPlanId AND deletedAt IS NULL ORDER BY occurredAt")
+    suspend fun findActiveByLendingPlan(lendingPlanId: String): List<TransferEntity>
+
+    @Query("SELECT * FROM transfers WHERE lendingPlanId = :lendingPlanId ORDER BY occurredAt")
+    suspend fun findIncludingDeletedByLendingPlan(lendingPlanId: String): List<TransferEntity>
 }
 
 @Dao
@@ -200,8 +233,14 @@ interface BalanceCheckpointDao {
     @Query("SELECT * FROM balance_checkpoints WHERE accountId = :accountId ORDER BY checkedAt DESC")
     suspend fun allFor(accountId: String): List<BalanceCheckpointEntity>
 
+    @Query("SELECT * FROM balance_checkpoints ORDER BY checkedAt DESC")
+    suspend fun all(): List<BalanceCheckpointEntity>
+
     @Query("DELETE FROM balance_checkpoints")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM balance_checkpoints WHERE accountId = :accountId")
+    suspend fun deleteByAccount(accountId: String)
 }
 
 @Dao
@@ -214,6 +253,9 @@ interface ReimbursementLinkDao {
 
     @Query("SELECT * FROM reimbursement_links WHERE expenseTxId = :txId")
     suspend fun findByExpense(txId: String): List<ReimbursementLinkEntity>
+
+    @Query("SELECT * FROM reimbursement_links")
+    suspend fun all(): List<ReimbursementLinkEntity>
 
     @Query("DELETE FROM reimbursement_links WHERE reimbursementTxId = :txId")
     suspend fun deleteByReimbursement(txId: String)
@@ -271,6 +313,12 @@ interface BalanceAdjustmentDao {
 
     @Query("SELECT * FROM balance_adjustments WHERE accountId = :accountId ORDER BY occurredAt DESC")
     suspend fun allFor(accountId: String): List<BalanceAdjustmentEntity>
+
+    @Query("SELECT * FROM balance_adjustments ORDER BY occurredAt DESC")
+    suspend fun all(): List<BalanceAdjustmentEntity>
+
+    @Query("DELETE FROM balance_adjustments WHERE accountId = :accountId")
+    suspend fun deleteByAccount(accountId: String)
 }
 
 @Dao
@@ -286,6 +334,9 @@ interface RawNotificationDao {
 
     @Query("SELECT * FROM raw_notifications WHERE id = :id")
     suspend fun findById(id: String): RawNotificationEntity?
+
+    @Query("SELECT * FROM raw_notifications ORDER BY receivedAt DESC")
+    suspend fun all(): List<RawNotificationEntity>
 
     @Query("UPDATE raw_notifications SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
@@ -330,6 +381,9 @@ interface LoanPlanDao {
     @Query("SELECT * FROM loan_plans WHERE id = :id")
     suspend fun findById(id: String): LoanPlanEntity?
 
+    @Query("SELECT * FROM loan_plans ORDER BY startDateEpochDay DESC")
+    suspend fun all(): List<LoanPlanEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(plan: LoanPlanEntity)
 
@@ -344,6 +398,12 @@ interface RecurringRuleDao {
 
     @Query("SELECT * FROM recurring_rules ORDER BY nextRunAt")
     fun observeAll(): Flow<List<RecurringRuleEntity>>
+
+    @Query("SELECT * FROM recurring_rules WHERE id = :id")
+    suspend fun findById(id: String): RecurringRuleEntity?
+
+    @Query("SELECT * FROM recurring_rules ORDER BY nextRunAt")
+    suspend fun all(): List<RecurringRuleEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(rule: RecurringRuleEntity)
@@ -429,6 +489,9 @@ interface CreditCardInstallmentScheduleDao {
     @Query("SELECT * FROM credit_card_installment_schedules WHERE planId = :planId ORDER BY revision, number")
     suspend fun findByPlan(planId: String): List<CreditCardInstallmentScheduleEntity>
 
+    @Query("SELECT * FROM credit_card_installment_schedules ORDER BY dueDateEpochDay, number")
+    suspend fun all(): List<CreditCardInstallmentScheduleEntity>
+
     @Query("SELECT * FROM credit_card_installment_schedules WHERE id = :id")
     suspend fun findById(id: String): CreditCardInstallmentScheduleEntity?
 
@@ -489,6 +552,27 @@ interface CreditCardInstallmentPaymentMatchDao {
 }
 
 @Dao
+interface LendingPlanDao {
+    @Query("SELECT * FROM lending_plans ORDER BY status, startDateEpochDay DESC, createdAt DESC")
+    fun observeAll(): Flow<List<LendingPlanEntity>>
+
+    @Query("SELECT * FROM lending_plans ORDER BY status, startDateEpochDay DESC, createdAt DESC")
+    suspend fun all(): List<LendingPlanEntity>
+
+    @Query("SELECT * FROM lending_plans WHERE id = :id")
+    suspend fun findById(id: String): LendingPlanEntity?
+
+    @Query("SELECT * FROM lending_plans WHERE receivableAccountId = :accountId LIMIT 1")
+    suspend fun findByReceivableAccount(accountId: String): LendingPlanEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(plan: LendingPlanEntity)
+
+    @Query("DELETE FROM lending_plans WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
 interface CreditCardInstallmentAuditDao {
     @Query("SELECT * FROM credit_card_installment_audit_events WHERE planId = :planId ORDER BY occurredAt, id")
     fun observeByPlan(planId: String): Flow<List<CreditCardInstallmentAuditEventEntity>>
@@ -525,4 +609,31 @@ interface MonthDebtAnchorDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(anchor: MonthDebtAnchorEntity)
+}
+
+@Dao
+interface LedgerEvidenceLinkDao {
+    @Query("SELECT * FROM ledger_evidence_links ORDER BY linkedAt, groupId, subjectType, subjectId")
+    suspend fun all(): List<LedgerEvidenceLinkEntity>
+
+    @Query("SELECT * FROM ledger_evidence_links WHERE subjectType = :subjectType AND subjectId = :subjectId ORDER BY linkedAt")
+    suspend fun findBySubject(subjectType: String, subjectId: String): List<LedgerEvidenceLinkEntity>
+
+    @Query("SELECT * FROM ledger_evidence_links WHERE sourceType = :sourceType AND sourceId = :sourceId ORDER BY linkedAt")
+    suspend fun findBySource(sourceType: String, sourceId: String): List<LedgerEvidenceLinkEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAll(links: List<LedgerEvidenceLinkEntity>)
+}
+
+@Dao
+interface LedgerLifecycleEventDao {
+    @Query("SELECT * FROM ledger_lifecycle_events ORDER BY occurredAt, id")
+    suspend fun all(): List<LedgerLifecycleEventEntity>
+
+    @Query("SELECT * FROM ledger_lifecycle_events WHERE subjectType = :subjectType AND subjectId = :subjectId ORDER BY occurredAt, id")
+    suspend fun findBySubject(subjectType: String, subjectId: String): List<LedgerLifecycleEventEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(event: LedgerLifecycleEventEntity)
 }

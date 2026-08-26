@@ -23,7 +23,7 @@ data class AccountEntity(
     val startDateEpochDay: Long? = null // 启用日期（REQ 账户对账§17）：新增账户当日
 )
 
-@Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt"), Index("deletedAt")])
+@Entity(tableName = "transactions", indices = [Index("accountId"), Index("occurredAt"), Index("deletedAt"), Index("lendingPlanId")])
 data class TransactionEntity(
     @PrimaryKey val id: String,
     val accountId: String,
@@ -45,6 +45,7 @@ data class TransactionEntity(
     val necessity: Boolean? = null,      // 本笔最终必要性（REQ 分类§2）：true=必要 false=非必要 null=按场景默认
     val channel: String? = null,         // 支付渠道（REQ 流水§5）：微信/支付宝/银行短信…与资金账户分开
     val notificationId: String? = null,  // 由通知确认生成的流水；进垃圾箱时证据保持忽略，恢复时重新 LINKED
+    val lendingPlanId: String? = null,   // 出借利息到账关联；本金收回使用 TransferEntity
     val deletedAt: Long? = null,         // 非空=位于流水垃圾箱；保留 7 天后物理清除
     val trashContextJson: String? = null // 删除前后联动快照；恢复前先核对，防止贷款/报销状态已变化时强行覆盖
 )
@@ -84,7 +85,7 @@ data class ReimbursementLinkEntity(
 
 @Entity(
     tableName = "transfers",
-    indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt"), Index("deletedAt")]
+    indices = [Index("fromAccountId"), Index("toAccountId"), Index("occurredAt"), Index("deletedAt"), Index("lendingPlanId")]
 )
 data class TransferEntity(
     @PrimaryKey val id: String,
@@ -93,6 +94,8 @@ data class TransferEntity(
     val amountCents: Long,
     val occurredAt: Long,
     val note: String? = null,
+    val lendingPlanId: String? = null,
+    val lendingRole: String? = null, // DISBURSEMENT / PRINCIPAL_REPAYMENT
     /** 正式划转也走 7 天软删除；恢复按当前事件时间线重放，不回滚整个账户快照。 */
     val deletedAt: Long? = null,
     val trashContextJson: String? = null
@@ -132,7 +135,81 @@ data class LoanPlanEntity(
     val remainingPrincipalCents: Long = 0,  // 剩余本金，0=未设置则默认等于本金
     val earlyRepaidCents: Long = 0,  // 已提前还款金额
     val repaymentDay: Int? = null,   // 每月还款日（几号）
-    val status: String = "ACTIVE"    // ACTIVE / PAID_OFF（提前结清后取消未来计划）
+    val status: String = "ACTIVE",   // PENDING_DISBURSEMENT / ACTIVE / PAID_OFF
+    /**
+     * OPENING_BALANCE：装 App 前已经存在的存量贷款，不伪造现金流水；
+     * PENDING_DISBURSEMENT：只有合同/计划，尚无到账事实；
+     * DISBURSEMENT_EVENT：由一笔真实借款到账流水激活。
+     */
+    val originType: String = "OPENING_BALANCE",
+    val disbursementTransactionId: String? = null,
+    /** 可重放本金的最近权威锚点；此前历史还款已经包含在锚点内，不得再次扣减。 */
+    val ledgerBaselinePrincipalCents: Long = 0,
+    val ledgerBaselineAt: Long = 0
+)
+
+/**
+ * 出借计划是应收资产，不是支出也不是负债。
+ * 期初存量直接建立应收余额；新出借由现金账户到应收账户的一笔真实划转激活。
+ */
+@Entity(
+    tableName = "lending_plans",
+    indices = [Index("receivableAccountId"), Index("status"), Index("disbursementTransferId")]
+)
+data class LendingPlanEntity(
+    @PrimaryKey val id: String,
+    val receivableAccountId: String,
+    val label: String,
+    val borrowerName: String,
+    val principalCents: Long,
+    val remainingPrincipalCents: Long,
+    val expectedInterestCents: Long = 0,
+    val receivedInterestCents: Long = 0,
+    val startDateEpochDay: Long,
+    val expectedDueDateEpochDay: Long? = null,
+    val status: String = "ACTIVE", // PENDING_DISBURSEMENT / ACTIVE / COMPLETED
+    val originType: String = "OPENING_BALANCE", // OPENING_BALANCE / PENDING_DISBURSEMENT / DISBURSEMENT_TRANSFER
+    val disbursementTransferId: String? = null,
+    val ledgerBaselinePrincipalCents: Long = 0,
+    val ledgerBaselineInterestCents: Long = 0,
+    val ledgerBaselineAt: Long = 0,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+/**
+ * 来源证据与账务对象的多对多关系。
+ *
+ * 同一笔银行事实可能由两条通知共同证明，也可能同时生成划转和手续费两项账务对象；
+ * groupId 把它们收进同一个证据组，避免把合法的“一证多对象”误报为重复入账。
+ */
+@Entity(
+    tableName = "ledger_evidence_links",
+    primaryKeys = ["groupId", "subjectType", "subjectId", "sourceType", "sourceId"],
+    indices = [Index("subjectType", "subjectId"), Index("sourceType", "sourceId"), Index("groupId")]
+)
+data class LedgerEvidenceLinkEntity(
+    val groupId: String,
+    val subjectType: String,
+    val subjectId: String,
+    val subjectRole: String,
+    val sourceType: String,
+    val sourceId: String,
+    val linkedAt: Long
+)
+
+/** 只追加的账务对象生命周期证据；删除账务对象也不能删除这里的墓碑。 */
+@Entity(
+    tableName = "ledger_lifecycle_events",
+    indices = [Index("subjectType", "subjectId"), Index("occurredAt"), Index("action")]
+)
+data class LedgerLifecycleEventEntity(
+    @PrimaryKey val id: String,
+    val subjectType: String,
+    val subjectId: String,
+    val action: String,
+    val occurredAt: Long,
+    val payloadJson: String = "{}"
 )
 
 @Entity(tableName = "snapshots", indices = [Index("dateEpochDay")])

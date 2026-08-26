@@ -39,8 +39,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
@@ -80,10 +84,14 @@ import com.assetsking.app.PendingItem
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.LendingOriginType
+import com.assetsking.database.LendingPlanEntity
+import com.assetsking.database.LendingPlanStatus
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.ledger.AmountExpression
+import com.assetsking.ledger.BalanceMath
 import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.IconLibrary
@@ -122,8 +130,14 @@ internal fun refundSourceCandidates(
     accountId: String,
     refundAmountCents: Long,
     refundOccurredAt: Long,
-    editingRefundId: String? = null
+    editingRefundId: String? = null,
+    merchantName: String? = null,
+    refundChannel: String? = null
 ): List<RefundSourceCandidate> {
+    val requiredMerchant = merchantName?.trim().orEmpty()
+    val requiredChannel = refundChannel?.trim().orEmpty()
+    if (requiredMerchant.isBlank()) return emptyList()
+
     val refundedByExpense = transactions
         .filter {
             it.id != editingRefundId &&
@@ -136,9 +150,11 @@ internal fun refundSourceCandidates(
 
     return transactions.asSequence()
         .filter {
-            it.status == "CONFIRMED" &&
+                it.status == "CONFIRMED" &&
                 it.type == TransactionType.EXPENSE.name &&
                 it.accountId == accountId &&
+                it.merchant?.trim()?.equals(requiredMerchant, ignoreCase = true) == true &&
+                it.channel?.trim().orEmpty().equals(requiredChannel, ignoreCase = true) &&
                 it.occurredAt <= refundOccurredAt
         }
         .map { expense ->
@@ -157,7 +173,7 @@ internal fun refundSourceCandidates(
 }
 
 // ── 编辑器顶层类型（REQ 编辑器§11）──
-private enum class EditorKind(val label: String) { EXPENSE("支出"), INCOME("入账"), TRANSFER("划转"), REPAY("还款") }
+private enum class EditorKind(val label: String) { EXPENSE("支出"), INCOME("入账"), TRANSFER("划转"), REPAY("还款"), LENDING("借出/收回") }
 private enum class IncomeSub(val label: String, val type: TransactionType) {
     INCOME("收入", TransactionType.INCOME),
     REFUND("退款", TransactionType.REFUND),
@@ -165,6 +181,7 @@ private enum class IncomeSub(val label: String, val type: TransactionType) {
     LOAN_DISBURSEMENT("借款到账", TransactionType.LOAN_DISBURSEMENT)
 }
 private enum class RepaySub(val label: String) { CREDIT_CARD("信用卡还款"), LOAN("贷款还款") }
+internal enum class LendingSub(val label: String) { DISBURSEMENT("借出本金"), REPAYMENT("收回本金/利息") }
 internal enum class BalanceResolution { NOTIFICATION, CURRENT_LEDGER }
 
 internal data class PendingTransferAccounts(val fromAccountId: String, val toAccountId: String)
@@ -204,6 +221,37 @@ internal fun loanPaymentSplitDifferenceCents(
     return runCatching { Math.subtractExact(totalCents, splitTotal) }.getOrNull()
 }
 
+internal fun lendingSplitDifferenceCents(
+    totalCents: Long,
+    principalCents: Long,
+    interestCents: Long
+): Long? = loanPaymentSplitDifferenceCents(totalCents, principalCents, interestCents, 0L)
+
+internal fun lendingValidationErrors(
+    amountCents: Long,
+    selectedPlan: LendingPlanEntity?,
+    isAssetAccount: Boolean,
+    sub: LendingSub,
+    principalCents: Long?,
+    splitDifferenceCents: Long?
+): List<String> = buildList {
+    if (!isAssetAccount) add("资金账户")
+    if (selectedPlan == null) add("出借计划")
+    when (sub) {
+        LendingSub.DISBURSEMENT -> if (selectedPlan != null) {
+            if (selectedPlan.status != LendingPlanStatus.PENDING_DISBURSEMENT) add("待借出计划")
+            if (amountCents != selectedPlan.principalCents) add("借出金额须等于计划本金")
+        }
+        LendingSub.REPAYMENT -> {
+            if (selectedPlan != null && selectedPlan.status != LendingPlanStatus.ACTIVE) add("进行中的出借计划")
+            if (amountCents > 0L && splitDifferenceCents != 0L) add("本金与利息合计")
+            if (principalCents != null && selectedPlan != null && principalCents > selectedPlan.remainingPrincipalCents) {
+                add("收回本金不能超过剩余应收")
+            }
+        }
+    }
+}
+
 private fun editableMoney(cents: Long): String = String.format(Locale.US, "%.2f", cents / 100.0)
 
 private fun editableMoneyCents(expression: String): Long? {
@@ -226,6 +274,7 @@ fun TransactionEditorScreen(
     categories: List<CategoryEntity>,
     merchants: List<MerchantEntity>,
     loanPlans: List<LoanPlanEntity>,
+    lendingPlans: List<LendingPlanEntity> = emptyList(),
     transactions: List<TransactionEntity>,
     reimbursableTxs: List<TransactionEntity>,
     merchantLastAccount: Map<String, String>,
@@ -246,7 +295,8 @@ fun TransactionEditorScreen(
                 initialLoanPlanId != null -> EditorKind.REPAY
                 editingTransaction?.type == TransactionType.INCOME.name ||
                     editingTransaction?.type == TransactionType.REFUND.name ||
-                    editingTransaction?.type == TransactionType.REIMBURSEMENT.name -> EditorKind.INCOME
+                    editingTransaction?.type == TransactionType.REIMBURSEMENT.name ||
+                    editingTransaction?.type == TransactionType.LOAN_DISBURSEMENT.name -> EditorKind.INCOME
                 parsed?.isExpense == false -> EditorKind.INCOME
                 else -> EditorKind.EXPENSE
             }
@@ -260,6 +310,7 @@ fun TransactionEditorScreen(
     var incomeSub by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(
             when {
+                editingTransaction?.type == TransactionType.LOAN_DISBURSEMENT.name -> IncomeSub.LOAN_DISBURSEMENT
                 editingTransaction?.type == TransactionType.REIMBURSEMENT.name -> IncomeSub.REIMBURSEMENT
                 editingTransaction?.type == TransactionType.REFUND.name || parsed?.isRefund == true -> IncomeSub.REFUND
                 else -> IncomeSub.INCOME
@@ -268,6 +319,9 @@ fun TransactionEditorScreen(
     }
     var repaySub by remember(initialLoanPlanId) {
         mutableStateOf(if (initialLoanPlanId != null) RepaySub.LOAN else RepaySub.CREDIT_CARD)
+    }
+    var lendingSub by remember(pendingItem?.notification?.id) {
+        mutableStateOf(if (parsed?.isExpense == false) LendingSub.REPAYMENT else LendingSub.DISBURSEMENT)
     }
     var amountExpr by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(
@@ -320,6 +374,7 @@ fun TransactionEditorScreen(
         mutableStateOf(shouldUseCustomPaymentChannelEditor(channel, savedPaymentChannels))
     }
     var saveError by remember(pendingItem?.notification?.id, editingTransaction?.id) { mutableStateOf<String?>(null) }
+    var saving by remember(pendingItem?.notification?.id, editingTransaction?.id) { mutableStateOf(false) }
     var merchantText by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(editingTransaction?.merchant.orEmpty().ifBlank { parsed?.merchant.orEmpty() })
     }
@@ -348,12 +403,21 @@ fun TransactionEditorScreen(
     var newCategoryParentId by remember { mutableStateOf<String?>(null) }
     var pendingCategoryName by remember { mutableStateOf<String?>(null) }
     // 贷款还款
-    var loanPlanId by remember(initialLoanPlanId) { mutableStateOf(initialLoanPlanId) }
+    var loanPlanId by remember(initialLoanPlanId, editingTransaction?.id) {
+        mutableStateOf(initialLoanPlanId ?: editingTransaction?.loanPlanId)
+    }
     var autoMatchedLoanPlanId by remember(initialLoanPlanId) { mutableStateOf<String?>(null) }
     var loanSuggestion by remember { mutableStateOf<Pair<LoanPlanEntity, com.assetsking.model.LoanInstallment>?>(null) }
     var principalExpr by remember { mutableStateOf("") }
     var interestExpr by remember { mutableStateOf("") }
+    var lendingSplitAutoFilled by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(false)
+    }
     var feeExpr by remember { mutableStateOf("") }
+    var lendingPlanId by remember(pendingItem?.notification?.id, editingTransaction?.id) {
+        mutableStateOf(editingTransaction?.lendingPlanId)
+    }
+    var autoMatchedLendingPlanId by remember(pendingItem?.notification?.id) { mutableStateOf<String?>(null) }
     var transferFeeExpr by remember(pendingItem?.notification?.id) { mutableStateOf("") }
     // 报销垫付多选
     val expenseIds = remember { mutableStateOf(listOf<String>()) }
@@ -400,18 +464,26 @@ fun TransactionEditorScreen(
         interestCents,
         feeCents
     )
+    val lendingSplitDifference = loanPaymentSplitDifferenceCents(
+        amountCents,
+        principalCents,
+        interestCents,
+        0L
+    )
     val evaluatedTransferFee = transferFeeExpr.takeIf { it.isNotBlank() }?.let(AmountExpression::evaluate)
     val transferFeeCents = evaluatedTransferFee?.let { (it * 100).roundToLong() } ?: 0L
     val selectedReimbursementCents = selectableReimbursableTxs
         .filter { it.id in expenseIds.value }
         .sumOf(::availableReimbursementCents)
-    val refundCandidates = remember(transactions, accountId, amountCents, occurredAt, editingTransaction?.id) {
+    val refundCandidates = remember(transactions, accountId, amountCents, occurredAt, editingTransaction?.id, merchantText, channel) {
         refundSourceCandidates(
             transactions = transactions,
             accountId = accountId,
             refundAmountCents = amountCents,
             refundOccurredAt = occurredAt,
-            editingRefundId = editingTransaction?.id
+            editingRefundId = editingTransaction?.id,
+            merchantName = merchantText,
+            refundChannel = channel
         )
     }
     val selectedRefundSource = refundOfId?.let { selectedId ->
@@ -481,11 +553,14 @@ fun TransactionEditorScreen(
     val editingReimbursement = editingTransaction?.type == TransactionType.REIMBURSEMENT.name
     val visibleKinds = when {
         editingReimbursement -> listOf(EditorKind.INCOME)
-        editingTransaction != null -> listOf(EditorKind.EXPENSE, EditorKind.INCOME, EditorKind.REPAY)
+        editingTransaction?.lendingPlanId != null -> listOf(EditorKind.INCOME)
+        editingTransaction?.type == TransactionType.INCOME.name -> listOf(EditorKind.EXPENSE, EditorKind.INCOME, EditorKind.LENDING)
+        editingTransaction != null -> listOf(EditorKind.EXPENSE, EditorKind.INCOME)
         else -> EditorKind.entries
     }
     val visibleIncomeSubs = when {
         editingReimbursement -> listOf(IncomeSub.REIMBURSEMENT)
+        editingTransaction?.lendingPlanId != null -> listOf(IncomeSub.INCOME)
         editingTransaction != null -> listOf(IncomeSub.INCOME, IncomeSub.REFUND, IncomeSub.LOAN_DISBURSEMENT)
         else -> IncomeSub.entries
     }
@@ -556,8 +631,27 @@ fun TransactionEditorScreen(
     val editorType = when (kind) {
         EditorKind.EXPENSE -> TransactionType.EXPENSE
         EditorKind.INCOME -> incomeSub.type
-        else -> null
+        EditorKind.LENDING -> if (lendingSub == LendingSub.DISBURSEMENT) TransactionType.EXPENSE else TransactionType.INCOME
+        EditorKind.REPAY -> if (repaySub == RepaySub.LOAN) TransactionType.LOAN_PAYMENT else null
+        EditorKind.TRANSFER -> null
     }
+    val assetBalanceShortfallCents = if (
+        selectedAccount?.type == AccountType.ASSET.name &&
+        editorType != null &&
+        BalanceMath.transactionDelta(AccountType.ASSET, editorType, amountCents) < 0L
+    ) {
+        val oldCredit = editingTransaction
+            ?.takeIf { it.accountId == selectedAccount.id }
+            ?.let {
+                BalanceMath.transactionDelta(
+                    AccountType.ASSET,
+                    runCatching { TransactionType.valueOf(it.type) }.getOrNull() ?: TransactionType.INCOME,
+                    it.amountCents
+                )
+            }
+            ?: 0L
+        (-(selectedAccount.balanceCents - oldCredit + BalanceMath.transactionDelta(AccountType.ASSET, editorType, amountCents))).coerceAtLeast(0L)
+    } else 0L
     val accountTailConflict = pendingItem != null && selectedAccount != null &&
         PendingConfirmationPolicy.accountTailMismatch(selectedAccount.cardTail, parsed?.cardTail)
     val balanceConflict = pendingItem != null && directionChosen &&
@@ -577,7 +671,11 @@ fun TransactionEditorScreen(
     // 借款到账也必须挂计划：金额唯一命中某个新计划时只做“预选”，多计划同额不猜。
     LaunchedEffect(amountCents, kind, incomeSub, loanPlans) {
         if (kind != EditorKind.INCOME || incomeSub != IncomeSub.LOAN_DISBURSEMENT || amountCents <= 0L) return@LaunchedEffect
-        val exact = loanPlans.filter { it.status == "ACTIVE" && it.principalCents == amountCents }
+        val exact = loanPlans.filter {
+            it.status == "PENDING_DISBURSEMENT" &&
+                it.originType == "PENDING_DISBURSEMENT" &&
+                it.principalCents == amountCents
+        }
         if (exact.size == 1) {
             if (loanPlanId == null || loanPlanId == autoMatchedLoanPlanId) {
                 loanPlanId = exact.single().id
@@ -588,6 +686,38 @@ fun TransactionEditorScreen(
             autoMatchedLoanPlanId = null
         }
     }
+
+    // 出借收回编辑：首次切换到收回时按“纯本金到账、利息 0”预填，用户仍可按实际回款修改。
+    LaunchedEffect(kind, lendingSub, amountCents, editingTransaction?.id) {
+        if (
+            kind == EditorKind.LENDING &&
+            lendingSub == LendingSub.REPAYMENT &&
+            amountCents > 0L &&
+            (lendingSplitAutoFilled || (principalExpr.isBlank() && interestExpr.isBlank()))
+        ) {
+            principalExpr = editableMoney(amountCents)
+            interestExpr = editableMoney(0L)
+            lendingSplitAutoFilled = true
+        }
+    }
+    LaunchedEffect(amountCents, kind, lendingSub, lendingPlans) {
+        if (kind != EditorKind.LENDING || lendingSub != LendingSub.DISBURSEMENT || amountCents <= 0L) return@LaunchedEffect
+        val exact = lendingPlans.filter {
+            it.status == LendingPlanStatus.PENDING_DISBURSEMENT &&
+                it.originType == LendingOriginType.PENDING_DISBURSEMENT &&
+                it.principalCents == amountCents
+        }
+        if (exact.size == 1) {
+            if (lendingPlanId == null || lendingPlanId == autoMatchedLendingPlanId) {
+                lendingPlanId = exact.single().id
+                autoMatchedLendingPlanId = exact.single().id
+            }
+        } else if (lendingPlanId == autoMatchedLendingPlanId) {
+            lendingPlanId = null
+            autoMatchedLendingPlanId = null
+        }
+    }
+    val selectedLendingPlan = lendingPlans.firstOrNull { it.id == lendingPlanId }
     val bankBalanceForSave = when (balanceResolution) {
         BalanceResolution.CURRENT_LEDGER -> null
         else -> parsed?.balanceCents
@@ -605,8 +735,13 @@ fun TransactionEditorScreen(
             }
             EditorKind.INCOME -> {
                 if (selectedAccount == null) add("账户")
-                if (merchantText.isBlank()) add(if (incomeSub == IncomeSub.LOAN_DISBURSEMENT) "借款来源" else "收入来源")
-                if (selectedCategory == null && incomeSub == IncomeSub.INCOME) add("收入分类")
+                if (incomeSub == IncomeSub.LOAN_DISBURSEMENT && selectedAccount?.type != AccountType.ASSET.name) {
+                    add("资产账户")
+                }
+                if (merchantText.isBlank() && !(editingTransaction != null && incomeSub == IncomeSub.INCOME && lendingPlanId != null)) {
+                    add(if (incomeSub == IncomeSub.LOAN_DISBURSEMENT) "借款来源" else "收入来源")
+                }
+                if (selectedCategory == null && incomeSub == IncomeSub.INCOME && !(editingTransaction != null && lendingPlanId != null)) add("收入分类")
                 if (incomeSub == IncomeSub.LOAN_DISBURSEMENT && loanPlanId == null) add("贷款计划")
                 if (incomeSub == IncomeSub.REIMBURSEMENT && selectableReimbursableTxs.isNotEmpty()) {
                     reimbursementSelectionError(
@@ -632,9 +767,22 @@ fun TransactionEditorScreen(
                     add("本金、利息与费用合计")
                 }
             }
+            EditorKind.LENDING -> addAll(
+                lendingValidationErrors(
+                    amountCents = amountCents,
+                    selectedPlan = selectedLendingPlan,
+                    isAssetAccount = selectedAccount?.type == AccountType.ASSET.name,
+                    sub = lendingSub,
+                    principalCents = principalCents,
+                    splitDifferenceCents = lendingSplitDifference
+                )
+            )
         }
         if (accountTailConflict) add("资金账户（银行尾号 ${parsed?.cardTail}）")
         else if (balanceConflict && balanceResolution == null) add("余额对账选择")
+        if (assetBalanceShortfallCents > 0L) {
+            add("余额不足（还差 ${formatMoney(assetBalanceShortfallCents)}）")
+        }
     }
 
     Scaffold(
@@ -666,12 +814,47 @@ fun TransactionEditorScreen(
                 Button(
                     onClick = {
                         if (missing.isEmpty()) {
+                            if (saving) return@Button
+                            saving = true
+                            saveError = null
                             channel.trim().takeIf {
                                 it.isNotEmpty() && isCustomPaymentChannel(it)
                             }?.let(viewModel::rememberPaymentChannel)
                             if (editingTransaction != null) {
                                 val selectedLoanPlanId = loanPlanId
-                                if (kind == EditorKind.INCOME && incomeSub == IncomeSub.LOAN_DISBURSEMENT && selectedLoanPlanId != null) {
+                                val selectedLendingPlanId = lendingPlanId
+                                if (kind == EditorKind.LENDING && lendingSub == LendingSub.REPAYMENT && selectedLendingPlanId != null) {
+                                    viewModel.convertIncomeToLendingRepayment(
+                                        id = editingTransaction.id,
+                                        planId = selectedLendingPlanId,
+                                        totalCents = amountCents,
+                                        principalCents = principalCents ?: 0L,
+                                        interestCents = interestCents ?: 0L,
+                                        note = note.trim().takeIf { it.isNotEmpty() },
+                                        accountId = accountId,
+                                        occurredAt = occurredAt,
+                                        channel = channel.trim().takeIf { it.isNotEmpty() }
+                                    ) { result ->
+                                        saving = false
+                                        result.onSuccess { onDone() }
+                                            .onFailure { saveError = it.message ?: "转换出借收回失败" }
+                                    }
+                                } else if (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME && selectedLendingPlanId != null) {
+                                    viewModel.linkTransactionToLendingInterest(
+                                        id = editingTransaction.id,
+                                        planId = selectedLendingPlanId,
+                                        amountCents = amountCents,
+                                        merchant = merchantText.trim().takeIf { it.isNotEmpty() },
+                                        note = note.trim().takeIf { it.isNotEmpty() },
+                                        accountId = accountId,
+                                        occurredAt = occurredAt,
+                                        channel = channel.trim().takeIf { it.isNotEmpty() }
+                                    ) { result ->
+                                        saving = false
+                                        result.onSuccess { onDone() }
+                                            .onFailure { saveError = it.message ?: "关联出借利息失败" }
+                                    }
+                                } else if (kind == EditorKind.INCOME && incomeSub == IncomeSub.LOAN_DISBURSEMENT && selectedLoanPlanId != null) {
                                     viewModel.linkTransactionToLoanDisbursement(
                                         id = editingTransaction.id,
                                         planId = selectedLoanPlanId,
@@ -682,6 +865,7 @@ fun TransactionEditorScreen(
                                         occurredAt = occurredAt,
                                         channel = channel.trim().takeIf { it.isNotEmpty() }
                                     ) { result ->
+                                        saving = false
                                         result.onSuccess { onDone() }
                                             .onFailure { saveError = it.message ?: "关联借款计划失败" }
                                     }
@@ -698,63 +882,75 @@ fun TransactionEditorScreen(
                                         occurredAt = occurredAt,
                                         channel = channel.trim().takeIf { it.isNotEmpty() }
                                     ) { result ->
+                                        saving = false
                                         result.onSuccess { onDone() }
                                             .onFailure { saveError = it.message ?: "关联贷款还款失败" }
                                     }
                                 } else {
-                                val updatedType = if (kind == EditorKind.EXPENSE) TransactionType.EXPENSE else incomeSub.type
-                                val updatedCategory = when {
-                                    kind == EditorKind.EXPENSE -> selectedCategoryName
-                                    incomeSub == IncomeSub.INCOME -> selectedCategoryName
-                                    incomeSub == IncomeSub.REFUND -> selectedRefundSource?.transaction?.category
-                                        ?: com.assetsking.model.TransactionCategory.UNCATEGORIZED.name
-                                    else -> editingTransaction.category.ifBlank { com.assetsking.model.TransactionCategory.UNCATEGORIZED.name }
-                                }
-                                if (updatedType == TransactionType.REIMBURSEMENT) {
-                                    viewModel.updateReimbursement(
-                                        editingTransaction.id,
-                                        accountId,
-                                        amountCents,
-                                        merchantText.trim().takeIf { it.isNotEmpty() },
-                                        note.trim().takeIf { it.isNotEmpty() },
-                                        occurredAt,
-                                        expenseIds.value
-                                    )
-                                } else {
-                                    viewModel.updateTransaction(
-                                        editingTransaction.id,
-                                        amountCents,
-                                        updatedType,
-                                        updatedCategory,
-                                        merchantText.trim().takeIf { it.isNotEmpty() },
-                                        note.trim().takeIf { it.isNotEmpty() },
-                                        accountId,
-                                        occurredAt,
-                                        if (updatedType == TransactionType.EXPENSE) effectiveNecessity else editingTransaction.necessity,
-                                        channel.trim().takeIf { it.isNotEmpty() },
-                                        isReimbursable,
-                                        refundOfId
-                                    )
-                                }
+                                    val updatedType = if (kind == EditorKind.EXPENSE) TransactionType.EXPENSE else incomeSub.type
+                                    val updatedCategory = when {
+                                        kind == EditorKind.EXPENSE -> selectedCategoryName
+                                        incomeSub == IncomeSub.INCOME -> selectedCategoryName
+                                        incomeSub == IncomeSub.REFUND -> selectedRefundSource?.transaction?.category
+                                            ?: com.assetsking.model.TransactionCategory.UNCATEGORIZED.name
+                                        else -> editingTransaction.category.ifBlank { com.assetsking.model.TransactionCategory.UNCATEGORIZED.name }
+                                    }
+                                    if (updatedType == TransactionType.REIMBURSEMENT) {
+                                        viewModel.updateReimbursement(
+                                            editingTransaction.id,
+                                            accountId,
+                                            amountCents,
+                                            merchantText.trim().takeIf { it.isNotEmpty() },
+                                            note.trim().takeIf { it.isNotEmpty() },
+                                            occurredAt,
+                                            expenseIds.value
+                                        ) { result ->
+                                            saving = false
+                                            result.onSuccess { onDone() }
+                                                .onFailure { saveError = it.message ?: "更新报销失败" }
+                                        }
+                                    } else {
+                                        viewModel.updateTransaction(
+                                            editingTransaction.id,
+                                            amountCents,
+                                            updatedType,
+                                            updatedCategory,
+                                            merchantText.trim().takeIf { it.isNotEmpty() },
+                                            note.trim().takeIf { it.isNotEmpty() },
+                                            accountId,
+                                            occurredAt,
+                                            if (updatedType == TransactionType.EXPENSE) effectiveNecessity else editingTransaction.necessity,
+                                            channel.trim().takeIf { it.isNotEmpty() },
+                                            isReimbursable,
+                                            refundOfId
+                                        ) { result ->
+                                            saving = false
+                                            result.onSuccess { onDone() }
+                                                .onFailure { saveError = it.message ?: "更新流水失败" }
+                                        }
+                                    }
                                 }
                             } else {
                                 doSave(
-                                    kind, incomeSub, repaySub, amountCents, occurredAt, accountId, toAccountId, channel,
+                                    kind, incomeSub, repaySub, lendingSub, amountCents, occurredAt, accountId, toAccountId, channel,
                                     merchantText.trim(),
                                     if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.category.orEmpty() else selectedCategoryName,
                                     if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.necessity else necessity,
                                     isReimbursable, note,
-                                    loanPlanId, principalCents ?: 0L, interestCents ?: 0L, feeCents ?: 0L,
+                                    loanPlanId, lendingPlanId, principalCents ?: 0L, interestCents ?: 0L, feeCents ?: 0L,
                                     transferFeeCents, expenseIds.value, bankBalanceForSave,
                                     refundOfId, pendingItem, viewModel
-                                )
+                                ) { result ->
+                                    saving = false
+                                    result.onSuccess { onDone() }
+                                        .onFailure { saveError = it.message ?: "保存失败，账目未发生变化" }
+                                }
                             }
-                            onDone()
                         }
                     },
-                    enabled = amountCents > 0 && missing.isEmpty(),
+                    enabled = amountCents > 0 && missing.isEmpty() && !saving,
                     modifier = Modifier.fillMaxWidth().height(48.dp)
-                ) { Text(if (editingTransaction != null) "保存修改" else "确认入账", fontWeight = FontWeight.Bold) }
+                ) { Text(if (saving) "正在保存…" else if (editingTransaction != null) "保存修改" else "确认入账", fontWeight = FontWeight.Bold) }
             }
         }
     ) { padding ->
@@ -774,7 +970,10 @@ fun TransactionEditorScreen(
                 )
             }
             // ── 类型切换（REQ 编辑器§2/§11/§24）──
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 visibleKinds.forEach { k ->
                     FilterChip(
                         selected = directionChosen && kind == k,
@@ -817,6 +1016,25 @@ fun TransactionEditorScreen(
                         )
                     }
                 }
+                EditorKind.LENDING -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LendingSub.entries.forEach { sub ->
+                        FilterChip(
+                            selected = lendingSub == sub,
+                            onClick = {
+                                if (lendingSub != sub) {
+                                    lendingSub = sub
+                                    lendingPlanId = null
+                                    autoMatchedLendingPlanId = null
+                                    principalExpr = ""
+                                    interestExpr = ""
+                                    lendingSplitAutoFilled = false
+                                }
+                            },
+                            label = { Text(sub.label) },
+                            colors = strongSelectedFilterChipColors()
+                        )
+                    }
+                }
                 else -> Unit
             }
             Text(
@@ -825,6 +1043,11 @@ fun TransactionEditorScreen(
                     EditorKind.INCOME -> "他人转入只有确属收入时才记收入；借款、退款和报销到账请使用对应类型。"
                     EditorKind.TRANSFER -> "划转仅用于自己的两个账户互转，不计入收入或支出。"
                     EditorKind.REPAY -> "还款会联动信用账户或贷款计划，不计普通支出。"
+                    EditorKind.LENDING -> if (lendingSub == LendingSub.DISBURSEMENT) {
+                        "借出本金从现金资产划到应收资产，不计普通支出。"
+                    } else {
+                        "收回本金是应收资产回流；只有实际收到的利息计收入。"
+                    }
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -914,6 +1137,17 @@ fun TransactionEditorScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            } else if (kind == EditorKind.LENDING) {
+                AccountChannelFields(
+                    accounts = accounts.filter { it.type == AccountType.ASSET.name },
+                    selectedAccountId = accountId,
+                    selectedChannel = channel,
+                    savedChannels = savedPaymentChannels,
+                    customChannelSelected = customChannelSelected,
+                    onAccountSelected = { accountId = it },
+                    onChannelSelected = { channel = it },
+                    onCustomChannelSelected = { customChannelSelected = it }
+                )
             } else {
                 AccountChannelFields(
                     accounts = accounts,
@@ -935,6 +1169,7 @@ fun TransactionEditorScreen(
                 label = when {
                     kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME -> "收入来源"
                     kind == EditorKind.INCOME && incomeSub == IncomeSub.LOAN_DISBURSEMENT -> "借款来源"
+                    kind == EditorKind.LENDING -> "对方 / 借款人（可选）"
                     else -> "商户"
                 },
                 required = kind == EditorKind.EXPENSE || kind == EditorKind.INCOME,
@@ -945,6 +1180,7 @@ fun TransactionEditorScreen(
             if (kind == EditorKind.INCOME && incomeSub == IncomeSub.REFUND) {
                 RefundSourceField(
                     candidates = refundCandidates,
+                    merchantName = merchantText,
                     selectedId = refundOfId,
                     onSelected = { candidate ->
                         refundOfId = candidate?.transaction?.id
@@ -959,21 +1195,152 @@ fun TransactionEditorScreen(
             }
 
             if (kind == EditorKind.INCOME && incomeSub == IncomeSub.LOAN_DISBURSEMENT) {
+                val selectableLoanPlans = loanPlans.filter {
+                    (it.status == "PENDING_DISBURSEMENT" && it.originType == "PENDING_DISBURSEMENT") ||
+                        it.id == editingTransaction?.loanPlanId
+                }
                 Text("关联贷款计划", fontWeight = FontWeight.Medium)
                 Text(
                     "借款到账会增加现金和该计划的剩余本金，不计入普通收入。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    loanPlans.filter { it.status == "ACTIVE" }.forEach { plan ->
+                if (selectableLoanPlans.isEmpty()) {
+                    Text(
+                        "暂无可关联的待放款计划，请先在“贷款”页新建贷款计划并选择“待放款”来源。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        selectableLoanPlans.forEach { plan ->
                         FilterChip(
                             selected = loanPlanId == plan.id,
                             onClick = { loanPlanId = plan.id },
-                            label = { Text(loanPlanDisplayName(plan, accounts)) },
+                            label = { Text("${loanPlanDisplayName(plan, accounts)} · ${formatMoney(plan.principalCents)}") },
+                            colors = strongSelectedFilterChipColors()
+                        )
+                        }
+                    }
+                }
+            }
+
+            if (editingTransaction != null && kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME) {
+                Text("关联出借利息（可选）", fontWeight = FontWeight.Medium)
+                Text(
+                    "只把这笔收入标为利息收益，不会重复增加本金。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    lendingPlans.filter { it.status != LendingPlanStatus.PENDING_DISBURSEMENT }.forEach { plan ->
+                        FilterChip(
+                            selected = lendingPlanId == plan.id,
+                            onClick = {
+                                if (editingTransaction?.lendingPlanId != plan.id) {
+                                    lendingPlanId = if (lendingPlanId == plan.id) null else plan.id
+                                }
+                            },
+                            label = { Text("${plan.label} · ${plan.borrowerName}") },
                             colors = strongSelectedFilterChipColors()
                         )
                     }
+                }
+            }
+
+            if (kind == EditorKind.LENDING) {
+                Text("关联出借计划", fontWeight = FontWeight.Medium)
+                Text(
+                    if (lendingSub == LendingSub.DISBURSEMENT) {
+                        "只能选择待借出计划；金额唯一命中时仅预选，仍由你确认。"
+                    } else {
+                        "本金和利息必须按本次实际到账拆分，合计等于通知金额。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val candidates = lendingPlans.filter { plan ->
+                    if (lendingSub == LendingSub.DISBURSEMENT) {
+                        plan.status == LendingPlanStatus.PENDING_DISBURSEMENT &&
+                            plan.originType == LendingOriginType.PENDING_DISBURSEMENT
+                    } else {
+                        plan.status != LendingPlanStatus.PENDING_DISBURSEMENT
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    candidates.forEach { plan ->
+                        FilterChip(
+                            selected = lendingPlanId == plan.id,
+                            onClick = { lendingPlanId = plan.id; autoMatchedLendingPlanId = null },
+                            label = { Text("${plan.label} · ${plan.borrowerName}") },
+                            colors = strongSelectedFilterChipColors()
+                        )
+                    }
+                }
+                if (candidates.isEmpty()) {
+                    Text(
+                        if (lendingSub == LendingSub.DISBURSEMENT) "没有待借出的计划，请先在贷款页创建。" else "没有可关联的出借计划。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                selectedLendingPlan?.let { plan ->
+                    Text(
+                        if (lendingSub == LendingSub.DISBURSEMENT) {
+                            "计划本金 ${formatMoney(plan.principalCents)}"
+                        } else {
+                            "剩余应收 ${formatMoney(plan.remainingPrincipalCents)} · 已收利息 ${formatMoney(plan.receivedInterestCents)}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (lendingSub == LendingSub.REPAYMENT) {
+                    val splitHasError = amountCents > 0L && lendingSplitDifference != 0L
+                    OutlinedTextField(
+                        value = principalExpr,
+                        onValueChange = {
+                            principalExpr = it.filter { c -> c.isDigit() || c == '.' }
+                            lendingSplitAutoFilled = false
+                        },
+                        label = { Text("收回本金") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        isError = splitHasError,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+                    OutlinedTextField(
+                        value = interestExpr,
+                        onValueChange = {
+                            interestExpr = it.filter { c -> c.isDigit() || c == '.' }
+                            lendingSplitAutoFilled = false
+                        },
+                        label = { Text("收到利息") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        isError = splitHasError,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                    )
+                    Text(
+                        when {
+                            amountCents <= 0L -> "本金与利息合计需等于本次到账"
+                            lendingSplitDifference == null -> "请填写有效拆分"
+                            lendingSplitDifference > 0L -> "本金与利息合计还差 ${formatMoney(lendingSplitDifference)}"
+                            lendingSplitDifference < 0L -> "本金与利息合计超出 ${formatMoney(-lendingSplitDifference)}"
+                            else -> "拆分合计 ${formatMoney(amountCents)}，与本次到账一致"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (splitHasError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
@@ -1338,11 +1705,12 @@ internal fun ManagedTransactionDetailSheet(
 }
 
 private fun doSave(
-    kind: EditorKind, incomeSub: IncomeSub, repaySub: RepaySub,
+    kind: EditorKind, incomeSub: IncomeSub, repaySub: RepaySub, lendingSub: LendingSub,
     amountCents: Long, occurredAt: Long, accountId: String, toAccountId: String, channel: String,
     merchant: String, category: String, necessity: Boolean?, isReimbursable: Boolean, note: String,
-    loanPlanId: String?, principalCents: Long, interestCents: Long, feeCents: Long, transferFeeCents: Long,
-    expenseIds: List<String>, bankBalanceCents: Long?, refundOfId: String?, pendingItem: PendingItem?, viewModel: LedgerViewModel
+    loanPlanId: String?, lendingPlanId: String?, principalCents: Long, interestCents: Long, feeCents: Long, transferFeeCents: Long,
+    expenseIds: List<String>, bankBalanceCents: Long?, refundOfId: String?, pendingItem: PendingItem?, viewModel: LedgerViewModel,
+    onResult: (Result<Unit>) -> Unit
 ) {
     when {
         kind == EditorKind.TRANSFER && pendingItem != null ->
@@ -1352,10 +1720,11 @@ private fun doSave(
                 toAccountId,
                 amountCents,
                 transferFeeCents,
-                note
+                note,
+                onResult
             )
         kind == EditorKind.TRANSFER ->
-            viewModel.addTransfer(accountId, toAccountId, "%.2f".format(amountCents / 100.0), note, occurredAt)
+            viewModel.addTransfer(accountId, toAccountId, "%.2f".format(amountCents / 100.0), note, occurredAt, onResult)
         kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD && pendingItem != null ->
             viewModel.confirmTransferNotification(
                 pendingItem.notification.id,
@@ -1363,13 +1732,74 @@ private fun doSave(
                 toAccountId,
                 amountCents,
                 feeCents = 0L,
-                note = note
+                note = note,
+                onResult = onResult
             )
         kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD ->
-            viewModel.addTransfer(accountId, toAccountId, "%.2f".format(amountCents / 100.0), note, occurredAt)
+            viewModel.addTransfer(accountId, toAccountId, "%.2f".format(amountCents / 100.0), note, occurredAt, onResult)
+        kind == EditorKind.LENDING && lendingPlanId != null && lendingSub == LendingSub.DISBURSEMENT -> {
+            val lendingNote = listOfNotNull(
+                merchant.takeIf { it.isNotEmpty() },
+                note.takeIf { it.isNotBlank() }
+            ).joinToString(" · ").takeIf { it.isNotBlank() }
+            if (pendingItem != null) {
+                viewModel.confirmLendingDisbursementNotification(
+                    notificationId = pendingItem.notification.id,
+                    cashAccountId = accountId,
+                    planId = lendingPlanId,
+                    amountCents = amountCents,
+                    note = lendingNote,
+                    bankBalanceCents = bankBalanceCents,
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
+                    onResult = onResult
+                )
+            } else {
+                viewModel.addLendingDisbursement(
+                    cashAccountId = accountId,
+                    planId = lendingPlanId,
+                    amountCents = amountCents,
+                    note = lendingNote,
+                    occurredAt = occurredAt,
+                    onResult = { onResult(it.map { Unit }) }
+                )
+            }
+        }
+        kind == EditorKind.LENDING && lendingPlanId != null && lendingSub == LendingSub.REPAYMENT -> {
+            if (lendingSplitDifferenceCents(amountCents, principalCents, interestCents) != 0L) {
+                onResult(Result.failure(IllegalArgumentException("本金和利息合计必须等于到账金额")))
+                return
+            }
+            if (pendingItem != null) {
+                viewModel.confirmLendingRepaymentNotification(
+                    notificationId = pendingItem.notification.id,
+                    cashAccountId = accountId,
+                    planId = lendingPlanId,
+                    totalCents = amountCents,
+                    principalCents = principalCents,
+                    interestCents = interestCents,
+                    note = note.takeIf { it.isNotBlank() },
+                    bankBalanceCents = bankBalanceCents,
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
+                    onResult = onResult
+                )
+            } else {
+                viewModel.addLendingRepayment(
+                    cashAccountId = accountId,
+                    planId = lendingPlanId,
+                    principalCents = principalCents,
+                    interestCents = interestCents,
+                    note = note.takeIf { it.isNotBlank() },
+                    occurredAt = occurredAt,
+                    onResult = onResult
+                )
+            }
+        }
         kind == EditorKind.REPAY && repaySub == RepaySub.LOAN && loanPlanId != null -> {
             val total = amountCents
-            if (loanPaymentSplitDifferenceCents(total, principalCents, interestCents, feeCents) != 0L) return
+            if (loanPaymentSplitDifferenceCents(total, principalCents, interestCents, feeCents) != 0L) {
+                onResult(Result.failure(IllegalArgumentException("本金、利息和费用合计必须等于还款金额")))
+                return
+            }
             if (pendingItem != null) {
                 viewModel.confirmLoanPaymentNotification(
                     notificationId = pendingItem.notification.id,
@@ -1381,19 +1811,20 @@ private fun doSave(
                     feeCents = feeCents,
                     note = note,
                     bankBalanceCents = bankBalanceCents,
-                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail }
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
+                    onResult = onResult
                 )
             } else {
                 viewModel.addLoanPayment(
                     accountId, loanPlanId,
                     "%.2f".format(total / 100.0), "%.2f".format(principalCents / 100.0),
                     "%.2f".format(interestCents / 100.0), "%.2f".format(feeCents / 100.0),
-                    note, occurredAt
+                    note, occurredAt, onResult
                 )
             }
         }
         kind == EditorKind.INCOME && incomeSub == IncomeSub.REIMBURSEMENT ->
-            viewModel.saveReimbursement(accountId, amountCents, merchant.takeIf { it.isNotEmpty() }, note, occurredAt, expenseIds)
+            viewModel.saveReimbursement(accountId, amountCents, merchant.takeIf { it.isNotEmpty() }, note, occurredAt, expenseIds, onResult)
         kind == EditorKind.INCOME && incomeSub == IncomeSub.LOAN_DISBURSEMENT && loanPlanId != null -> {
             val loanNote = listOfNotNull(
                 merchant.takeIf { it.isNotEmpty() },
@@ -1407,7 +1838,8 @@ private fun doSave(
                     amountCents = amountCents,
                     note = loanNote,
                     bankBalanceCents = bankBalanceCents,
-                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail }
+                    bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
+                    onResult = onResult
                 )
             } else {
                 viewModel.addLoanDisbursement(
@@ -1415,7 +1847,8 @@ private fun doSave(
                     amount = "%.2f".format(amountCents / 100.0),
                     planId = loanPlanId,
                     note = loanNote,
-                    occurredAt = occurredAt
+                    occurredAt = occurredAt,
+                    onResult = onResult
                 )
             }
         }
@@ -1440,16 +1873,19 @@ private fun doSave(
                     bankCardTail = bankBalanceCents?.let { pendingItem.parsed.cardTail },
                     necessity = necessity,
                     channel = channel,
-                    refundOfId = refundOfId
+                    refundOfId = refundOfId,
+                    onResult = onResult
                 )
             } else {
                 viewModel.saveEditorTransaction(
                     accountId, amountCents, type, cat, merchant.takeIf { it.isNotEmpty() },
                     note.takeIf { it.isNotEmpty() }, occurredAt, isReimbursable, necessity, channel, refundOfId
-                )
-            }
-            if (merchant.isNotEmpty()) {
-                viewModel.learnRule(merchant, accountId, type.name, cat)
+                ) { result ->
+                    if (result.isSuccess && merchant.isNotEmpty()) {
+                        viewModel.learnRule(merchant, accountId, type.name, cat)
+                    }
+                    onResult(result)
+                }
             }
         }
     }
@@ -1646,23 +2082,43 @@ private fun EvidenceSectionInEditor(
     val own = pendingItem.notification
     val merged = ignoredItems.filter { it.processingNote?.contains("kept=${own.id}") == true }
     var show by remember { mutableStateOf(false) }
-    Column {
-        Text(
-            "已合并 ${merged.size + 1} 条消息",
-            Modifier.clickable { show = !show },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary
-        )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = { show = !show },
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Text("已合并 ${merged.size + 1} 条消息", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    if (show) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (show) "收起消息" else "展开消息"
+                )
+            }
         if (show) {
             (listOf(own) + merged).forEach { n ->
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    Text("${n.sourceLabel ?: n.packageName} · ${formatTime(n.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(n.content.ifBlank { n.title.orEmpty() }, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("${n.sourceLabel ?: n.packageName} · ${formatTime(n.postedAt)}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(n.content.ifBlank { n.title.orEmpty() }, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
                     if (n.id != own.id) {
-                        TextButton(onClick = { viewModel.splitNotification(n.id) }) { Text("拆分为独立待确认", style = MaterialTheme.typography.labelSmall) }
+                            OutlinedButton(onClick = { viewModel.splitNotification(n.id) }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                                Text("拆分为独立待确认")
+                            }
+                        } else {
+                            Text("当前主消息", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1703,20 +2159,26 @@ private fun BalancePreviewInEditor(
         else -> return
     }
     val check = com.assetsking.ledger.BalanceMath.checkBalance(account.balanceCents, delta, parsed.balanceCents)
-    Column {
-        Text("余额校验预览", fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelLarge)
-        Text("账面余额 ${formatMoney(account.balanceCents)} · 本次影响 ${if (delta >= 0) "+" else ""}${formatMoney(delta)} · 应有余额 ${formatMoney(check.expectedCents)}", style = MaterialTheme.typography.labelSmall)
-        Text("银行余额 ${formatMoney(check.bankCents ?: 0)}", style = MaterialTheme.typography.labelSmall)
-        Text(
-            if (check.matches) "✓ 一致" else "✗ 不一致，差额 ${formatMoney(check.diffCents)}",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = if (check.matches) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
-        )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("余额校验预览", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text("账面余额", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(formatMoney(account.balanceCents), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("本次影响 ${if (delta >= 0) "+" else ""}${formatMoney(delta)} · 计算后应有余额 ${formatMoney(check.expectedCents)}", style = MaterialTheme.typography.bodyMedium)
+            Text("通知余额 ${formatMoney(check.bankCents ?: 0)}", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                if (check.matches) "✓ 与通知余额一致" else "✗ 与通知余额不一致，差额 ${formatMoney(check.diffCents)}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = if (check.matches) Color(0xFF2E8B73) else MaterialTheme.colorScheme.error
+            )
         if (!check.matches) {
             Text(
                 "这笔流水可以继续入库，请选择余额对账口径：",
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Row(
@@ -1726,12 +2188,12 @@ private fun BalancePreviewInEditor(
                 if (resolution == BalanceResolution.NOTIFICATION) {
                     Button(
                         onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(48.dp)
                     ) { Text("以通知余额为准") }
                 } else {
                     OutlinedButton(
                         onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(48.dp)
                     ) { Text("以通知余额为准") }
                 }
                 if (resolution == BalanceResolution.CURRENT_LEDGER) {
@@ -1752,9 +2214,10 @@ private fun BalancePreviewInEditor(
                     BalanceResolution.CURRENT_LEDGER -> "确认后保留当前账面余额，由本次流水正常扣减。"
                     null -> "选定后即可直接确认入库，不必退出去手动改余额。"
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
         }
     }
 }
@@ -1762,15 +2225,20 @@ private fun BalancePreviewInEditor(
 @Composable
 private fun RefundSourceField(
     candidates: List<RefundSourceCandidate>,
+    merchantName: String,
     selectedId: String?,
     onSelected: (RefundSourceCandidate?) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selected = candidates.firstOrNull { it.transaction.id == selectedId }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("关联原消费（可选）", fontWeight = FontWeight.Medium)
+        Text("关联原消费（先填写商户）", fontWeight = FontWeight.Medium)
         Box(Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { expanded = true },
+                enabled = merchantName.trim().isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text(
                     selected?.let {
                         "${it.transaction.merchant ?: "未命名"} · ${formatMoney(it.transaction.amountCents)}"
@@ -1812,7 +2280,8 @@ private fun RefundSourceField(
         Text(
             when {
                 selected != null -> "将继承原消费分类与必要性，并冲减对应预算"
-                candidates.isEmpty() -> "没有金额足够的同账户消费，可不关联直接入账"
+                merchantName.trim().isEmpty() -> "请先填写商户名称，下面只显示同商户、同渠道、同账户的可退款流水"
+                candidates.isEmpty() -> "请确认商户和支付渠道；没有找到同商户、同渠道、同账户且可退款的消费，可不关联直接入账"
                 else -> "未关联时退款不冲减消费分类和预算，可之后编辑补绑"
             },
             style = MaterialTheme.typography.labelSmall,

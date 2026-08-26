@@ -56,6 +56,8 @@ class CreditCardInstallmentService(
     private val database: AssetsKingDatabase,
     private val now: () -> Long = System::currentTimeMillis
 ) {
+    private val evidenceRecorder = LedgerEvidenceRecorder(database)
+
     suspend fun create(draft: CreditCardInstallmentDraft): String = database.withTransaction {
         require(draft.installmentType == TYPE_POST_PURCHASE || draft.installmentType == TYPE_STATEMENT) {
             "不支持的信用分期类型"
@@ -419,6 +421,14 @@ class CreditCardInstallmentService(
                     occurredAt = matchedAt,
                     source = "AUTO"
                 )
+                recordPaymentEvidence(
+                    planId = candidate.planId,
+                    transfer = transfer,
+                    scheduleId = candidate.scheduleId,
+                    principalCents = candidate.principalRemainingCents,
+                    occurredAt = matchedAt,
+                    source = "AUTO"
+                )
             }
             CardInstallmentPaymentMatchKind.AMBIGUOUS -> {
                 matchDao.insertAll(
@@ -498,6 +508,14 @@ class CreditCardInstallmentService(
                 occurredAt = resolvedAt,
                 source = "USER"
             )
+            recordPaymentEvidence(
+                planId = plan.id,
+                transfer = transfer,
+                scheduleId = scheduleId,
+                principalCents = principalCents,
+                occurredAt = resolvedAt,
+                source = "USER"
+            )
         }
 
     suspend fun reverseTransferMatches(transferId: String) = database.withTransaction {
@@ -517,6 +535,16 @@ class CreditCardInstallmentService(
                 eventType = "PAYMENT_MATCH_REVERSED",
                 occurredAt = reversedAt,
                 source = "SYSTEM"
+            )
+            evidenceRecorder.lifecycle(
+                subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+                subjectId = match.planId,
+                action = EvidenceAction.EFFECT_REVERSED,
+                occurredAt = reversedAt,
+                payload = JSONObject()
+                    .put("transferId", transferId)
+                    .put("scheduleId", match.scheduleId)
+                    .put("reason", "TRANSFER_TRASHED")
             )
         }
         confirmed.forEach { match -> recomputeSchedule(match.scheduleId) }
@@ -629,6 +657,44 @@ class CreditCardInstallmentService(
                 .put("paymentCents", transfer.amountCents)
                 .put("principalCents", principalCents)
                 .put("unallocatedPaymentCents", (transfer.amountCents - principalCents).coerceAtLeast(0L))
+        )
+    }
+
+    private suspend fun recordPaymentEvidence(
+        planId: String,
+        transfer: TransferEntity,
+        scheduleId: String,
+        principalCents: Long,
+        occurredAt: Long,
+        source: String
+    ) {
+        evidenceRecorder.link(
+            groupId = "card-installment-payment:${transfer.id}:$scheduleId",
+            subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+            subjectId = planId,
+            subjectRole = "PAYMENT_BY_TRANSFER",
+            sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, transfer.id)),
+            linkedAt = occurredAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.CARD_INSTALLMENT,
+            subjectId = planId,
+            action = EvidenceAction.LINKED,
+            occurredAt = occurredAt,
+            payload = JSONObject()
+                .put("transferId", transfer.id)
+                .put("scheduleId", scheduleId)
+                .put("principalCents", principalCents)
+                .put("source", source)
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.TRANSFER,
+            subjectId = transfer.id,
+            action = EvidenceAction.LINKED,
+            occurredAt = occurredAt,
+            payload = JSONObject()
+                .put("cardInstallmentPlanId", planId)
+                .put("scheduleId", scheduleId)
         )
     }
 

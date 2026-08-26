@@ -6,6 +6,7 @@ import com.assetsking.database.TransactionEntity
 internal enum class TransactionLinkBadge(val label: String, val colorKey: String) {
     BORROWING_PLAN("借款计划", "loan"),
     LOAN_PLAN("贷款计划", "loan"),
+    LENDING_PLAN("出借计划", "lending"),
     RECURRING_PAYMENT("周期付款", "recurring")
 }
 
@@ -19,5 +20,6 @@ internal fun transactionLinkBadges(transaction: TransactionEntity): List<Transac
             }
         )
     }
+    if (transaction.lendingPlanId != null) add(TransactionLinkBadge.LENDING_PLAN)
     if (transaction.recurringRuleId != null) add(TransactionLinkBadge.RECURRING_PAYMENT)
 }

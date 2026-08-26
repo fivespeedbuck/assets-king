@@ -77,6 +77,27 @@ class V5MetricsTest {
         assertEquals(350_000, m.monthlySurvivalGapCents) // 7000-3500-0，与借款无关
     }
 
+    @Test
+    fun `pending disbursement plan and its placeholder account do not become debt`() {
+        val pending = metrics(
+            accounts = listOf(card(id = "new-loan", type = "LOAN", balance = 5_000_000L)),
+            plans = listOf(
+                plan(
+                    accountId = "new-loan",
+                    remaining = 5_000_000L,
+                    status = "PENDING_DISBURSEMENT",
+                    installments = listOf(installment(today.plusDays(3), principal = 500_000L))
+                )
+            )
+        )
+
+        assertEquals(0L, pending.totalDebtCents)
+        assertEquals(0L, pending.loanAccountDebtCents)
+        assertEquals(0L, pending.loanPlanDebtCents)
+        assertEquals(0L, pending.mustRepayCents)
+        assertEquals(0L, pending.due7DaysCents)
+    }
+
     // ── V5 §63 Case 4：信用卡还款不是消费，且 mustRepay 扣已还 ──
 
     @Test
