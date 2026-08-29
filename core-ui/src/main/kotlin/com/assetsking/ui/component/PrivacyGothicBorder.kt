@@ -26,13 +26,14 @@ object PrivacyGothicCardShape : Shape {
  *
  * 只负责绘制，不改变布局边界、点击区域或内容 padding；普通模式不会调用此 Modifier。
  */
-fun Modifier.privacyGothicBorder(): Modifier = drawWithCache {
+fun Modifier.privacyGothicBorder(alpha: Float = 1f): Modifier = drawWithCache {
     val inset = 2.dp.toPx()
     val cut = 8.dp.toPx()
     val mainStroke = 0.9.dp.toPx()
     val detailStroke = 0.55.dp.toPx()
-    val mainColor = PrivacyGothicBorderSilver.copy(alpha = 0.28f)
-    val detailColor = PrivacyGothicBorderMist.copy(alpha = 0.14f)
+    val progress = alpha.coerceIn(0f, 1f)
+    val mainColor = PrivacyGothicBorderSilver.copy(alpha = 0.28f * progress)
+    val detailColor = PrivacyGothicBorderMist.copy(alpha = 0.14f * progress)
 
     val outline = gothicCutPath(size.width, size.height, inset, cut)
     val innerOutline = gothicCutPath(

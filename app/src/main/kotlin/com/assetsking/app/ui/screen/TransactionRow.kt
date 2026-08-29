@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.TransferBalanceDetail
+import com.assetsking.ui.component.Sheet
 import com.assetsking.app.ui.privacy.LocalPrivacyChaosFrame
 import com.assetsking.app.ui.privacy.animatePrivacyValue
 import com.assetsking.app.ui.privacy.privacyFakeAmount
@@ -46,10 +49,14 @@ import com.assetsking.ui.format.formatClockTime
 import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.component.IconLibrary
+import com.assetsking.ui.component.CleanLinearProgressIndicator
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.transactionCashFlowColor
 import com.assetsking.ui.theme.LoanPrincipalDebtColor
 import com.assetsking.ui.theme.RecurringDebitOrange
+import com.assetsking.ui.theme.UiTokens
+import com.assetsking.ui.theme.PendingOrange
+import com.assetsking.ui.theme.IncomeGreen
 
 @Composable
 fun AccountRow(account: AccountEntity, onClick: () -> Unit = {}) {
@@ -102,12 +109,12 @@ fun AccountRow(account: AccountEntity, onClick: () -> Unit = {}) {
                     "privacy-credit-usage-${account.id}"
                 )
                 androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
-                androidx.compose.material3.LinearProgressIndicator(
+                CleanLinearProgressIndicator(
                     progress = { usagePct },
                     modifier = Modifier.width(60.dp).height(4.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(50)),
-                    color = if (usagePct > 0.8f) MaterialTheme.colorScheme.error
-                           else if (usagePct > 0.5f) androidx.compose.ui.graphics.Color(0xFFFF9800)
-                           else androidx.compose.ui.graphics.Color(0xFF66BB6A),
+                     color = if (usagePct > 0.8f) MaterialTheme.colorScheme.error
+                            else if (usagePct > 0.5f) PendingOrange
+                            else IncomeGreen,
                     trackColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             }
@@ -250,7 +257,11 @@ fun TransferRow(
     val toLabel = transferAccountLabel(toName, toCardTail)
     val transferColor = MaterialTheme.colorScheme.primary
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp).clickable(onClick = onClick),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = UiTokens.MinimumTouch)
+            .padding(horizontal = UiTokens.CardPadding, vertical = 4.dp)
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -267,13 +278,16 @@ fun TransferRow(
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                if (privacyEnabled) {
-                    "${privacyObfuscatedText(fromLabel, 850)} → ${privacyObfuscatedText(toLabel, 851)}"
-                } else {
-                    "$fromLabel → $toLabel"
-                },
+                if (privacyEnabled) privacyObfuscatedText(fromLabel, 850) else fromLabel,
                 fontWeight = FontWeight.Medium,
                 style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                if (privacyEnabled) "→ ${privacyObfuscatedText(toLabel, 851)}" else "→ $toLabel",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -298,6 +312,48 @@ fun TransferRow(
             style = MaterialTheme.typography.bodyLarge,
             color = transferColor,
             maxLines = 1
+        )
+    }
+}
+
+@Composable
+internal fun TransferDetailDialog(
+    detail: TransferBalanceDetail?,
+    accounts: List<AccountEntity>,
+    privacyEnabled: Boolean,
+    onDismiss: () -> Unit
+) {
+    Sheet(title = "划转详情", onDismiss = onDismiss) {
+        if (detail == null) {
+            Text("正在计算划转发生时的账户余额…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            val fromName = accounts.firstOrNull { it.id == detail.transfer.fromAccountId }?.name ?: "转出账户"
+            val toName = accounts.firstOrNull { it.id == detail.transfer.toAccountId }?.name ?: "转入账户"
+            Text(
+                if (privacyEnabled) "划转金额 ${privacyFakeAmount(890)}" else "划转金额 ${formatMoney(detail.transfer.amountCents)}",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(12.dp))
+            TransferBalanceLine("转出 · ${if (privacyEnabled) privacyObfuscatedText(fromName, 891) else fromName}", detail.fromBeforeCents, detail.fromAfterCents, privacyEnabled, 892)
+            Spacer(Modifier.height(8.dp))
+            TransferBalanceLine("转入 · ${if (privacyEnabled) privacyObfuscatedText(toName, 893) else toName}", detail.toBeforeCents, detail.toAfterCents, privacyEnabled, 894)
+            if (detail.fromBeforeCents == null || detail.toBeforeCents == null) {
+                Spacer(Modifier.height(8.dp))
+                Text("该时刻存在同秒流水或对账点，历史余额无法可靠区分；当前划转金额和账户关系仍可确认。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransferBalanceLine(label: String, before: Long?, after: Long?, privacyEnabled: Boolean, index: Int) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp)).padding(12.dp)) {
+        Text(label, fontWeight = FontWeight.Bold)
+        Text(
+            if (before == null || after == null) "当时余额不可确定" else if (privacyEnabled) "${privacyFakeAmount(index)} → ${privacyFakeAmount(index + 1)}" else "${formatMoney(before)} → ${formatMoney(after)}",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

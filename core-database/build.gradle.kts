@@ -25,6 +25,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.enableUnitTest = false
+    }
+}
+
 dependencies {
     implementation(project(":core-model"))
     implementation(project(":core-ledger"))

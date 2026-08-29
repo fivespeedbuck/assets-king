@@ -34,11 +34,38 @@ import com.assetsking.ui.privacy.LocalPrivacyEnabled
 @Composable
 fun ReconciliationSheet(
     accounts: List<AccountEntity>,
+    receivableAccountIds: Set<String> = emptySet(),
     onReconcile: (AccountEntity) -> Unit,
     onDismiss: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
-    val checked = remember { mutableStateMapOf(*accounts.map { it.id to true }.toTypedArray()) }
+    val visibleAccounts = remember(accounts) {
+        accounts.asSequence()
+            .filter { !it.archived }
+            .sortedWith(
+                compareBy<AccountEntity> { account ->
+                    val checkedAt = account.lastCheckedAt
+                    when {
+                        account.balanceStatus == "DISCREPANCY" -> 0
+                        checkedAt == null || checkedAt <= 0L -> 1
+                        else -> 2
+                    }
+                }.thenBy { it.lastCheckedAt ?: Long.MIN_VALUE }
+                    .thenBy { it.name }
+                    .thenBy { it.cardTail.orEmpty() }
+            )
+            .toList()
+    }
+    val assetAccounts = visibleAccounts.filter {
+        it.type == com.assetsking.model.AccountType.ASSET.name && it.id !in receivableAccountIds
+    }
+    val receivableAccounts = visibleAccounts.filter { it.id in receivableAccountIds }
+    val debtAccounts = visibleAccounts.filter {
+        it.type != com.assetsking.model.AccountType.ASSET.name && it.id !in receivableAccountIds
+    }
+    val checked = remember(visibleAccounts) {
+        mutableStateMapOf(*visibleAccounts.map { it.id to true }.toTypedArray())
+    }
 
     Sheet(title = "对账确认", onDismiss = onDismiss) {
         Text(
@@ -47,58 +74,75 @@ fun ReconciliationSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
-        accounts.forEachIndexed { index, account ->
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Checkbox(
-                    checked = checked[account.id] == true,
-                    onCheckedChange = { checked[account.id] = it }
+        listOf(
+            "资产账户" to assetAccounts,
+            "应收账户" to receivableAccounts,
+            "负债账户" to debtAccounts
+        ).forEach { (title, group) ->
+            if (group.isNotEmpty()) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
                 )
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "${if (privacyEnabled) privacyObfuscatedText(account.name, 2600 + index) else account.name} · ${accountTypeLabel(account.type)}",
-                        fontWeight = FontWeight.Medium
-                    )
-                    val displayCents = if (account.type == com.assetsking.model.AccountType.CREDIT.name || account.type == com.assetsking.model.AccountType.LOAN.name)
-                        -account.balanceCents else account.balanceCents
-                    Text(
-                        if (privacyEnabled) privacyFakeAmount(2620 + index) else formatMoney(displayCents),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (displayCents < 0) MaterialTheme.colorScheme.error
-                               else MaterialTheme.colorScheme.onSurface
-                    )
-                    val lastCheck = account.lastCheckedAt
-                    if (lastCheck != null && lastCheck > 0) {
-                        Text(
-                            "上次对账 ${if (privacyEnabled) privacyFakeDateTime(2640 + index) else formatTime(lastCheck)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                group.forEach { account ->
+                    val index = visibleAccounts.indexOf(account)
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = checked[account.id] == true,
+                            onCheckedChange = { checked[account.id] = it }
                         )
-                    } else {
-                        Text(
-                            "尚未对过账",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${if (privacyEnabled) privacyObfuscatedText(account.name, 2600 + index) else account.name} · ${accountTypeLabel(account.type)}",
+                                fontWeight = FontWeight.Medium
+                            )
+                            val displayCents = if (
+                                account.type == com.assetsking.model.AccountType.CREDIT.name ||
+                                account.type == com.assetsking.model.AccountType.LOAN.name
+                            ) -account.balanceCents else account.balanceCents
+                            Text(
+                                if (privacyEnabled) privacyFakeAmount(2620 + index) else formatMoney(displayCents),
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (displayCents < 0) MaterialTheme.colorScheme.error
+                                       else MaterialTheme.colorScheme.onSurface
+                            )
+                            val lastCheck = account.lastCheckedAt
+                            if (lastCheck != null && lastCheck > 0) {
+                                Text(
+                                    "上次对账 ${if (privacyEnabled) privacyFakeDateTime(2640 + index) else formatTime(lastCheck)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Text(
+                                    "尚未对过账",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            if (account.balanceStatus == "DISCREPANCY") {
+                                Text(
+                                    "余额与银行报告存在差异，请核对流水后手动调整",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                     }
-                    if (account.balanceStatus == "DISCREPANCY") {
-                        Text(
-                            "余额与银行报告存在差异，请核对流水后手动调整",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
+                    HorizontalDivider()
                 }
             }
-            HorizontalDivider()
         }
         Spacer(Modifier.height(12.dp))
         Button(
             onClick = {
-                accounts.filter { checked[it.id] == true }.forEach { onReconcile(it) }
+                visibleAccounts.filter { checked[it.id] == true }.forEach { onReconcile(it) }
                 onDismiss()
             },
             modifier = Modifier.fillMaxWidth(),

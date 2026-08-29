@@ -35,6 +35,18 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem Keep the JDK's Windows Unix-domain socket path short. Long or virtualized
+@rem TEMP paths can make NIO PipeImpl fail before Gradle reads the project.
+set "ASSETS_KING_GRADLE_TMP=%~d0\ak-t"
+if not exist "%ASSETS_KING_GRADLE_TMP%" mkdir "%ASSETS_KING_GRADLE_TMP%" >NUL 2>&1
+if not exist "%ASSETS_KING_GRADLE_TMP%" (
+    echo ERROR: Could not create Gradle temporary directory: %ASSETS_KING_GRADLE_TMP% 1>&2
+    goto fail
+)
+set "TEMP=%ASSETS_KING_GRADLE_TMP%"
+set "TMP=%ASSETS_KING_GRADLE_TMP%"
+set "JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Djava.io.tmpdir=%ASSETS_KING_GRADLE_TMP% -Djdk.net.unixdomain.tmpdir=%ASSETS_KING_GRADLE_TMP%"
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 

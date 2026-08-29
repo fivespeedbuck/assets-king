@@ -163,7 +163,7 @@ internal fun necessaryBudgetCents(
 internal fun visibleDebtAccounts(accounts: List<com.assetsking.database.AccountEntity>) =
     accounts.filter {
         !it.archived && when (it.type) {
-            com.assetsking.model.AccountType.CREDIT.name -> it.balanceCents > 0L
+            com.assetsking.model.AccountType.CREDIT.name -> true
             com.assetsking.model.AccountType.LOAN.name -> true
             else -> false
         }

@@ -3,10 +3,61 @@ package com.assetsking.app.ui.privacy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.math.abs
 
 class PrivacyChaosPatternTest {
+    @Test
+    fun committedTransitionRejectsSingleTapUntilFogFinishes() {
+        val controller = PrivacyEntryController()
+        assertTrue(controller.beginPress())
+        controller.updatePress(1f)
+        controller.commit()
+
+        assertFalse(controller.beginPress())
+        assertEquals(PrivacyEntryPhase.Committed, controller.phase)
+        assertEquals(1f, controller.progress)
+
+        controller.reset()
+        assertTrue(controller.beginPress())
+        assertEquals(0f, controller.progress)
+    }
+
+    @Test
+    fun resumedFogStillRequiresOneFullNewThreeSecondPress() {
+        assertEquals(0.9f, privacyPressProgress(0.9f, 0L))
+        assertTrue(privacyPressProgress(0.9f, 100L) < 1f)
+        assertTrue(privacyPressProgress(0.9f, 2_999L) < 1f)
+        assertEquals(1f, privacyPressProgress(0.9f, 3_000L))
+    }
+
+    @Test
+    fun privacyContentProgressIsSymmetricAndCrossfadesAtMidpoint() {
+        assertEquals(0.25f, privacyVisualProgress(false, PrivacyEntryPhase.Pressing, 0.25f))
+        assertEquals(0.75f, privacyVisualProgress(true, PrivacyEntryPhase.Pressing, 0.25f))
+        assertEquals(1f, privacyTransitionContentAlpha(0f))
+        assertEquals(0f, privacyTransitionContentAlpha(0.5f))
+        assertEquals(1f, privacyTransitionContentAlpha(1f))
+        assertEquals(1f, privacySaturation(0f))
+        assertEquals(0.5f, privacySaturation(0.5f))
+        assertEquals(0f, privacySaturation(1f))
+    }
+
+    @Test
+    fun privacyPressProgressIsContinuousForNumericTransition() {
+        assertTrue(privacyPressProgress(0f, 1_000L) in 0f..1f)
+        assertTrue(privacyPressProgress(0f, 1_500L) < privacyPressProgress(0f, 2_500L))
+    }
+
+    @Test
+    fun longPressColorTransitionAndFogDissipationEachLastThreeSeconds() {
+        assertEquals(3_000L, PRIVACY_ENTRY_LONG_PRESS_MS)
+        assertEquals(3_000, PRIVACY_THEME_COVER_MS)
+        assertEquals(3_000, PRIVACY_FOG_DISSIPATE_MS)
+        assertTrue(PRIVACY_ENTRY_CANCEL_MS < PRIVACY_ENTRY_LONG_PRESS_MS)
+    }
+
     @Test
     fun compactAmountKeepsOneLineSummarySlotsShort() {
         assertEquals("+¥234.56", compactPrivacyAmount("+¥1,234.56"))

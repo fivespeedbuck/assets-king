@@ -11,8 +11,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import com.assetsking.ui.privacy.LocalPrivacyEnabled
-import com.assetsking.ui.theme.CardShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.assetsking.ui.privacy.LocalPrivacyProgress
 
 /**
  * 实体卡片（REQ 主题§2 / 首页UI§10-11）：浅色模式不透明白底 + 细灰边框 + 大圆角，
@@ -25,22 +25,23 @@ fun GlassCard(
     contentPadding: Modifier = Modifier.padding(20.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val containerColor = MaterialTheme.colorScheme.surfaceContainer.let { color ->
-        if (LocalPrivacyEnabled.current) color.copy(alpha = 0.72f) else color
-    }
-    val privacyEnabled = LocalPrivacyEnabled.current
-    val cardShape = if (privacyEnabled) PrivacyGothicCardShape else CardShape
+    val privacyProgress = LocalPrivacyProgress.current.coerceIn(0f, 1f)
+    val containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(
+        alpha = 1f - 0.28f * privacyProgress
+    )
+    val cardShape = RoundedCornerShape((20f * (1f - privacyProgress)).dp)
     Box(
         modifier = modifier
             .clip(cardShape)
             .background(containerColor)
-            .then(
-                if (privacyEnabled) {
-                    Modifier.privacyGothicBorder()
-                } else {
-                    Modifier.border(1.dp, MaterialTheme.colorScheme.outline, CardShape)
-                }
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(
+                    alpha = MaterialTheme.colorScheme.outline.alpha * (1f - privacyProgress)
+                ),
+                cardShape
             )
+            .privacyGothicBorder(privacyProgress)
             .then(contentPadding)
     ) {
         Column { content() }

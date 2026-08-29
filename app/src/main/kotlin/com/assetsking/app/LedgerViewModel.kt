@@ -232,9 +232,13 @@ class LedgerViewModel(
     fun categorize(merchant: String?, note: String?): TransactionCategory =
         repository.categorize(merchant, note)
 
-    fun addAccount(name: String, type: AccountType, openingBalance: String, cardTail: String?, statementDay: Int? = null, dueDay: Int? = null, creditLimit: Long = 0) {
-        val cents = openingBalance.toCentsOrNull(allowZero = true) ?: return
-        viewModelScope.launch { addAccount(name, type, cents, cardTail, statementDay, dueDay, creditLimit) }
+    fun addAccount(name: String, type: AccountType, openingBalance: String, cardTail: String?, statementDay: Int? = null, dueDay: Int? = null, creditLimit: Long = 0, onResult: (Result<Unit>) -> Unit = {}) {
+        val cents = openingBalance.toCentsOrNull(allowZero = true)
+            ?: return onResult(Result.failure(IllegalArgumentException("余额格式不正确")))
+        launchWrite(onResult) {
+            addAccount(name, type, cents, cardTail, statementDay, dueDay, creditLimit)
+            Unit
+        }
     }
 
     fun updateAccount(account: AccountEntity) {
@@ -372,14 +376,20 @@ class LedgerViewModel(
     }
 
     fun restoreTransactionFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能恢复流水")))
+            return
+        }
         viewModelScope.coroutineLaunch {
             onResult(runCatching { repository.restoreTransactionFromTrash(id) })
         }
     }
 
     fun permanentlyDeleteTransactionFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能永久删除流水")))
+            return
+        }
         viewModelScope.coroutineLaunch {
             onResult(runCatching { repository.permanentlyDeleteTransactionFromTrash(id) })
         }
@@ -393,8 +403,8 @@ class LedgerViewModel(
         viewModelScope.launch { repository.deleteBudget(id) }
     }
 
-    fun saveLoanPlan(plan: LoanPlanEntity) {
-        viewModelScope.launch { repository.saveLoanPlan(plan) }
+    fun saveLoanPlan(plan: LoanPlanEntity, onResult: (Result<Unit>) -> Unit = {}) {
+        launchWrite(onResult) { repository.saveLoanPlan(plan) }
     }
 
     fun deleteLoanPlan(id: String) {
@@ -660,9 +670,10 @@ class LedgerViewModel(
         principalCents: Long,
         feeCents: Long,
         note: String?,
-        occurredAt: Long = System.currentTimeMillis()
+        occurredAt: Long = System.currentTimeMillis(),
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.addLoanPrepayment(cashAccountId, planId, principalCents, note, occurredAt, feeCents)
         }
     }
@@ -671,9 +682,10 @@ class LedgerViewModel(
     fun settleLoanPlan(
         cashAccountId: String, planId: String,
         principalCents: Long, interestCents: Long, feeCents: Long,
-        note: String?, occurredAt: Long = System.currentTimeMillis()
+        note: String?, occurredAt: Long = System.currentTimeMillis(),
+        onResult: (Result<Unit>) -> Unit = {}
     ) {
-        viewModelScope.launch {
+        launchWrite(onResult) {
             repository.settleLoanPlan(cashAccountId, planId, principalCents, interestCents, feeCents, note, occurredAt)
         }
     }
@@ -804,13 +816,21 @@ class LedgerViewModel(
 
     suspend fun previewTransferDeletion(id: String) = repository.previewTransferDeletion(id)
 
+    suspend fun transferBalanceDetail(id: String) = repository.transferBalanceDetail(id)
+
     fun restoreTransferFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能恢复划转")))
+            return
+        }
         viewModelScope.coroutineLaunch { onResult(runCatching { repository.restoreTransferFromTrash(id) }) }
     }
 
     fun permanentlyDeleteTransferFromTrash(id: String, onResult: (Result<Unit>) -> Unit = {}) {
-        if (!privacyDataWritesAllowed()) return
+        if (!privacyDataWritesAllowed()) {
+            onResult(Result.failure(IllegalStateException("隐秘模式下不能永久删除划转")))
+            return
+        }
         viewModelScope.coroutineLaunch { onResult(runCatching { repository.permanentlyDeleteTransferFromTrash(id) }) }
     }
 
@@ -863,8 +883,7 @@ class LedgerViewModel(
     /** 拆分通知（REQ 归并§18）：把被误合并的证据恢复为独立待确认项 */
     fun splitNotification(notificationId: String) {
         viewModelScope.launch {
-            repository.updateNotificationStatus(notificationId, "PENDING_CONFIRMATION")
-            repository.updateNotificationNote(notificationId, "")
+            repository.splitNotification(notificationId)
         }
     }
 

@@ -20,7 +20,8 @@ data class EvidenceAuditIssue(
     val subjectId: String,
     val title: String,
     val detail: String,
-    val recommendation: String
+    val recommendation: String,
+    val subjectLabel: String? = null
 )
 
 data class EvidenceAuditReport(
@@ -46,6 +47,7 @@ data class EvidenceAuditReport(
             issues.forEachIndexed { index, issue ->
                 appendLine()
                 appendLine("${index + 1}. [${issue.severity}] ${issue.title}")
+                issue.subjectLabel?.let { appendLine("   涉及：$it") }
                 appendLine("   ${issue.subjectType}/${issue.subjectId}")
                 appendLine("   ${issue.detail}")
                 appendLine("   建议：${issue.recommendation}")
@@ -104,6 +106,51 @@ class LedgerEvidenceAuditService(
         val linksBySubject = evidenceLinks.groupBy { it.subjectType to it.subjectId }
         val lifecycleBySubject = lifecycle.groupBy { it.subjectType to it.subjectId }
         val lastLifecycle = lifecycleBySubject.mapValues { (_, rows) -> rows.maxWith(compareBy({ it.occurredAt }, { it.id })) }
+
+        fun money(cents: Long): String {
+            val absolute = kotlin.math.abs(cents)
+            val sign = if (cents < 0L) "-" else ""
+            return "$sign¥${absolute / 100}.${(absolute % 100).toString().padStart(2, '0')}"
+        }
+
+        fun date(epochMillis: Long): String = Instant.ofEpochMilli(epochMillis)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .toString()
+
+        fun notificationLabel(id: String): String? = notificationById[id]?.let { notification ->
+            "${notification.sourceLabel ?: "通知"} · ${date(notification.postedAt)}"
+        }
+
+        fun subjectLabel(subjectType: String, subjectId: String): String = when (subjectType) {
+            EvidenceSubjectType.TRANSACTION -> txById[subjectId]?.let { tx ->
+                "${tx.merchant?.takeIf { it.isNotBlank() } ?: tx.category} · ${money(tx.amountCents)} · ${date(tx.occurredAt)}${if (tx.deletedAt != null) "（垃圾箱）" else ""}"
+            }
+            EvidenceSubjectType.TRANSFER -> transferById[subjectId]?.let { transfer ->
+                val from = accountById[transfer.fromAccountId]?.name ?: "未知转出账户"
+                val to = accountById[transfer.toAccountId]?.name ?: "未知转入账户"
+                "$from → $to · ${money(transfer.amountCents)} · ${date(transfer.occurredAt)}${if (transfer.deletedAt != null) "（垃圾箱）" else ""}"
+            }
+            EvidenceSubjectType.LOAN_PLAN -> loanById[subjectId]?.let { plan ->
+                "${accountById[plan.accountId]?.name ?: "贷款计划"} · 剩余本金 ${money(plan.remainingPrincipalCents)}"
+            }
+            EvidenceSubjectType.LENDING_PLAN -> lendingById[subjectId]?.let { plan ->
+                "${plan.label} · ${plan.borrowerName} · 剩余应收 ${money(plan.remainingPrincipalCents)}"
+            }
+            EvidenceSubjectType.CARD_INSTALLMENT -> cardById[subjectId]?.let { plan ->
+                "${plan.label} · ${accountById[plan.cardAccountId]?.name ?: "信用账户"} · 剩余本金 ${money(plan.remainingPrincipalCents)}"
+            }
+            EvidenceSubjectType.RECURRING_RULE -> recurringById[subjectId]?.let { rule ->
+                "${rule.merchant?.takeIf { it.isNotBlank() } ?: rule.category} · ${money(rule.amountCents)}"
+            }
+            EvidenceSourceType.RAW_NOTIFICATION -> subjectId.split('|')
+                .mapNotNull(::notificationLabel)
+                .distinct()
+                .joinToString(" / ")
+                .ifBlank { null }
+            "ACCOUNT" -> accountById[subjectId]?.let { "${it.name} · 当前余额 ${money(it.balanceCents)}" }
+            else -> null
+        } ?: "相关历史账务记录"
 
         fun subjectExists(subjectType: String, subjectId: String): Boolean = when (subjectType) {
             EvidenceSubjectType.TRANSACTION -> subjectId in txById
@@ -276,11 +323,25 @@ class LedgerEvidenceAuditService(
                     "通知标记为已入账但没有有效流水", "没有有效 Transaction/Transfer 可以证明 LINKED。",
                     "恢复对应流水，或把通知改回待确认/忽略并核对余额。"
                 )
-                "IGNORED" -> if (hasActiveLedgerEvent) issue(
-                    "NOTIFICATION_IGNORED_WITH_ACTIVE_EVENT", EvidenceAuditSeverity.BROKEN, "RAW_NOTIFICATION", notification.id,
-                    "已忽略通知仍驱动有效流水", "有效组 ${activeGroups.sorted()}，流水 ${activeTransactions.sorted()}。",
-                    "核对通知与流水归属；保留真实流水时应恢复 LINKED。"
-                )
+                "IGNORED" -> {
+                    // 合并转账会故意把原始通知留作墓碑（两条通知共同证明一笔 Transfer），
+                    // 这不是“忽略通知驱动流水”；普通忽略证据仍必须报错。
+                    val legalTransferTombstone = hasActiveLedgerEvent &&
+                        notification.processingNote?.let { note ->
+                            note.startsWith("merged-transfer") || note.startsWith("single-transfer")
+                        } == true &&
+                        activeGroups.any { group ->
+                            evidenceLinks.any {
+                                it.groupId == group && it.sourceType == EvidenceSourceType.RAW_NOTIFICATION &&
+                                    it.sourceId == notification.id && it.subjectType == EvidenceSubjectType.TRANSFER
+                            }
+                        }
+                    if (hasActiveLedgerEvent && !legalTransferTombstone) issue(
+                        "NOTIFICATION_IGNORED_WITH_ACTIVE_EVENT", EvidenceAuditSeverity.BROKEN, "RAW_NOTIFICATION", notification.id,
+                        "已忽略通知仍驱动有效流水", "有效组 ${activeGroups.sorted()}，流水 ${activeTransactions.sorted()}。",
+                        "核对通知与流水归属；保留真实流水时应恢复 LINKED。"
+                    )
+                }
                 "NEW", "PENDING_CONFIRMATION" -> if (hasActiveLedgerEvent) issue(
                     "NOTIFICATION_PENDING_WITH_ACTIVE_EVENT", EvidenceAuditSeverity.BROKEN, "RAW_NOTIFICATION", notification.id,
                     "待处理通知已经产生有效流水", "status=${notification.status}。",
@@ -583,7 +644,14 @@ class LedgerEvidenceAuditService(
                             (it.type == TransactionType.LOAN_PAYMENT.name || it.type == TransactionType.LOAN_PREPAYMENT.name)
                     }
                     .sumOf { it.principalCents }
-                val expectedRemaining = (baseline - paidPrincipal).coerceAtLeast(0L)
+                if (paidPrincipal > baseline) {
+                    issue(
+                        "LOAN_PRINCIPAL_OVERPAID", EvidenceAuditSeverity.BROKEN, EvidenceSubjectType.LOAN_PLAN, plan.id,
+                        "贷款还款本金超过锚点本金", "锚点 $baseline，已付 $paidPrincipal",
+                        "核对还款流水本金拆分；不得用 0 元剩余掩盖超额还款。"
+                    )
+                }
+                val expectedRemaining = baseline - paidPrincipal
                 if (baseline < 0L || plan.ledgerBaselineAt <= 0L) {
                     issue("LOAN_BASELINE_MISSING", EvidenceAuditSeverity.BROKEN, EvidenceSubjectType.LOAN_PLAN, plan.id, "贷款缺少可重放本金锚点", "baseline=$baseline, at=${plan.ledgerBaselineAt}", "重新核对当前剩余本金并建立证据锚点。")
                 } else if (plan.remainingPrincipalCents != expectedRemaining) {
@@ -622,7 +690,14 @@ class LedgerEvidenceAuditService(
                 val receivedInterest = relatedInterest
                     .filter { it.type == TransactionType.INCOME.name && it.occurredAt > plan.ledgerBaselineAt }
                     .sumOf { it.amountCents }
-                val expectedRemaining = (plan.ledgerBaselinePrincipalCents - repaidPrincipal).coerceAtLeast(0L)
+                if (repaidPrincipal > plan.ledgerBaselinePrincipalCents) {
+                    issue(
+                        "LENDING_PRINCIPAL_OVERPAID", EvidenceAuditSeverity.BROKEN, EvidenceSubjectType.LENDING_PLAN, plan.id,
+                        "出借收回本金超过锚点本金", "锚点 ${plan.ledgerBaselinePrincipalCents}，已收回 $repaidPrincipal",
+                        "核对本金收回划转；不得用 0 元剩余掩盖超额收回。"
+                    )
+                }
+                val expectedRemaining = plan.ledgerBaselinePrincipalCents - repaidPrincipal
                 val expectedReceivedInterest = plan.ledgerBaselineInterestCents + receivedInterest
                 if (plan.remainingPrincipalCents != expectedRemaining) {
                     issue("LENDING_PRINCIPAL_MISMATCH", EvidenceAuditSeverity.BROKEN, EvidenceSubjectType.LENDING_PLAN, plan.id, "剩余应收不可由有效本金划转重算", "记录 ${plan.remainingPrincipalCents}，证据链重算 $expectedRemaining", "核对本金收回划转和最近权威锚点。")
@@ -839,6 +914,7 @@ class LedgerEvidenceAuditService(
         }
 
         val sortedIssues = issues.distinctBy { listOf(it.code, it.subjectType, it.subjectId, it.detail) }
+            .map { it.copy(subjectLabel = subjectLabel(it.subjectType, it.subjectId)) }
             .sortedWith(compareBy<EvidenceAuditIssue>({ it.severity != EvidenceAuditSeverity.BROKEN }, { it.code }, { it.subjectId }))
         EvidenceAuditReport(
             generatedAt = now,

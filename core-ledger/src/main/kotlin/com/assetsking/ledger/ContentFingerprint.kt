@@ -13,6 +13,13 @@ import kotlin.math.abs
  */
 object ContentFingerprint {
     const val DEDUP_WINDOW_MS = 5 * 60_000L
+    private val smsMirrorPackages = setOf(
+        "com.android.mms.service",
+        "com.android.mms",
+        "com.samsung.android.messaging",
+        "com.miui.smsextra",
+        "com.google.android.apps.messaging"
+    )
 
     fun of(title: String?, content: String): String =
         buildString {
@@ -25,6 +32,33 @@ object ContentFingerprint {
                 else -> char
             }
         }.filter { it.isLetterOrDigit() || it == '.' }.joinToString("").lowercase()
+
+    private fun bodyOnly(content: String): String =
+        content.map { char ->
+            when (char) {
+                '。', '．' -> '.'
+                else -> char
+            }
+        }.filter { it.isLetterOrDigit() || it == '.' }.joinToString("").lowercase()
+
+    private fun isSmsMirrorPackage(packageName: String): Boolean =
+        packageName == "sms" || packageName in smsMirrorPackages
+
+    /** 短信接收器与系统短信通知是同一条短信的两个入口；它们的标题可能不同。 */
+    fun isSameSmsMirrorContent(
+        aPackage: String,
+        aContent: String,
+        aPostedAt: Long,
+        bPackage: String,
+        bContent: String,
+        bPostedAt: Long
+    ): Boolean =
+        aPackage != bPackage &&
+            isSmsMirrorPackage(aPackage) &&
+            isSmsMirrorPackage(bPackage) &&
+            bodyOnly(aContent).isNotBlank() &&
+            bodyOnly(aContent) == bodyOnly(bContent) &&
+            abs(aPostedAt - bPostedAt) < DEDUP_WINDOW_MS
 
     /**
      * 短信实时广播与短信箱补扫必须得到同一个主键。

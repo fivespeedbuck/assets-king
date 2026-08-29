@@ -25,7 +25,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -57,15 +56,14 @@ import com.assetsking.app.UpdateChecker
 import com.assetsking.app.UpdateInstaller
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.notification.VaultRuntimeStatus
-import com.assetsking.app.ui.privacy.privacyFakeAmount
-import com.assetsking.app.ui.privacy.privacyFakeCount
-import com.assetsking.app.ui.privacy.privacyFakeDateTime
-import com.assetsking.app.ui.privacy.privacyFakeYearMonth
-import com.assetsking.app.ui.privacy.privacyObfuscatedText
+import com.assetsking.app.ui.privacy.privacyDisplayCount
+import com.assetsking.app.ui.privacy.privacyDisplayMoney
+import com.assetsking.app.ui.privacy.privacyDisplayObfuscatedText
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.EvidenceAuditReport
+import com.assetsking.database.EvidenceAuditSeverity
 import com.assetsking.database.EvidenceAuditStatus
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.TransactionEntity
@@ -73,6 +71,7 @@ import com.assetsking.database.TransferEntity
 import com.assetsking.ledger.SmsSenderWhitelist
 import com.assetsking.model.TransactionCategory
 import com.assetsking.ui.component.ChipRow
+import com.assetsking.ui.component.CleanLinearProgressIndicator
 import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.Sheet
@@ -83,6 +82,7 @@ import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.DeficitRed
 import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.PendingOrange
+import com.assetsking.ui.theme.UiTokens
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -153,20 +153,25 @@ private fun SettingsCapabilityRow(
     actionEnabled: Boolean = true,
     onAction: () -> Unit = {}
 ) {
-    Row(
+    Column(
         Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(status, color = statusColor, style = MaterialTheme.typography.bodySmall, maxLines = 2)
         }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(status, color = statusColor, style = MaterialTheme.typography.bodySmall)
-            actionLabel?.let { action ->
-                TextButton(onClick = onAction, enabled = actionEnabled) { Text(action) }
-            }
+        Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        actionLabel?.let { action ->
+            TextButton(
+                onClick = onAction,
+                enabled = actionEnabled,
+                modifier = Modifier.align(Alignment.End).height(UiTokens.MinimumTouch)
+            ) { Text(action) }
         }
     }
 }
@@ -375,13 +380,13 @@ fun SettingsScreen(
         pipelineSeverity == SettingsPipelineSeverity.WARNING -> "核心监听正常"
         else -> "全部正常"
     }
-    val latestIntakeText = if (privacyEnabled) {
-        "最近入库 ${privacyFakeDateTime(900)}"
-    } else if (lastReceivedAt <= 0L) {
+    val displayPipelineSummary = privacyDisplayObfuscatedText(pipelineSummary, 905)
+    val realLatestIntakeText = if (lastReceivedAt <= 0L) {
         "等待第一笔账目"
     } else {
         "${if (runtimeStatus == VaultRuntimeStatus.RECOVERING) "补扫中 · " else ""}最近入库 ${formatTime(lastReceivedAt)}"
     }
+    val latestIntakeText = privacyDisplayObfuscatedText(realLatestIntakeText, 900)
     val currentMonth = java.time.YearMonth.now().toString()
     val currentBudgets = budgets.filter { it.month == currentMonth }
     val currentMonthBudgetCount = budgets.count { it.month == currentMonth }
@@ -397,18 +402,15 @@ fun SettingsScreen(
             item {
                 SettingsGroupCard(
                     title = SettingsSection.MONTHLY_PLAN.title,
-                    summary = if (privacyEnabled) {
-                        "预期收入 ${privacyFakeAmount(901)} · ${privacyFakeCount(902)} 项本月预算"
-                    } else {
-                        "预期收入 ${formatMoney(monthlyIncomeCents)} · $currentMonthBudgetCount 项本月预算"
-                    },
+                    summary = "预期收入 ${privacyDisplayMoney(monthlyIncomeCents, 901)} · " +
+                        "${privacyDisplayCount(currentMonthBudgetCount, 902)} 项本月预算",
                     onClick = { activeSection = SettingsSection.MONTHLY_PLAN }
                 )
             }
             item {
                 SettingsGroupCard(
                     title = SettingsSection.AUTOMATIC_INTAKE.title,
-                    summary = "$pipelineSummary · $latestIntakeText",
+                    summary = "$displayPipelineSummary · $latestIntakeText",
                     onClick = { activeSection = SettingsSection.AUTOMATIC_INTAKE }
                 )
             }
@@ -474,7 +476,7 @@ fun SettingsScreen(
                     )
                 } else {
                     Text(
-                        if (privacyEnabled) "已汇总 ${privacyFakeCount(903)} 项分项预算" else "已汇总 ${currentBudgets.size} 项分项预算",
+                        "已汇总 ${privacyDisplayCount(currentBudgets.size, 903)} 项分项预算",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -483,7 +485,7 @@ fun SettingsScreen(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("必要生活合计", fontWeight = FontWeight.Bold)
                     Text(
-                        if (privacyEnabled) privacyFakeAmount(904) else formatMoney(budgetSum),
+                        privacyDisplayMoney(budgetSum, 904),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -519,7 +521,7 @@ fun SettingsScreen(
                         Text("金库状态", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         Text(latestIntakeText, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text(pipelineSummary, color = summaryColor, style = MaterialTheme.typography.labelLarge)
+                    Text(displayPipelineSummary, color = summaryColor, style = MaterialTheme.typography.labelLarge)
                 }
                 Spacer(Modifier.height(10.dp))
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -668,36 +670,30 @@ fun SettingsScreen(
                     Text("暂无预算设置", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 } else {
                     currentBudgets.forEachIndexed { index, b ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
+                         Column(
+                             Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                             verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                         ) {
+                            Column(Modifier.fillMaxWidth()) {
                                 Text(
-                                    if (privacyEnabled) {
-                                        privacyObfuscatedText(
-                                            if (b.category == "ALL") "总预算" else
-                                                runCatching { TransactionCategory.valueOf(b.category) }.getOrNull()?.let { categoryLabel(it) } ?: b.category,
-                                            910 + index
-                                        )
-                                    } else if (b.category == "ALL") "总预算" else {
-                                        runCatching { TransactionCategory.valueOf(b.category) }.getOrNull()?.let { categoryLabel(it) } ?: b.category
-                                    },
+                                    privacyDisplayObfuscatedText(
+                                        if (b.category == "ALL") "总预算" else
+                                            runCatching { TransactionCategory.valueOf(b.category) }.getOrNull()?.let { categoryLabel(it) } ?: b.category,
+                                        910 + index
+                                    ),
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    if (privacyEnabled) {
-                                        "限额 ${privacyFakeAmount(940 + index)}"
-                                    } else {
-                                        "限额 ${formatMoney(b.monthlyLimitCents)}"
-                                    },
+                                    "限额 ${privacyDisplayMoney(b.monthlyLimitCents, 940 + index)}",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { editingBudget = b; showBudgetSheet = true }, enabled = settingsWritable) { Text("编辑") }
-                                OutlinedButton(onClick = { onDeleteBudget(b.id) }, enabled = settingsWritable) { Text("删除") }
+                             Row(
+                                 Modifier.fillMaxWidth(),
+                                 horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                             ) {
+                                OutlinedButton(onClick = { editingBudget = b; showBudgetSheet = true }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("编辑") }
+                                OutlinedButton(onClick = { onDeleteBudget(b.id) }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("删除") }
                             }
                         }
                     }
@@ -823,6 +819,8 @@ fun SettingsScreen(
             GlassCard {
                 Column(Modifier.fillMaxWidth()) {
                     Text("数据管理与安全", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(UiTokens.ItemGap))
+                    Text("备份与恢复", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "6 位备份密码主要防止文件被随手打开，强度低于长密码；密码遗忘后备份无法恢复。",
@@ -830,35 +828,44 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     var pinInput by remember { mutableStateOf(repository.backupPin()) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                    ) {
                         FormField(
                             value = pinInput,
                             onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(6) },
                             label = "6 位备份密码",
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth(),
                             readOnly = !settingsWritable
                         )
-                        TextButton(onClick = {
+                        Button(onClick = {
                             if (pinInput.length == 6) {
                                 repository.setBackupPin(pinInput)
                                 backupMsg = "密码已保存"
                             } else backupMsg = "密码必须是 6 位数字"
-                        }, enabled = settingsWritable) { Text("保存") }
+                        }, enabled = settingsWritable, modifier = Modifier.fillMaxWidth()) { Text("保存") }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                    ) {
                         Button(onClick = {
                             scope.launch {
                                 backupMsg = if (repository.backupNow(manual = true)) "备份完成" else "请先设置 6 位备份密码"
                             }
-                        }, enabled = settingsWritable) { Text("立即备份") }
-                        OutlinedButton(onClick = { backupLauncher.launch(arrayOf("*/*")) }, enabled = settingsWritable) { Text("恢复备份") }
+                        }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("立即备份") }
+                        OutlinedButton(onClick = { backupLauncher.launch(arrayOf("*/*")) }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("恢复备份") }
                     }
                     Text(
                         "新版备份只生成一个 .akbackup 加密文件。恢复会先备份当前数据，再整库覆盖；不会追加或合并。旧版 .db.enc 备份仍可恢复。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(UiTokens.SectionGap))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(UiTokens.ItemGap))
+                    Text("导出与垃圾箱", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     OutlinedButton(
                         onClick = {
                             scope.launch {
@@ -878,7 +885,7 @@ fun SettingsScreen(
                         enabled = settingsWritable,
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("导出流水 CSV") }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(UiTokens.ItemGap))
                     OutlinedButton(
                         onClick = { showTransactionTrash = true },
                         enabled = settingsWritable,
@@ -887,7 +894,10 @@ fun SettingsScreen(
                         val trashCount = deletedTransactions.size + deletedTransfers.size
                         Text(if (trashCount == 0) "流水垃圾箱（空）" else "流水垃圾箱（${trashCount}）")
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(UiTokens.SectionGap))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(UiTokens.ItemGap))
+                    Text("证据链", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     OutlinedButton(
                         onClick = {
                             evidenceAuditRunning = true
@@ -906,6 +916,10 @@ fun SettingsScreen(
                     evidenceAuditError?.let {
                         Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed)
                     }
+                    Spacer(Modifier.height(UiTokens.SectionGap))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(UiTokens.ItemGap))
+                    Text("备份目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
                             "备份目录：${
@@ -930,9 +944,12 @@ fun SettingsScreen(
             GlassCard {
                 Text("对账", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("对账周期")
-                    ChipRow(
+                     Column(
+                         Modifier.fillMaxWidth(),
+                         verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                     ) {
+                         Text("对账周期", style = MaterialTheme.typography.labelLarge)
+                         ChipRow(
                         items = listOf(3, 7, 14, 30),
                         selected = reconcileDays,
                         onSelected = {
@@ -942,8 +959,8 @@ fun SettingsScreen(
                         enabled = settingsWritable,
                         label = { days -> when (days) { 3 -> "3天"; 7 -> "每周"; 14 -> "两周"; 30 -> "每月"; else -> "${days}天" } },
                         id = { days -> days.toString() }
-                    )
-                }
+                         )
+                     }
             }
         } }
 
@@ -957,7 +974,7 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         // 检查更新（REQ 设置§13）：API 失败时回退公开清单。
-                        TextButton(
+                        OutlinedButton(
                             enabled = settingsWritable && !checkingUpdate && downloadingRelease == null,
                             onClick = {
                                 checkingUpdate = true
@@ -987,7 +1004,7 @@ fun SettingsScreen(
                         Text(updateMsg, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     downloadedUpdateApk?.let { apk ->
-                        TextButton(
+                        Button(
                             enabled = settingsWritable && downloadingRelease == null,
                             onClick = {
                                 if (UpdateInstaller.canRequestPackageInstalls(context)) {
@@ -1073,7 +1090,7 @@ fun SettingsScreen(
             title = { Text("正在下载 ${rel.tag}", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    LinearProgressIndicator(
+                    CleanLinearProgressIndicator(
                         progress = { progress },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1144,25 +1161,35 @@ private fun EvidenceAuditSheet(
     onShare: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val statusLabel = when (report.status) {
-        EvidenceAuditStatus.COMPLETE -> "完整"
-        EvidenceAuditStatus.WARNING -> "需要核对"
-        EvidenceAuditStatus.BROKEN -> "存在断链"
-    }
+    val privacyEnabled = com.assetsking.ui.privacy.LocalPrivacyEnabled.current
+    var showTechnicalDetails by remember { mutableStateOf(false) }
     val statusColor = when (report.status) {
         EvidenceAuditStatus.COMPLETE -> IncomeGreen
         EvidenceAuditStatus.WARNING -> PendingOrange
         EvidenceAuditStatus.BROKEN -> DeficitRed
     }
     Sheet(title = "证据链检查", onDismiss = onDismiss) {
-        Text(statusLabel, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = statusColor)
         Text(
-            "对象 ${report.subjectCount} · 来源关系 ${report.sourceLinkCount} · 生命周期 ${report.lifecycleEventCount}",
+            when (report.status) {
+                EvidenceAuditStatus.COMPLETE -> "账面证据完整"
+                EvidenceAuditStatus.WARNING -> "发现需要核对的账务记录"
+                EvidenceAuditStatus.BROKEN -> "发现可能影响余额的证据断链"
+            },
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = statusColor
+        )
+        Text(
+            when (report.status) {
+                EvidenceAuditStatus.COMPLETE -> "暂未发现需要处理的问题。"
+                EvidenceAuditStatus.WARNING -> "当前余额可能仍可使用，但建议按下面提示逐项核对。"
+                EvidenceAuditStatus.BROKEN -> "请先处理下面标记为“可能影响余额”的记录。"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            "断链 ${report.brokenCount} · 提醒 ${report.warningCount}",
+            if (report.issues.isEmpty()) "所有账务记录都能追溯到来源。" else "${report.issues.size} 项记录需要你的注意。",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium
         )
@@ -1180,30 +1207,60 @@ private fun EvidenceAuditSheet(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            "${index + 1}. ${issue.title}",
+                            "${index + 1}. ${issue.title.ifBlank { "相关账务记录" }}",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = if (issue.severity.name == "BROKEN") DeficitRed else PendingOrange
                         )
                         Text(
-                            "${issue.subjectType} · ${issue.subjectId}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "涉及：${if (privacyEnabled) "相关账务记录" else issue.subjectLabel ?: "相关历史账务记录"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        Text(issue.detail, style = MaterialTheme.typography.bodyMedium)
+                        Text("发生了什么", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            issue.detail,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text("为什么重要", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            when (issue.severity) {
+                                EvidenceAuditSeverity.BROKEN -> "可能影响余额、流水关联或计划进度。"
+                                EvidenceAuditSeverity.WARNING -> "通常不立即改变余额，但会降低历史账务的可追溯性。"
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                         Text(
                             "处理建议",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Text(issue.recommendation, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            issue.recommendation,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (!privacyEnabled && showTechnicalDetails) {
+                            Text("技术详情", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Text("${issue.subjectType} · ${issue.subjectId}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(issue.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(issue.recommendation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
         }
+        OutlinedButton(
+            onClick = { showTechnicalDetails = !showTechnicalDetails },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (showTechnicalDetails) "收起技术详情" else "查看技术详情") }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onShare, modifier = Modifier.fillMaxWidth()) { Text("分享纯文本报告") }
+        Button(
+            onClick = onShare,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !privacyEnabled
+        ) { Text(if (privacyEnabled) "隐秘模式下不可分享技术报告" else "分享纯文本报告") }
     }
 }
 

@@ -25,3 +25,6 @@ object PrivacyMode {
 }
 
 val LocalPrivacyEnabled = staticCompositionLocalOf { false }
+
+/** 0 = 普通，1 = 隐秘；转场期间供卡片、边框等组件连续插值。 */
+val LocalPrivacyProgress = staticCompositionLocalOf { 0f }

@@ -27,6 +27,11 @@ val AssetsKingTypography = Typography(
         fontSize = 16.sp,
         lineHeight = 22.sp
     ),
+    titleSmall = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp
+    ),
     bodyLarge = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
@@ -46,6 +51,12 @@ val AssetsKingTypography = Typography(
         fontWeight = FontWeight.Medium,
         fontSize = 14.sp,
         lineHeight = 18.sp,
+        letterSpacing = 0.5.sp
+    ),
+    labelMedium = TextStyle(
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
         letterSpacing = 0.5.sp
     ),
     labelSmall = TextStyle(

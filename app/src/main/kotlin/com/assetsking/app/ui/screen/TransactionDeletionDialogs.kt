@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -104,11 +106,11 @@ internal fun TransactionDeletionPreviewDialog(
         },
         dismissButton = {
             Row {
-                TextButton(
+                OutlinedButton(
                     onClick = onBalancesMismatch,
                     enabled = previews != null && !busy
                 ) { Text("账对不上") }
-                TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+                OutlinedButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
             }
         }
     )
@@ -137,10 +139,15 @@ internal fun TransactionDeletionRiskDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onConfirmAnyway, enabled = !busy) {
-                Text(if (busy) "处理中…" else "仍然删除", color = MaterialTheme.colorScheme.error)
-            }
+            Button(
+                onClick = onConfirmAnyway,
+                enabled = !busy,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) { Text(if (busy) "处理中…" else "仍然删除") }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("返回核对") } }
+        dismissButton = { OutlinedButton(onClick = onDismiss, enabled = !busy) { Text("返回核对") } }
     )
 }

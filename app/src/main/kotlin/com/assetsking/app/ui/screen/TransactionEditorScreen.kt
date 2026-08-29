@@ -18,12 +18,15 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -75,6 +78,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,6 +124,31 @@ private fun strongSelectedFilterChipColors() = FilterChipDefaults.filterChipColo
     selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
     selectedTrailingIconColor = MaterialTheme.colorScheme.onPrimary
 )
+
+@Composable
+private fun EditorSectionCard(
+    title: String,
+    supportingText: String? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                supportingText?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            content()
+        }
+    }
+}
 
 internal data class RefundSourceCandidate(
     val transaction: TransactionEntity,
@@ -289,6 +319,14 @@ fun TransactionEditorScreen(
     BackHandler(onBack = onBack)
 
     val parsed = pendingItem?.parsed
+    val receivableAccountIds = remember(lendingPlans) {
+        lendingPlans.mapTo(hashSetOf()) { it.receivableAccountId }
+    }
+    // 专属应收只由“借出/收回”账务流程在仓储层使用；普通编辑器不把它伪装成可用资金账户。
+    // 若历史异常流水已经指向应收，编辑时仍保留当前项，便于用户改到正确账户。
+    val ordinaryAccounts = remember(accounts, receivableAccountIds, editingTransaction?.accountId) {
+        accounts.filter { it.id !in receivableAccountIds || it.id == editingTransaction?.accountId }
+    }
     var kind by remember(pendingItem?.notification?.id, editingTransaction?.id, initialLoanPlanId) {
         mutableStateOf(
             when {
@@ -333,10 +371,10 @@ fun TransactionEditorScreen(
     var occurredAt by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(editingTransaction?.occurredAt ?: pendingItem?.notification?.postedAt ?: System.currentTimeMillis())
     }
-    val inferredAccountId = remember(pendingItem, accounts, merchantLastAccount) {
+    val inferredAccountId = remember(pendingItem, ordinaryAccounts, merchantLastAccount) {
         if (pendingItem != null) AccountInference.infer(
             bankMatchedAccountId = parsed?.bankHint?.let { hint ->
-                val active = accounts.asSequence().filterNot { it.archived }
+                val active = ordinaryAccounts.asSequence().filterNot { it.archived }
                 active.firstOrNull { account ->
                     account.cardTail != null && account.cardTail == parsed.cardTail &&
                         (account.name.contains(hint) || hint.contains(account.name))
@@ -346,7 +384,7 @@ fun TransactionEditorScreen(
             },
             merchantHistoryAccountId = parsed?.merchant?.let { merchantLastAccount[it] },
             sourcePackage = pendingItem.notification.packageName,
-            candidates = accounts.filter { !it.archived && it.type != AccountType.LOAN.name }
+            candidates = ordinaryAccounts.filter { !it.archived && it.type != AccountType.LOAN.name }
                 .map { AccountInference.Candidate(it.id, it.name) }
         ) else null
     }
@@ -354,7 +392,7 @@ fun TransactionEditorScreen(
         mutableStateOf(
             if (editingTransaction != null) editingTransaction.accountId
             else if (pendingItem != null) inferredAccountId.orEmpty()
-            else accounts.firstOrNull { !it.archived && it.type == AccountType.ASSET.name }?.id.orEmpty()
+            else ordinaryAccounts.firstOrNull { !it.archived && it.type == AccountType.ASSET.name }?.id.orEmpty()
         )
     }
     var toAccountId by remember { mutableStateOf(accounts.firstOrNull { it.type == AccountType.CREDIT.name }?.id.orEmpty()) }
@@ -592,11 +630,11 @@ fun TransactionEditorScreen(
     }
 
     // 学习规则只负责预填，绝不自动落账。解析出的“退款”证据优先于历史商户类型。
-    LaunchedEffect(pendingItem?.notification?.id, categories, accounts) {
+    LaunchedEffect(pendingItem?.notification?.id, categories, ordinaryAccounts) {
         if (editingTransaction != null) return@LaunchedEffect
         val merchant = parsed?.merchant ?: return@LaunchedEffect
         val learned = repository.matchLearnedRule(merchant) ?: return@LaunchedEffect
-        accounts.firstOrNull { it.id == learned.accountId && !it.archived }?.let { accountId = it.id }
+        ordinaryAccounts.firstOrNull { it.id == learned.accountId && !it.archived }?.let { accountId = it.id }
         if (parsed.isRefund != true) {
             when (runCatching { TransactionType.valueOf(learned.type) }.getOrNull()) {
                 TransactionType.INCOME -> {
@@ -780,7 +818,9 @@ fun TransactionEditorScreen(
         }
         if (accountTailConflict) add("资金账户（银行尾号 ${parsed?.cardTail}）")
         else if (balanceConflict && balanceResolution == null) add("余额对账选择")
-        if (assetBalanceShortfallCents > 0L) {
+        // 选择以通知余额为准时，会在同一确认事务内先重锚再入账，因此不应被旧账面余额不足拦住。
+        // 选择当前流水口径仍必须遵守资产账户不能透支的硬门禁。
+        if (assetBalanceShortfallCents > 0L && balanceResolution != BalanceResolution.NOTIFICATION) {
             add("余额不足（还差 ${formatMoney(assetBalanceShortfallCents)}）")
         }
     }
@@ -955,9 +995,10 @@ fun TransactionEditorScreen(
         }
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            EditorSectionCard(title = "基本信息") {
             if (editingTransaction?.let(::isRecurringDebit) == true) {
                 Text(
                     RECURRING_DEBIT_LABEL,
@@ -996,7 +1037,10 @@ fun TransactionEditorScreen(
                 }
             }
             when (kind) {
-                EditorKind.INCOME -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditorKind.INCOME -> FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     visibleIncomeSubs.forEach { s ->
                         FilterChip(
                             selected = incomeSub == s,
@@ -1006,7 +1050,10 @@ fun TransactionEditorScreen(
                         )
                     }
                 }
-                EditorKind.REPAY -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditorKind.REPAY -> FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     RepaySub.entries.forEach { s ->
                         FilterChip(
                             selected = repaySub == s,
@@ -1016,7 +1063,10 @@ fun TransactionEditorScreen(
                         )
                     }
                 }
-                EditorKind.LENDING -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditorKind.LENDING -> FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     LendingSub.entries.forEach { sub ->
                         FilterChip(
                             selected = lendingSub == sub,
@@ -1039,15 +1089,11 @@ fun TransactionEditorScreen(
             }
             Text(
                 text = when (kind) {
-                    EditorKind.EXPENSE -> "转给他人且不再收回，按实际用途记支出；借给他人请建立应收款账户后使用划转。"
-                    EditorKind.INCOME -> "他人转入只有确属收入时才记收入；借款、退款和报销到账请使用对应类型。"
-                    EditorKind.TRANSFER -> "划转仅用于自己的两个账户互转，不计入收入或支出。"
-                    EditorKind.REPAY -> "还款会联动信用账户或贷款计划，不计普通支出。"
-                    EditorKind.LENDING -> if (lendingSub == LendingSub.DISBURSEMENT) {
-                        "借出本金从现金资产划到应收资产，不计普通支出。"
-                    } else {
-                        "收回本金是应收资产回流；只有实际收到的利息计收入。"
-                    }
+                    EditorKind.EXPENSE -> "钱不再收回才记支出；借给他人请选择“借出/收回”。"
+                    EditorKind.INCOME -> "只有真实收入才记收入；借款、退款、报销请选择对应类型。"
+                    EditorKind.TRANSFER -> "仅用于本人账户互转，不计收入或支出。"
+                    EditorKind.REPAY -> "联动信用账户或贷款计划，不计普通支出。"
+                    EditorKind.LENDING -> "本金在现金与应收之间流转；只有利息计收入。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1062,35 +1108,38 @@ fun TransactionEditorScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
             )
-            Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.CenterStart) {
-                Text(
-                    when {
-                        amountExpr.isBlank() -> "＝"
-                        evaluated != null -> "＝ ${formatMoney((evaluated * 100).roundToLong())}"
-                        else -> "＝ …"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+            if (amountExpr.any { it in "+-×÷*/" }) {
+                Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.CenterStart) {
+                    Text(
+                        when {
+                            evaluated != null -> "结果 ${formatMoney((evaluated * 100).roundToLong())}"
+                            else -> "结果待计算"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             // ── 日期与时间：新增、编辑共用同一组入口 ──
             Text("日期与时间", fontWeight = FontWeight.Medium)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showDatePicker = true }, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = { showDatePicker = true }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(formatTime(occurredAt).substringBefore(' '))
                 }
-                OutlinedButton(onClick = { showTimePicker = true }, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = { showTimePicker = true }, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                     Text(formatTime(occurredAt).substringAfter(' '))
                 }
             }
+            }
 
             // ── 资金账户 / 支付渠道：普通新增流水与编辑流水共用同一排两列控件 ──
+            EditorSectionCard(title = "账户与渠道") {
             if (kind == EditorKind.TRANSFER || (kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD)) {
-                val fromTargets = accounts.filter { it.type == AccountType.ASSET.name && !it.archived }
+                val fromTargets = ordinaryAccounts.filter { it.type == AccountType.ASSET.name && !it.archived }
                 val toTargets = if (kind == EditorKind.TRANSFER) {
-                    accounts.filter { !it.archived && it.type != AccountType.LOAN.name }
+                    ordinaryAccounts.filter { !it.archived && it.type != AccountType.LOAN.name }
                 } else {
-                    accounts.filter { it.type == AccountType.CREDIT.name && !it.archived }
+                    ordinaryAccounts.filter { it.type == AccountType.CREDIT.name && !it.archived }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     AccountDropdownField(
@@ -1139,7 +1188,7 @@ fun TransactionEditorScreen(
                 }
             } else if (kind == EditorKind.LENDING) {
                 AccountChannelFields(
-                    accounts = accounts.filter { it.type == AccountType.ASSET.name },
+                    accounts = ordinaryAccounts.filter { it.type == AccountType.ASSET.name },
                     selectedAccountId = accountId,
                     selectedChannel = channel,
                     savedChannels = savedPaymentChannels,
@@ -1150,7 +1199,7 @@ fun TransactionEditorScreen(
                 )
             } else {
                 AccountChannelFields(
-                    accounts = accounts,
+                    accounts = ordinaryAccounts,
                     selectedAccountId = accountId,
                     selectedChannel = channel,
                     savedChannels = savedPaymentChannels,
@@ -1176,7 +1225,17 @@ fun TransactionEditorScreen(
                 suggestionHint = "历史商户",
                 singleLine = true
             )
+            }
 
+            val showPrimaryBusinessAssociation = kind == EditorKind.LENDING ||
+                (kind == EditorKind.INCOME &&
+                    (incomeSub == IncomeSub.REFUND || incomeSub == IncomeSub.LOAN_DISBURSEMENT)) ||
+                (editingTransaction != null && kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME)
+            if (showPrimaryBusinessAssociation) {
+                EditorSectionCard(
+                    title = "业务关联",
+                    supportingText = "只显示当前类型需要的计划或原流水"
+                ) {
             if (kind == EditorKind.INCOME && incomeSub == IncomeSub.REFUND) {
                 RefundSourceField(
                     candidates = refundCandidates,
@@ -1343,9 +1402,15 @@ fun TransactionEditorScreen(
                     )
                 }
             }
+                }
+            }
 
             // ── 分类宫格（REQ 编辑器§3/§25-29）──
-            if (kind == EditorKind.EXPENSE || (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME)) {
+            val showsCategory = kind == EditorKind.EXPENSE || (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME)
+            if (showsCategory) {
+                EditorSectionCard(
+                    title = "分类与备注"
+                ) {
                 CategoryGrid(
                     parents = parents,
                     childrenOf = childrenOf,
@@ -1355,7 +1420,6 @@ fun TransactionEditorScreen(
                     onAddChild = { parentId -> newCategoryParentId = parentId; showNewCategory = true },
                     onReorder = { viewModel.reorderCategories(it) }
                 )
-            }
 
             // ── 必要性（REQ 分类§2：默认来自二级分类，单笔可改）──
             if (kind == EditorKind.EXPENSE) {
@@ -1404,9 +1468,24 @@ fun TransactionEditorScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+                SuggestionField(
+                    value = note,
+                    onValueChange = { note = it },
+                    suggestions = noteSuggestions,
+                    label = "备注（可选）",
+                    required = false,
+                    suggestionHint = "历史备注",
+                    singleLine = false
+                )
+                }
+            }
 
             // ── 贷款还款：计划 + 明细（REQ 贷款页§7-8）──
             if (kind == EditorKind.REPAY && repaySub == RepaySub.LOAN) {
+                EditorSectionCard(
+                    title = "还款明细",
+                    supportingText = "选择贷款计划，并按银行实际扣款拆分本金、利息与费用"
+                ) {
                 Text("贷款计划", fontWeight = FontWeight.Medium)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     loanPlans.filter { it.status == "ACTIVE" }.forEach { plan ->
@@ -1466,10 +1545,15 @@ fun TransactionEditorScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = if (splitHasError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                }
             }
 
             // ── 报销到账：垫付多选（REQ 报销§3-4）──
             if (kind == EditorKind.INCOME && incomeSub == IncomeSub.REIMBURSEMENT) {
+                EditorSectionCard(
+                    title = "报销关联",
+                    supportingText = "选择这笔到账实际覆盖的垫付消费"
+                ) {
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1510,20 +1594,23 @@ fun TransactionEditorScreen(
                 selectableReimbursableTxs.forEach { tx ->
                     val picked2 = tx.id in expenseIds.value
                     Row(
-                        Modifier.fillMaxWidth().clickable {
+                        Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable {
                             reimbursementSelectionTouched = true
                             reimbursementAutoMatched = false
                             expenseIds.value = if (picked2) expenseIds.value - tx.id else expenseIds.value + tx.id
-                        }.padding(vertical = 6.dp),
+                        }.padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("${tx.merchant ?: "未命名"} · 可核对 ${formatMoney(availableReimbursementCents(tx))} · ${formatTime(tx.occurredAt)}")
                         Icon(if (picked2) Icons.Filled.Check else Icons.Filled.Close, contentDescription = null, tint = if (picked2) com.assetsking.ui.theme.ReimbursementYellow else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                }
             }
 
             // ── 备注 ──
+            if (!showsCategory) {
+            EditorSectionCard(title = "备注") {
             SuggestionField(
                 value = note,
                 onValueChange = { note = it },
@@ -1533,6 +1620,8 @@ fun TransactionEditorScreen(
                 suggestionHint = "历史备注",
                 singleLine = false
             )
+            }
+            }
 
             if (editingTransaction != null) {
                 OutlinedButton(
@@ -1551,6 +1640,12 @@ fun TransactionEditorScreen(
 
             // ── 证据 + 余额校验预览（待确认模式，REQ 归并§6/§17-18）──
             if (pendingItem != null) {
+                Text(
+                    "证据与余额",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
                 EvidenceSectionInEditor(pendingItem, ignoredItems, viewModel)
                 BalancePreviewInEditor(
                     pendingItem,
@@ -1565,7 +1660,6 @@ fun TransactionEditorScreen(
                 )
             }
 
-            Spacer(Modifier.height(24.dp))
         }
     }
 
@@ -1914,7 +2008,12 @@ private fun SuggestionField(
         if (suggestions.isNotEmpty() && value.isNotBlank()) {
             Column {
                 suggestions.forEach { s ->
-                    Row(Modifier.fillMaxWidth().clickable { onValueChange(s) }.padding(vertical = 6.dp, horizontal = 12.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                            .clickable { onValueChange(s) }
+                            .padding(vertical = 8.dp, horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text("$s（$suggestionHint）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }
@@ -1972,6 +2071,7 @@ internal fun CategoryGrid(
                     dropTarget.onItemDropped = { draggedId, targetId -> moveItem(draggedId, targetId) }
                     Column(
                         Modifier.weight(1f).alpha(if (draggingId == parent.id) 0.4f else 1f)
+                            .heightIn(min = 64.dp)
                             .dragAndDropSource {
                                 // 点击和长按必须由同一个手势识别器处理；两个识别器叠加时，长按识别器会
                                 // 消耗普通点击，导致分类永远选不中、确认按钮持续禁用。
@@ -2084,12 +2184,14 @@ private fun EvidenceSectionInEditor(
     var show by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = { show = !show },
-                modifier = Modifier.fillMaxWidth().height(52.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).semantics {
+                    stateDescription = if (show) "已展开" else "已收起"
+                }
             ) {
                 Text("已合并 ${merged.size + 1} 条消息", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(8.dp))
@@ -2161,7 +2263,7 @@ private fun BalancePreviewInEditor(
     val check = com.assetsking.ledger.BalanceMath.checkBalance(account.balanceCents, delta, parsed.balanceCents)
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("余额校验预览", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
@@ -2170,10 +2272,10 @@ private fun BalancePreviewInEditor(
             Text("本次影响 ${if (delta >= 0) "+" else ""}${formatMoney(delta)} · 计算后应有余额 ${formatMoney(check.expectedCents)}", style = MaterialTheme.typography.bodyMedium)
             Text("通知余额 ${formatMoney(check.bankCents ?: 0)}", style = MaterialTheme.typography.bodyMedium)
             Text(
-                if (check.matches) "✓ 与通知余额一致" else "✗ 与通知余额不一致，差额 ${formatMoney(check.diffCents)}",
+                if (check.matches) "与通知余额一致" else "与通知余额不一致 · 差额 ${formatMoney(check.diffCents)}",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = if (check.matches) Color(0xFF2E8B73) else MaterialTheme.colorScheme.error
+                color = if (check.matches) com.assetsking.ui.theme.IncomeGreen else MaterialTheme.colorScheme.error
             )
         if (!check.matches) {
             Text(
@@ -2185,33 +2287,31 @@ private fun BalancePreviewInEditor(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val notificationModifier = Modifier.weight(1f).heightIn(min = 44.dp)
                 if (resolution == BalanceResolution.NOTIFICATION) {
-                    Button(
-                        onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
-                        modifier = Modifier.weight(1f).height(48.dp)
-                    ) { Text("以通知余额为准") }
+                    Button(onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) }, modifier = notificationModifier) {
+                        Text("通知余额", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+                    }
                 } else {
-                    OutlinedButton(
-                        onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) },
-                        modifier = Modifier.weight(1f).height(48.dp)
-                    ) { Text("以通知余额为准") }
+                    OutlinedButton(onClick = { onBalanceResolution(BalanceResolution.NOTIFICATION) }, modifier = notificationModifier) {
+                        Text("通知余额", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+                    }
                 }
+                val ledgerModifier = Modifier.weight(1f).heightIn(min = 44.dp)
                 if (resolution == BalanceResolution.CURRENT_LEDGER) {
-                    Button(
-                        onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("以当前流水为准") }
+                    Button(onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) }, modifier = ledgerModifier) {
+                        Text("当前流水", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+                    }
                 } else {
-                    OutlinedButton(
-                        onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("以当前流水为准") }
+                    OutlinedButton(onClick = { onBalanceResolution(BalanceResolution.CURRENT_LEDGER) }, modifier = ledgerModifier) {
+                        Text("当前流水", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
             Text(
                 when (resolution) {
-                    BalanceResolution.NOTIFICATION -> "确认后会把银行卡余额重锚到通知余额。"
-                    BalanceResolution.CURRENT_LEDGER -> "确认后保留当前账面余额，由本次流水正常扣减。"
+                    BalanceResolution.NOTIFICATION -> "确认时先把银行卡余额重锚到通知余额，再写入这笔流水。"
+                    BalanceResolution.CURRENT_LEDGER -> "确认后保留当前账面余额，由本次流水正常扣减；若会透支，确认按钮仍会保持禁用。"
                     null -> "选定后即可直接确认入库，不必退出去手动改余额。"
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -2461,10 +2561,10 @@ internal fun CategoryManageDialog(
                 Column {
                     if (candidates.isEmpty()) Text("没有可移动的一级分类", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     candidates.forEach { p ->
-                        Row(Modifier.fillMaxWidth().clickable {
+                        Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable {
                             onUpdate(child.id, null, null, p.id, p.iconKey)
                             moveTarget = null
-                        }.padding(8.dp)) { Text(p.name) }
+                        }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Text(p.name) }
                     }
                 }
             },
@@ -2480,10 +2580,10 @@ internal fun CategoryManageDialog(
             text = {
                 Column {
                     targets.forEach { t ->
-                        Row(Modifier.fillMaxWidth().clickable {
+                        Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clickable {
                             onMerge(source.id, t.id)
                             mergeSource = null
-                        }.padding(8.dp)) { Text(t.name) }
+                        }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Text(t.name) }
                     }
                 }
             },
@@ -2643,7 +2743,7 @@ private fun CategoryIconPicker(
             val selected = selectedIconKey == entry.key
             Box(
                 modifier = Modifier
-                    .size(46.dp)
+                    .size(48.dp)
                     .background(
                         color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                         shape = RoundedCornerShape(12.dp)

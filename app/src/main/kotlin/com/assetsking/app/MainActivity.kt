@@ -1,18 +1,9 @@
 package com.assetsking.app
 
-import android.app.Activity
-import android.app.KeyguardManager
-import android.hardware.biometrics.BiometricManager
-import android.hardware.biometrics.BiometricPrompt
-import android.os.Build
 import android.os.Bundle
-import android.os.CancellationSignal
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresApi
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -26,6 +17,10 @@ import com.assetsking.app.ui.privacy.PrivacyModeSurface
 import com.assetsking.app.ui.screen.MigrationGateScreen
 import com.assetsking.app.ui.screen.OnboardingScreen
 import com.assetsking.app.ui.screen.isListenerEnabled
+import com.assetsking.app.ui.privacy.PrivacyEntryController
+import com.assetsking.app.ui.privacy.PrivacyEntryPhase
+import com.assetsking.app.ui.privacy.privacyTransitionContentAlpha
+import com.assetsking.app.ui.privacy.privacyVisualProgress
 import com.assetsking.database.LedgerRepository
 import com.assetsking.ui.theme.AppTheme
 import com.assetsking.ui.theme.AssetsKingTheme
@@ -33,17 +28,7 @@ import com.assetsking.ui.privacy.PrivacyMode
 
 class MainActivity : ComponentActivity() {
     private var privacyEnabledState: MutableState<Boolean>? = null
-    private var pendingPrivacyExit: (() -> Unit)? = null
     private var listenerLaunchRecoveryRequested = false
-    private val credentialLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            pendingPrivacyExit?.also { pendingPrivacyExit = null }?.invoke()
-        } else {
-            pendingPrivacyExit = null
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,10 +56,34 @@ class MainActivity : ComponentActivity() {
             // 首次配置引导（REQ 监听§15）：一次性引导开权限，完成后不再反复要求
             var onboardingDone by remember { mutableStateOf(prefs.getBoolean("onboarding_done", false)) }
             val privacyState = remember { mutableStateOf(initialPrivacy) }
+            val privacyEntryController = remember { PrivacyEntryController() }
             privacyEnabledState = privacyState
             var privacyEnabled by privacyState
-            AssetsKingTheme(theme = themeForPrivacy(privacyEnabled)) {
-                PrivacyModeSurface(enabled = privacyEnabled) {
+            val activeTheme = themeForPrivacy(privacyEnabled)
+            val privacyGestureAdjusting = privacyEntryController.phase == PrivacyEntryPhase.Pressing ||
+                privacyEntryController.phase == PrivacyEntryPhase.Cancelling
+            val privacyProgress = privacyVisualProgress(
+                enabled = privacyEnabled,
+                phase = privacyEntryController.phase,
+                gestureProgress = privacyEntryController.progress
+            )
+            val visualPrivacyEnabled = privacyProgress >= 0.5f
+            AssetsKingTheme(
+                theme = activeTheme,
+                transitionTo = if (privacyGestureAdjusting) {
+                    themeForPrivacy(!privacyEnabled)
+                } else {
+                    activeTheme
+                },
+                transitionProgress = if (privacyGestureAdjusting) privacyEntryController.progress else 1f,
+                contentAlpha = if (privacyGestureAdjusting) privacyTransitionContentAlpha(privacyProgress) else 1f
+            ) {
+                PrivacyModeSurface(
+                    enabled = privacyEnabled,
+                    visualEnabled = visualPrivacyEnabled,
+                    privacyProgress = privacyProgress,
+                    entryController = privacyEntryController
+                ) {
                     when {
                         !onboardingDone -> OnboardingScreen(onDone = {
                             prefs.edit().putBoolean("onboarding_done", true).apply()
@@ -85,18 +94,15 @@ class MainActivity : ComponentActivity() {
                             HomeScreen(
                                 model = model,
                                 repository = app.repository,
-                                privacyEnabled = privacyEnabled,
+                                privacyEnabled = visualPrivacyEnabled,
+                                privacyEntryController = privacyEntryController,
                                 onTogglePrivacy = {
                                     fun setPrivacy(next: Boolean) {
                                         PrivacyMode.setEnabled(next)
                                         prefs.edit().putBoolean("privacy_mode", next).apply()
                                         privacyEnabled = next
                                     }
-                                    if (privacyEnabled) {
-                                        authenticatePrivacyExit { setPrivacy(false) }
-                                    } else {
-                                        setPrivacy(true)
-                                    }
+                                    setPrivacy(!privacyEnabled)
                                 }
                             )
                         else -> MigrationGateScreen(
@@ -133,14 +139,14 @@ class MainActivity : ComponentActivity() {
             // 前台起 FGS 保活：进程不再被 vivo 当缓存清掉，监听不掉线
             AssetsNotificationListenerService.startKeepAlive(this)
             if (!listenerLaunchRecoveryRequested) {
-                // 真正重开 App 时自动执行一次与「立即恢复」相同的强制重连。
-                // vivo 冻结或系统重启后可能保留授权和旧连接外观，却没有恢复实际回调；
-                // 只调用 requestRebind 不能稳定修复这种半连接状态。
                 listenerLaunchRecoveryRequested = true
-                AssetsNotificationListenerService.recoverNow(this)
+                // 新进程或真实断线才强制恢复；Activity 重建时若监听仍健康，不要解绑重扫。
+                if (!AssetsNotificationListenerService.isConnected) {
+                    AssetsNotificationListenerService.recoverNow(this)
+                }
             } else {
                 // 同一 Activity 从后台回到前台只做幂等轻量检查，避免频繁解绑健康监听。
-                AssetsNotificationListenerService.scheduleRebind(this)
+                AssetsNotificationListenerService.rebindIfNeeded(this)
             }
         }
     }
@@ -153,49 +159,6 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
-    private fun authenticatePrivacyExit(onAuthenticated: () -> Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            showBiometricPrompt(onAuthenticated)
-            return
-        }
-        val keyguard = getSystemService(KeyguardManager::class.java)
-        val intent = keyguard.createConfirmDeviceCredentialIntent(
-            "验证身份",
-            "退出隐秘模式"
-        )
-        if (intent == null) {
-            Toast.makeText(this, "请先在系统中设置锁屏验证", Toast.LENGTH_SHORT).show()
-            return
-        }
-        pendingPrivacyExit = onAuthenticated
-        credentialLauncher.launch(intent)
-    }
-
-    @RequiresApi(Build.VERSION_CODES.P)
-    private fun showBiometricPrompt(onAuthenticated: () -> Unit) {
-        val builder = BiometricPrompt.Builder(this)
-            .setTitle("验证身份")
-            .setSubtitle("退出隐秘模式")
-
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> builder.setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
-            )
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> builder.setDeviceCredentialAllowed(true)
-            else -> builder.setNegativeButton("取消", mainExecutor) { _, _ -> }
-        }
-
-        builder.build().authenticate(
-            CancellationSignal(),
-            mainExecutor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
-                    onAuthenticated()
-                }
-            }
-        )
-    }
 }
 
 internal const val PRIVACY_BACKGROUND_AT = "privacy_background_at"

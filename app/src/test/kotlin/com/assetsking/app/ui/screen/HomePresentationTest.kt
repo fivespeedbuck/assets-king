@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 
 class HomePresentationTest {
     @Test
-    fun zeroDebtCreditAccountsStayOutOfTheSharedDebtAccountList() {
+    fun zeroDebtCreditAccountsStayInTheSharedDebtAccountListForManagement() {
         val accounts = listOf(
             AccountEntity("cash", "现金", AccountType.ASSET.name, 100_000L),
             AccountEntity("zero-card", "已还清广发", AccountType.CREDIT.name, 0L),
@@ -21,7 +21,7 @@ class HomePresentationTest {
             AccountEntity("loan", "消费贷", AccountType.LOAN.name, 0L)
         )
 
-        assertEquals(listOf("花呗", "消费贷"), visibleDebtAccounts(accounts).map { it.name })
+        assertEquals(listOf("已还清广发", "花呗", "消费贷"), visibleDebtAccounts(accounts).map { it.name })
     }
     @Test
     fun repaymentCarouselAlwaysTargetsACompletePage() {

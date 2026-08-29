@@ -11,7 +11,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +29,7 @@ import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.ui.component.CleanLinearProgressIndicator
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 import com.assetsking.ui.theme.DeficitRed
@@ -84,7 +84,7 @@ internal fun BudgetProgressLine(
             overflow = TextOverflow.Ellipsis
         )
         Spacer(Modifier.height(3.dp))
-        LinearProgressIndicator(
+        CleanLinearProgressIndicator(
             progress = { progress },
             modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)),
             color = semanticColor,

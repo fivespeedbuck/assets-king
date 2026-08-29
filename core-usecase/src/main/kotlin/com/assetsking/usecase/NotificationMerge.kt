@@ -68,16 +68,23 @@ object NotificationMerge {
         bTitle: String?,
         bContent: String,
         bAt: Long
-    ): Boolean = isSameEvidence(
-        aPackage,
-        aId,
-        contentFingerprint(aTitle, aContent),
-        aAt,
-        bPackage,
-        bId,
-        contentFingerprint(bTitle, bContent),
-        bAt
-    )
+    ): Boolean {
+        // 同一条短信同时经短信接收器和系统短信通知转发时，标题由入口各自生成，
+        // 可能分别是「95555」和「招商银行」；正文完全相同才允许合并，不能退化为商户/金额猜测。
+        if (ContentFingerprint.isSameSmsMirrorContent(aPackage, aContent, aAt, bPackage, bContent, bAt)) {
+            return true
+        }
+        return isSameEvidence(
+            aPackage,
+            aId,
+            contentFingerprint(aTitle, aContent),
+            aAt,
+            bPackage,
+            bId,
+            contentFingerprint(bTitle, bContent),
+            bAt
+        )
+    }
 
     /** 同一笔证据被多个 app 各推一条。 */
     fun isDuplicate(a: ParsedNotification, aAt: Long, b: ParsedNotification, bAt: Long): Boolean {

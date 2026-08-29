@@ -5,9 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,19 +66,24 @@ internal fun ReversibleDeleteSwipe(
                 )
             }
     ) {
-        Box(Modifier.fillMaxWidth().padding(end = 8.dp), contentAlignment = Alignment.CenterEnd) {
+        Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
             if (offsetX < -1f) {
-                androidx.compose.material3.Text(
-                    "删除",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
+                Box(
                     modifier = Modifier
+                        .width(96.dp)
+                        .fillMaxHeight()
                         .clickable {
                             settle(0f)
                             onDelete()
-                        }
-                        .padding(vertical = 12.dp, horizontal = 18.dp)
-                )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    androidx.compose.material3.Text(
+                        "删除",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
         Box(Modifier.offset { IntOffset(offsetX.roundToInt(), 0) }) { content() }

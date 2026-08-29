@@ -35,11 +35,19 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         repository.transactions,
         repository.transfers,
         repository.loanPlans,
-        combine(repository.cardInstallments, repository.cardInstallmentSchedules) { installments, schedules ->
-            CardInstallmentBase(installments, schedules)
+        combine(repository.cardInstallments, repository.cardInstallmentSchedules, repository.lendingPlans) { installments, schedules, lendingPlans ->
+            AccountPlanBase(installments, schedules, lendingPlans)
         }
-    ) { accounts, txs, transfers, plans, cardInstallments ->
-        Base(accounts, txs, transfers, plans, cardInstallments.plans, cardInstallments.schedules)
+    ) { accounts, txs, transfers, plans, accountPlans ->
+        Base(
+            accounts,
+            txs,
+            transfers,
+            plans,
+            accountPlans.cardInstallments,
+            accountPlans.cardInstallmentSchedules,
+            accountPlans.lendingPlans
+        )
     }.flatMapLatest { base ->
         combine(
             repository.windfalls,
@@ -79,12 +87,14 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         val transfers: List<TransferEntity>,
         val plans: List<com.assetsking.database.LoanPlanEntity>,
         val cardInstallments: List<com.assetsking.database.CreditCardInstallmentEntity>,
-        val cardInstallmentSchedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>
+        val cardInstallmentSchedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>,
+        val lendingPlans: List<com.assetsking.database.LendingPlanEntity>
     )
 
-    private data class CardInstallmentBase(
-        val plans: List<com.assetsking.database.CreditCardInstallmentEntity>,
-        val schedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>
+    private data class AccountPlanBase(
+        val cardInstallments: List<com.assetsking.database.CreditCardInstallmentEntity>,
+        val cardInstallmentSchedules: List<com.assetsking.database.CreditCardInstallmentScheduleEntity>,
+        val lendingPlans: List<com.assetsking.database.LendingPlanEntity>
     )
 
     private data class Config(
@@ -209,10 +219,11 @@ class GetV5MetricsUseCase(private val repository: LedgerRepository) {
         val cardInstallmentDue7 = cardInstallmentDue(todayEpochDay - 1L, today.plusDays(7).toEpochDay())
         val cardInstallmentDue30 = cardInstallmentDue(todayEpochDay - 1L, today.plusDays(30).toEpochDay())
 
+        val receivableAccountIds = base.lendingPlans.mapTo(hashSetOf()) { it.receivableAccountId }
         return computeV5Metrics(
             todayEpochDay = todayEpochDay,
             currentYearMonth = ym.toString(),
-            accounts = base.accounts.filter { !it.archived }.map {
+            accounts = base.accounts.filter { !it.archived && it.id !in receivableAccountIds }.map {
                 V5AccountInput(
                     it.id,
                     it.type,

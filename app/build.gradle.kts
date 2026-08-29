@@ -21,8 +21,8 @@ android {
         applicationId = "com.assetsking.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 9
+        versionName = "0.1.8"
     }
 
     buildTypes {
@@ -51,6 +51,12 @@ android {
     }
 
     kotlinOptions { jvmTarget = "17" }
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.enableUnitTest = false
+    }
 }
 
 dependencies {

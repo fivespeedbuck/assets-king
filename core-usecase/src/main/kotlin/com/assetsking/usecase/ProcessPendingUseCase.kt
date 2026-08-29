@@ -105,6 +105,31 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
             var parsed = NotificationParser.parse(notification.content, notification.title)
 
+            // 无金额官方通知也必须先经过内容指纹判重；否则每次补扫都会重新堆进待确认箱。
+            val sameEvidenceBeforeAmount = (seen + linked + ignored).firstOrNull { other ->
+                other.id != notification.id &&
+                    NotificationMerge.isSameContentEvidence(
+                        notification.packageName,
+                        notification.id,
+                        notification.title,
+                        notification.content,
+                        notification.postedAt,
+                        other.packageName,
+                        other.id,
+                        other.title,
+                        other.content,
+                        other.postedAt
+                    )
+            }
+            if (sameEvidenceBeforeAmount != null) {
+                repository.updateNotificationStatus(notification.id, "IGNORED")
+                repository.updateNotificationNote(
+                    notification.id,
+                    "与已入库证据内容指纹相同（补扫/重推）kept=${sameEvidenceBeforeAmount.id}"
+                )
+                continue
+            }
+
             if (parsed.amountCents == null) {
                 val raw = notification.toWechatEvidence()
                 val inferredRefund = WechatNotificationEvidence.matchAmountlessRefund(

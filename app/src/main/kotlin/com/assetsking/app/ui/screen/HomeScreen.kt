@@ -2,12 +2,11 @@ package com.assetsking.app.ui.screen
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +19,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +36,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.assetsking.app.ui.privacy.PrivacyEntryController
+import com.assetsking.app.ui.privacy.privacyToggleGesture
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
@@ -51,6 +53,7 @@ import com.assetsking.database.TransactionEntity
 import com.assetsking.database.WindfallEntity
 import com.assetsking.model.AccountType
 import com.assetsking.ui.theme.AssetsKingTheme
+import com.assetsking.ui.theme.PrivacyEmblemPurple
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +61,7 @@ fun HomeScreen(
     model: LedgerViewModel,
     repository: LedgerRepository,
     privacyEnabled: Boolean,
+    privacyEntryController: PrivacyEntryController,
     onTogglePrivacy: () -> Unit
 ) {
     val state by model.state.collectAsStateWithLifecycle()
@@ -109,6 +113,11 @@ fun HomeScreen(
     val navSurface = MaterialTheme.colorScheme.surfaceContainer
     val navOutline = MaterialTheme.colorScheme.outlineVariant
     val navPrimary = MaterialTheme.colorScheme.primary
+
+    DisposableEffect(settingsAtRoot, privacyEnabled) {
+        if (!settingsAtRoot && !privacyEnabled) privacyEntryController.reset()
+        onDispose { }
+    }
 
     BackHandler(
         enabled = showEditor || showPendingBox || showBills || showReimbursement || accountDetail != null ||
@@ -228,10 +237,12 @@ fun HomeScreen(
                 context = context,
                 budgets = budgets, categories = categories, recurringRules = recurringRules,
                 loanPlans = loanPlans,
+                lendingPlans = lendingPlans,
                 cardInstallments = cardInstallments,
                 cardInstallmentSchedules = cardInstallmentSchedules,
                 freeSpendingCents = freeSpendingCents,
                 privacyEnabled = privacyEnabled,
+                privacyEntryController = privacyEntryController,
                 onTogglePrivacy = onTogglePrivacy,
                 onShowPending = {
                     model.processNotifications()
@@ -302,10 +313,9 @@ fun HomeScreen(
                 LoanScreen(
                     plans = loanPlans, accounts = state.accounts,
                     lendingPlans = lendingPlans,
-                    onSave = { model.saveLoanPlan(it) },
+                    onSave = { plan, callback -> model.saveLoanPlan(plan, callback) },
                     onDelete = { model.deleteLoanPlan(it) },
                     onAddLoanAccount = { if (!privacyEnabled) addingAccountType = AccountType.LOAN },
-                    onAddCreditAccount = { if (!privacyEnabled) addingAccountType = AccountType.CREDIT },
                     v5 = state.v5,
                     cardInstallments = cardInstallments,
                     cardInstallmentAllocations = cardInstallmentAllocations,
@@ -328,11 +338,11 @@ fun HomeScreen(
                             showEditor = true
                         }
                     },
-                    onPrepay = { cashId, planId, principalCents, feeCents, note ->
-                        model.addLoanPrepayment(cashId, planId, principalCents, feeCents, note)
+                    onPrepay = { cashId, planId, principalCents, feeCents, note, callback ->
+                        model.addLoanPrepayment(cashId, planId, principalCents, feeCents, note, onResult = callback)
                     },
-                    onSettle = { cashId, planId, principalCents, interestCents, feeCents, note ->
-                        model.settleLoanPlan(cashId, planId, principalCents, interestCents, feeCents, note)
+                    onSettle = { cashId, planId, principalCents, interestCents, feeCents, note, callback ->
+                        model.settleLoanPlan(cashId, planId, principalCents, interestCents, feeCents, note, onResult = callback)
                     },
                     onUpdateInstallment = { planId, number, dueDay, p, i, f, st ->
                         model.updateLoanInstallment(planId, number, dueDay, p, i, f, st)
@@ -375,39 +385,26 @@ fun HomeScreen(
                     onRunEvidenceAudit = { callback -> model.runEvidenceAudit(callback) },
                     onRootStateChanged = { settingsAtRoot = it }
                 )
-                if (settingsAtRoot && privacyEnabled) {
-                    // 不再叠加第二枚小徽记；透明点击区覆盖隐秘背景原有的大徽记。
+                if (settingsAtRoot) {
+                    // 转场中始终保留同一个手势节点，避免隐秘状态在中途重组导致长按被取消。
                     Box(
                         Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth(0.90f)
                             .aspectRatio(1f)
                             .padding(bottom = 96.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = onTogglePrivacy
+                            .privacyToggleGesture(privacyEntryController, onTogglePrivacy)
+                    ) {
+                        if (!privacyEnabled) {
+                            Image(
+                                painter = painterResource(R.drawable.ic_privacy_emblem_fog),
+                                contentDescription = "长按3秒进入隐秘模式",
+                                contentScale = ContentScale.Fit,
+                                colorFilter = ColorFilter.tint(PrivacyEmblemPurple),
+                                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = 0.10f }
                             )
-                    )
-                } else if (settingsAtRoot) {
-                    // 非隐秘设置页复用同一枚大徽记：低透明紫色背景，同时作为进入入口。
-                    Image(
-                        painter = painterResource(R.drawable.ic_privacy_emblem_fog),
-                        contentDescription = "进入隐秘模式",
-                        contentScale = ContentScale.Fit,
-                        colorFilter = ColorFilter.tint(Color(0xFF7257B6)),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth(0.90f)
-                            .aspectRatio(1f)
-                            .padding(bottom = 96.dp)
-                            .graphicsLayer { alpha = 0.10f }
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = onTogglePrivacy
-                            )
-                    )
+                        }
+                    }
                 }
             }
         }
@@ -416,8 +413,8 @@ fun HomeScreen(
     addingAccountType?.let { initialType ->
         AddAccountSheet(
             initialType = initialType,
-            onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit ->
-                model.addAccount(name, type, balance, card, stmtDay, dueDay, limit)
+            onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit, callback ->
+                model.addAccount(name, type, balance, card, stmtDay, dueDay, limit, callback)
             },
             onDismiss = { addingAccountType = null }
         )
@@ -538,6 +535,7 @@ fun HomeScreen(
             transactions = state.transactions,
             statementRemainingCents = state.v5?.cardRemainingDueByCard?.get(account.id)
                 ?: account.statementOriginalDueCents,
+            isLendingReceivable = lendingPlans.any { it.receivableAccountId == account.id },
             onOpenTransaction = { transaction -> if (!privacyEnabled) detailTransaction = transaction },
             onEdit = { if (!privacyEnabled) editingAccount = account },
             onReconcile = { if (!privacyEnabled) showReconciliation = true },
@@ -556,6 +554,7 @@ fun HomeScreen(
     if (showReconciliation) {
         ReconciliationSheet(
             accounts = state.accounts,
+            receivableAccountIds = lendingPlans.mapTo(hashSetOf()) { it.receivableAccountId },
             onReconcile = { model.reconcileAccount(it) },
             onDismiss = { showReconciliation = false }
         )

@@ -22,6 +22,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.enableUnitTest = false
+    }
+}
+
 dependencies {
     implementation(project(":core-model"))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))

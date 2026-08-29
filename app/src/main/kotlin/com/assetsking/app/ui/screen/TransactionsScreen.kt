@@ -8,6 +8,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -53,6 +55,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,6 +76,7 @@ import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.TransferBalanceDetail
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.IconLibrary
@@ -94,6 +98,7 @@ import com.assetsking.ui.theme.LoanPrincipalDebtColor
 import com.assetsking.ui.theme.RecurringDebitOrange
 import com.assetsking.ui.theme.cashBalanceColor
 import com.assetsking.ui.theme.transactionCashFlowColor
+import com.assetsking.ui.theme.UiTokens
 import com.assetsking.usecase.CashFlowSummary
 import com.assetsking.usecase.cashFlowSummaryForMonth
 import java.time.Instant
@@ -231,6 +236,8 @@ fun TransactionsScreen(
     var transferDeletionRisk by remember { mutableStateOf(false) }
     var transferDeletionBusy by remember { mutableStateOf(false) }
     var transferDeletionError by remember { mutableStateOf<String?>(null) }
+    var transferDetailId by remember { mutableStateOf<String?>(null) }
+    var transferDetail by remember { mutableStateOf<TransferBalanceDetail?>(null) }
     var editingTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
     // 时间范围（REQ 流水§1）：MONTH=按月 / LAST3=近三月 / CUSTOM=自定义起止
@@ -590,7 +597,7 @@ fun TransactionsScreen(
                                                         privacyIndex = dayIndex * 20 + index,
                                                         multiSelect = multiSelect,
                                                         checked = tx.id in selected,
-                                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                                        modifier = Modifier.padding(horizontal = UiTokens.CardPadding),
                                                         onToggle = { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) },
                                                         onEnterMulti = { if (!multiSelect) { multiSelect = true; selected.add(tx.id) } },
                                                         onClick = { if (multiSelect) { if (tx.id in selected) selected.remove(tx.id) else selected.add(tx.id) } else editingTx = tx }
@@ -604,7 +611,13 @@ fun TransactionsScreen(
                                                         occurredAt = transfer.occurredAt,
                                                         fromCardTail = accountOf(transfer.fromAccountId)?.cardTail,
                                                         toCardTail = accountOf(transfer.toAccountId)?.cardTail,
-                                                        onClick = {}
+                                                        onClick = {
+                                                            if (multiSelect) {
+                                                                // 划转不参与流水多选，避免把两端余额事件误当成普通流水。
+                                                            } else {
+                                                                transferDetailId = transfer.id
+                                                            }
+                                                        }
                                                     )
                                                 }
                                             }
@@ -743,6 +756,18 @@ fun TransactionsScreen(
         }
     }
 
+    LaunchedEffect(transferDetailId) {
+        transferDetail = transferDetailId?.let { model.transferBalanceDetail(it) }
+    }
+    if (transferDetailId != null) {
+        TransferDetailDialog(
+            detail = transferDetail,
+            accounts = state.accounts,
+            privacyEnabled = privacyEnabled,
+            onDismiss = { transferDetailId = null; transferDetail = null }
+        )
+    }
+
     fun dismissDeletion() {
         if (deletionBusy) return
         deleteIds = emptyList()
@@ -868,7 +893,8 @@ private fun TransactionListRow(
         modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onEnterMulti)
-            .padding(vertical = 10.dp),
+            .defaultMinSize(minHeight = UiTokens.MinimumTouch)
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (multiSelect) {
@@ -896,7 +922,7 @@ private fun TransactionListRow(
                 else tx.merchant ?: typeLabel(tx.type),
                 fontWeight = FontWeight.Medium,
                 style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -970,7 +996,8 @@ private fun TransactionListRow(
             fontWeight = FontWeight.Bold,
             color = cashFlowColor,
             style = MaterialTheme.typography.bodyLarge,
-            maxLines = 1
+            maxLines = 1,
+            softWrap = false
         )
     }
 }
@@ -1355,7 +1382,7 @@ internal fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, 
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun FilterDialog(
     categories: List<CategoryEntity>,
@@ -1388,10 +1415,43 @@ private fun FilterDialog(
     var pickedEnd by remember { mutableStateOf(customEnd ?: defaultMonth.atEndOfMonth()) }
     var showCustomStartPicker by remember { mutableStateOf(false) }
     var showCustomEndPicker by remember { mutableStateOf(false) }
+    var showAdvanced by remember {
+        mutableStateOf(
+            category != null || necessity != null || reimbursement != null || recurringDebit ||
+                channel != null || accountId != null ||
+                merchant.isNotBlank() || min.isNotBlank() || max.isNotBlank()
+        )
+    }
     val customRangeValid = pickedRange != "CUSTOM" || !pickedStart.isAfter(pickedEnd)
+    val selectedFilterCount = listOf(
+        pickedRange != "ALL",
+        types.isNotEmpty(),
+        category != null,
+        necessity != null,
+        reimbursement != null,
+        recurringDebit,
+        channel != null,
+        accountId != null,
+        merchant.isNotBlank(),
+        min.isNotBlank(),
+        max.isNotBlank()
+    ).count { it }
     Sheet(title = "筛选", onDismiss = onDismiss) {
-                Text("数据范围", fontWeight = FontWeight.Medium)
-                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.GroupGap)
+                ) {
+                Text(
+                    if (selectedFilterCount == 0) "未设置筛选条件" else "已选 $selectedFilterCount 项",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("常用筛选", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("数据范围", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                ) {
                     listOf(
                         "全部" to "ALL",
                         "本月" to "THIS_MONTH",
@@ -1403,7 +1463,7 @@ private fun FilterDialog(
                             selected = pickedRange == value,
                             onClick = { pickedRange = value },
                             label = { Text(label) },
-                            modifier = Modifier.padding(2.dp)
+                            modifier = Modifier
                         )
                     }
                 }
@@ -1426,8 +1486,11 @@ private fun FilterDialog(
                         Text("开始日期不能晚于结束日期", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                Text("交易类型", fontWeight = FontWeight.Medium)
-                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                Text("交易类型", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                ) {
                     listOf(
                         "支出" to "EXPENSE", "收入" to "INCOME", "退款" to "REFUND",
                         "手续费" to "FEE", "报销到账" to "REIMBURSEMENT",
@@ -1437,29 +1500,28 @@ private fun FilterDialog(
                             selected = t in types,
                             onClick = { types = if (t in types) types - t else types + t },
                             label = { Text(label) },
-                            modifier = Modifier.padding(2.dp)
+                            modifier = Modifier
                         )
                     }
                 }
-                Text("分类", fontWeight = FontWeight.Medium)
-                TextButton(onClick = { category = null }) { Text(if (category == null) "不限分类 ✓" else "不限分类") }
-                CategoryGrid(
-                    parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == "EXPENSE" },
-                    childrenOf = { parentId -> categories.filter { it.parentId == parentId && !it.isArchived && it.kind == "EXPENSE" } },
-                    selectedCategoryId = categories.firstOrNull { it.name == category && !it.isArchived }?.id,
-                    onSelect = { category = it.name },
-                    onAddChild = {},
-                    onReorder = {},
-                    showAddChild = false,
-                    selectParentOnExpand = true
-                )
-                Text("必要性", fontWeight = FontWeight.Medium)
-                Row {
-                    FilterChip(selected = necessity == true, onClick = { necessity = if (necessity == true) null else true }, label = { Text("必要") }, modifier = Modifier.padding(2.dp))
-                    FilterChip(selected = necessity == false, onClick = { necessity = if (necessity == false) null else false }, label = { Text("非必要") }, modifier = Modifier.padding(2.dp))
+                TextButton(
+                    onClick = { showAdvanced = !showAdvanced },
+                    modifier = Modifier.fillMaxWidth().height(UiTokens.MinimumTouch)
+                ) {
+                    Text(if (showAdvanced) "收起高级筛选" else "展开高级筛选")
                 }
-                Text("报销状态", fontWeight = FontWeight.Medium)
-                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                if (showAdvanced) {
+                Text("高级筛选", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("必要性", style = MaterialTheme.typography.labelLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
+                    FilterChip(selected = necessity == true, onClick = { necessity = if (necessity == true) null else true }, label = { Text("必要") })
+                    FilterChip(selected = necessity == false, onClick = { necessity = if (necessity == false) null else false }, label = { Text("非必要") })
+                }
+                Text("报销状态", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                ) {
                     ReimbursementBadge.entries.forEach { badge ->
                         FilterChip(
                             selected = reimbursement == badge,
@@ -1473,11 +1535,11 @@ private fun FilterDialog(
                                 selectedLabelColor = ReimbursementYellow,
                                 selectedContainerColor = ReimbursementYellow.copy(alpha = 0.13f)
                             ),
-                            modifier = Modifier.padding(2.dp)
+                            modifier = Modifier
                         )
                     }
                 }
-                Text("业务标记", fontWeight = FontWeight.Medium)
+                Text("业务标记", style = MaterialTheme.typography.labelLarge)
                 FilterChip(
                     selected = recurringDebit,
                     onClick = {
@@ -1490,9 +1552,21 @@ private fun FilterDialog(
                         selectedLabelColor = RecurringDebitOrange,
                         selectedContainerColor = RecurringDebitOrange.copy(alpha = 0.13f)
                     ),
-                    modifier = Modifier.padding(2.dp)
+                    modifier = Modifier
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("分类", style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = { category = null }) { Text(if (category == null) "不限分类（已选）" else "不限分类") }
+                CategoryGrid(
+                    parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == "EXPENSE" },
+                    childrenOf = { parentId -> categories.filter { it.parentId == parentId && !it.isArchived && it.kind == "EXPENSE" } },
+                    selectedCategoryId = categories.firstOrNull { it.name == category && !it.isArchived }?.id,
+                    onSelect = { category = it.name },
+                    onAddChild = {},
+                    onReorder = {},
+                    showAddChild = false,
+                    selectParentOnExpand = true
+                )
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
                     SelectDropdownField(
                         label = "支付渠道",
                         selectedLabel = if (privacyEnabled && channel != null) privacyObfuscatedText(channel.orEmpty(), 940) else channel ?: "不限渠道",
@@ -1500,7 +1574,7 @@ private fun FilterDialog(
                             value to if (privacyEnabled) privacyObfuscatedText(value, 941 + index) else value
                         },
                         onSelected = { channel = it.ifBlank { null } },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                     SelectDropdownField(
                         label = "资金账户",
@@ -1511,7 +1585,7 @@ private fun FilterDialog(
                             account.id to if (privacyEnabled) privacyObfuscatedText(account.name, 951 + index) else account.name
                         },
                         onSelected = { accountId = it.ifBlank { null } },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
                 OutlinedTextField(
@@ -1521,21 +1595,23 @@ private fun FilterDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                Text("金额区间", fontWeight = FontWeight.Medium)
-                Row {
-                    OutlinedTextField(min, { min = it }, label = { Text("最低") }, modifier = Modifier.weight(1f).padding(2.dp), singleLine = true)
-                    OutlinedTextField(max, { max = it }, label = { Text("最高") }, modifier = Modifier.weight(1f).padding(2.dp), singleLine = true)
+                Text("金额区间", style = MaterialTheme.typography.labelLarge)
+                Column(verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
+                    OutlinedTextField(min, { min = it }, label = { Text("最低金额") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(max, { max = it }, label = { Text("最高金额") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) { Text("清空") }
+                    OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f).height(UiTokens.MinimumTouch)) { Text("清空") }
                     Button(
                         onClick = { onApply(pickedRange, types, category, necessity, reimbursement, recurringDebit, channel, accountId, merchant.trim(), min, max, pickedStart, pickedEnd) },
                         enabled = customRangeValid,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).height(UiTokens.MinimumTouch)
                     ) { Text("应用") }
                 }
-                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("取消") }
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().height(UiTokens.MinimumTouch)) { Text("取消") }
+                }
     }
     if (showCustomStartPicker) {
         val pickerState = rememberDatePickerState(

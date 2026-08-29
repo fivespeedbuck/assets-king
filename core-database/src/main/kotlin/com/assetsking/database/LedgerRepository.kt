@@ -54,9 +54,27 @@ data class TransferDeletionAccountPreview(
     val balanceStatus: String
 )
 
+data class TransferBalanceDetail(
+    val transfer: TransferEntity,
+    val fromBeforeCents: Long?,
+    val fromAfterCents: Long?,
+    val toBeforeCents: Long?,
+    val toAfterCents: Long?
+)
+
 private const val TRANSACTION_TRASH_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 private const val CATEGORY_SEED_VERSION_KEY = "category_seed_version"
 private const val CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW = 2
+
+private val notificationCardTailPatterns = listOf(
+    Regex("""尾号[为是]?\s*(\d{4})"""),
+    Regex("""账户(\d{4})""")
+)
+
+private fun RawNotificationEntity.cardTail(): String? {
+    val text = listOfNotNull(title, content).joinToString(" ")
+    return notificationCardTailPatterns.firstNotNullOfOrNull { it.find(text)?.groupValues?.getOrNull(1) }
+}
 
 private fun coveredLoanInstallmentNumbers(
     installments: List<LoanInstallment>,
@@ -435,7 +453,7 @@ class LedgerRepository(
                 if (dbBytes.size < sqliteHeader.size || !dbBytes.copyOfRange(0, sqliteHeader.size).contentEquals(sqliteHeader)) {
                     return@runCatching false
                 }
-                if (!isHealthySqlite(dbBytes)) return@runCatching false
+                if (!isHealthySqlite(dbBytes) || !isAssetsKingDatabase(dbBytes)) return@runCatching false
                 val restoredPreferences = bundle?.preferencesJson?.let {
                     JSONObject(String(it, Charsets.UTF_8))
                 } ?: java.io.File(dir, "manual_$stamp.prefs.enc")
@@ -636,6 +654,51 @@ class LedgerRepository(
         database.rawNotificationDao().updateProcessingNote(id, note)
     }
 
+    suspend fun splitNotification(id: String) {
+        database.withTransaction {
+            database.rawNotificationDao().updateProcessingNote(id, "")
+            database.rawNotificationDao().updateStatus(id, "PENDING_CONFIRMATION")
+        }
+    }
+
+    /**
+     * 通知余额是按时间线重锚的权威检查点；同一张卡更早的待确认通知若尚未入账，
+     * 先确认较新的余额会把旧事件重新放到检查点之前，造成后续对账漂移。
+     */
+    private suspend fun requireEarliestNotificationFirst(
+        notification: RawNotificationEntity,
+        accountId: String,
+        bankBalanceCents: Long?,
+        bankCardTail: String?
+    ) {
+        if (bankBalanceCents == null || bankBalanceCents < 0L || bankCardTail.isNullOrBlank()) return
+        val account = database.accountDao().find(accountId) ?: return
+        if (account.type != AccountType.ASSET.name || account.cardTail != bankCardTail) return
+        val earlier = database.rawNotificationDao().pendingUpTo(notification.postedAt)
+            .asSequence()
+            .filter { it.id != notification.id && it.cardTail() == bankCardTail }
+            .filter {
+                it.postedAt < notification.postedAt ||
+                    (it.postedAt == notification.postedAt &&
+                        (it.receivedAt < notification.receivedAt ||
+                            (it.receivedAt == notification.receivedAt && it.id < notification.id)))
+            }
+            .minWithOrNull(compareBy<RawNotificationEntity> { it.postedAt }.thenBy { it.receivedAt }.thenBy { it.id })
+        require(earlier == null) {
+            "同一资金账户还有更早的待确认通知，请先确认最早一条后再按通知余额入账"
+        }
+    }
+
+    private suspend fun canUseAuthoritativeBalance(
+        accountId: String,
+        bankBalanceCents: Long?,
+        bankCardTail: String?
+    ): Boolean {
+        if (bankBalanceCents == null || bankBalanceCents < 0L || bankCardTail.isNullOrBlank()) return false
+        val account = database.accountDao().find(accountId) ?: return false
+        return account.type == AccountType.ASSET.name && account.cardTail == bankCardTail
+    }
+
     /**
      * 确认通知 → 创建交易 + 标记 LINKED，同一事务保证不会重复入账。
      * ponytail: 复用 addTransaction 的余额计算逻辑。
@@ -656,14 +719,47 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
+            // 短信接收器和系统短信通知可能各自留下一个待确认项；若其中一个已经
+            // 确认入账，第二个必须在认领前按“正文完全相同”拦截，避免重复正式流水。
+            val currentEvidence = database.rawNotificationDao().findById(notificationId)
+            if (currentEvidence != null) {
+                val linkedMirrorIds = database.rawNotificationDao().all()
+                    .filter { it.id != notificationId && it.status == "LINKED" }
+                    .filter {
+                        ContentFingerprint.isSameSmsMirrorContent(
+                            currentEvidence.packageName,
+                            currentEvidence.content,
+                            currentEvidence.postedAt,
+                            it.packageName,
+                            it.content,
+                            it.postedAt
+                        )
+                    }
+                    .map { it.id }
+                if (linkedMirrorIds.isNotEmpty() && database.transactionDao().findActiveByNotificationIds(linkedMirrorIds).isNotEmpty()) {
+                    database.rawNotificationDao().updateProcessingNote(notificationId, "与已确认的短信镜像证据重复，未生成第二笔流水")
+                    database.rawNotificationDao().updateStatus(notificationId, "IGNORED")
+                    return@withTransaction
+                }
+                requireEarliestNotificationFirst(
+                    notification = currentEvidence,
+                    accountId = accountId,
+                    bankBalanceCents = bankBalanceCents,
+                    bankCardTail = bankCardTail
+                )
+            }
             // 先原子认领再做任何余额或流水变更。重复点击、并发确认或已处理通知直接无操作返回。
             if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
                 return@withTransaction
             }
             // 流水日期用通知到达时间，不用确认时刻：银行短信即时推，postedAt≈真实扣款时间；
             // 用户可能隔天才点确认，用确认时刻会把日期记错（真机实报：88 元短信 08:39 到、09:41 确认）
-            val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
-                ?: System.currentTimeMillis()
+            val postedAt = currentEvidence?.postedAt ?: System.currentTimeMillis()
+            val allowAuthoritativeBalanceOverride = canUseAuthoritativeBalance(
+                accountId = accountId,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
             // 周期账单反向认领：规则可能先于真实扣款自动记过一笔（同账户+同类型+金额±15%+前后5天）。
             // 认到就不再造第二笔，只把通知标 LINKED —— 否则规则+短信把同一笔记两遍。
             // ponytail: 同账户同金额同周的两笔真实消费会被误认领，宁可漏记不要虚增。
@@ -700,14 +796,16 @@ class LedgerRepository(
                             interestCents = inst.interest.cents,
                             feeCents = inst.fee.cents,
                             loanPlanId = plan.id,
-                            necessity = necessity, channel = channel, notificationId = notificationId
+                            necessity = necessity, channel = channel, notificationId = notificationId,
+                            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
                         markInstallmentPaid(plan, inst.number, inst.principal.cents)
                     } else {
                         addTransaction(
                             accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
                             occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
-                            necessity = necessity, channel = channel, notificationId = notificationId
+                            necessity = necessity, channel = channel, notificationId = notificationId,
+                            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
                     }
                 } else {
@@ -715,7 +813,8 @@ class LedgerRepository(
                         accountId, amountCents, type, category, merchant, note,
                         occurredAt = postedAt, recurringRuleId = ruleId,
                         refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
-                        necessity = necessity, channel = channel, notificationId = notificationId
+                        necessity = necessity, channel = channel, notificationId = notificationId,
+                        allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                     )
                 }
             } else {
@@ -943,6 +1042,39 @@ class LedgerRepository(
         setTransactionCategoryName(id, category.name)
     }
 
+    /** quick_check 只能证明“是健康 SQLite”，还需确认不是别的应用数据库。 */
+    private fun isAssetsKingDatabase(bytes: ByteArray): Boolean {
+        val candidate = java.io.File.createTempFile("assets-king-schema-", ".db", context.cacheDir)
+        return try {
+            candidate.writeBytes(bytes)
+            val opened = android.database.sqlite.SQLiteDatabase.openDatabase(
+                candidate.path,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+            )
+            try {
+                val tables = mutableSetOf<String>()
+                opened.rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'",
+                    null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) tables += cursor.getString(0)
+                }
+                val requiredTables = setOf("room_master_table", "accounts", "transactions", "transfers", "raw_notifications")
+                if (!tables.containsAll(requiredTables)) return false
+                opened.rawQuery("PRAGMA user_version", null).use { cursor ->
+                    cursor.moveToFirst() && cursor.getInt(0) >= 9
+                }
+            } finally {
+                opened.close()
+            }
+        } finally {
+            candidate.delete()
+            java.io.File(candidate.path + "-wal").delete()
+            java.io.File(candidate.path + "-shm").delete()
+        }
+    }
+
     suspend fun setTransactionCategoryName(id: String, categoryName: String) {
         database.withTransaction {
             val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
@@ -990,6 +1122,19 @@ class LedgerRepository(
             val old = requireNotNull(database.transactionDao().findById(id))
             requireTransactionNotAllocated(id)
             require(old.lendingPlanId == null) { "已关联出借计划的流水不能普通编辑，请先处理关联" }
+            require(database.lendingPlanDao().findByReceivableAccount(accountId) == null) {
+                "出借计划的应收账户不能用于普通记账，请使用借出或收回入口"
+            }
+            validateRefundLink(
+                type = type,
+                refundOfId = refundOfId,
+                amountCents = amountCents,
+                accountId = accountId,
+                merchant = merchant,
+                channel = channel,
+                occurredAt = occurredAt,
+                replacing = old
+            )
             requireSufficientAssetBalance(
                 accountId = accountId,
                 amountCents = amountCents,
@@ -1110,6 +1255,9 @@ class LedgerRepository(
             val old = requireNotNull(database.transactionDao().findById(id)) { "流水不存在" }
             require(old.type == TransactionType.EXPENSE.name) { "贷款还款必须从支出流水补挂" }
             requireTransactionNotAllocated(id)
+            require(database.accountDao().find(accountId)?.type == AccountType.ASSET.name) {
+                "贷款还款必须从资产账户付款"
+            }
             requireSufficientAssetBalance(
                 accountId = accountId,
                 amountCents = amountCents,
@@ -1341,17 +1489,19 @@ class LedgerRepository(
                 sources = listOf(EvidenceSourceRef(EvidenceSourceType.LEDGER_EVENT, id)),
                 linkedAt = occurredAt
             )
-            evidenceRecorder.lifecycle(
-                subjectType = EvidenceSubjectType.TRANSACTION,
-                subjectId = id,
-                action = EvidenceAction.LINKED,
-                occurredAt = occurredAt,
-                payload = JSONObject()
-                    .put("lendingPlanId", planId)
-                    .put("transferId", transferId)
-                    .put("principalCents", principalCents)
-                    .put("interestCents", interestCents)
-            )
+            if (interestCents > 0L) {
+                evidenceRecorder.lifecycle(
+                    subjectType = EvidenceSubjectType.TRANSACTION,
+                    subjectId = id,
+                    action = EvidenceAction.LINKED,
+                    occurredAt = occurredAt,
+                    payload = JSONObject()
+                        .put("lendingPlanId", planId)
+                        .put("transferId", transferId)
+                        .put("principalCents", principalCents)
+                        .put("interestCents", interestCents)
+                )
+            }
             evidenceRecorder.lifecycle(
                 subjectType = EvidenceSubjectType.LENDING_PLAN,
                 subjectId = planId,
@@ -1714,11 +1864,17 @@ class LedgerRepository(
         bankCardTail: String? = null
     ) {
         database.withTransaction {
+            val notification = database.rawNotificationDao().findById(notificationId) ?: return@withTransaction
+            requireEarliestNotificationFirst(notification, cashAccountId, bankBalanceCents, bankCardTail)
             if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
                 return@withTransaction
             }
-            val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
-                ?: System.currentTimeMillis()
+            val postedAt = notification.postedAt
+            val allowAuthoritativeBalanceOverride = canUseAuthoritativeBalance(
+                accountId = cashAccountId,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
             addLoanPayment(
                 cashAccountId = cashAccountId,
                 planId = planId,
@@ -1728,7 +1884,8 @@ class LedgerRepository(
                 feeCents = feeCents,
                 note = note,
                 occurredAt = postedAt,
-                notificationId = notificationId
+                notificationId = notificationId,
+                allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
             )
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
             if (bankBalanceCents != null && bankCardTail != null) {
@@ -1749,14 +1906,20 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
+            val notification = database.rawNotificationDao().findById(notificationId) ?: return@withTransaction
+            requireEarliestNotificationFirst(notification, cashAccountId, bankBalanceCents, bankCardTail)
             if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
                 return@withTransaction
             }
             val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "借款计划不存在" }
             val cashAccount = requireNotNull(database.accountDao().find(cashAccountId)) { "到账账户不存在" }
             require(cashAccount.type == AccountType.ASSET.name) { "借款到账必须进入资产账户" }
-            val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt
-                ?: System.currentTimeMillis()
+            val postedAt = notification.postedAt
+            val allowAuthoritativeBalanceOverride = canUseAuthoritativeBalance(
+                accountId = cashAccountId,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
             val transactionId = addTransaction(
                 accountId = cashAccountId,
                 amountCents = amountCents,
@@ -1766,7 +1929,8 @@ class LedgerRepository(
                 note = note,
                 occurredAt = postedAt,
                 loanPlanId = plan.id,
-                notificationId = notificationId
+                notificationId = notificationId,
+                allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
             )
             activateLoanPlanFromDisbursement(plan, transactionId, amountCents, postedAt)
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
@@ -1803,17 +1967,32 @@ class LedgerRepository(
         lendingPlanId: String? = null,
         evidenceSources: List<EvidenceSourceRef>? = null,
         evidenceGroupId: String? = null,
-        evidenceRole: String = "POSTED_EVENT"
+        evidenceRole: String = "POSTED_EVENT",
+        allowAuthoritativeBalanceOverride: Boolean = false
     ): String {
         require(amountCents > 0)
         return database.withTransaction {
             val account = requireNotNull(database.accountDao().find(accountId))
-            requireSufficientAssetBalance(
-                accountId = account.id,
-                amountCents = amountCents,
+            require(database.lendingPlanDao().findByReceivableAccount(account.id) == null) {
+                "出借计划的应收账户不能用于普通记账，请使用借出或收回入口"
+            }
+            validateRefundLink(
                 type = type,
+                refundOfId = refundOfId,
+                amountCents = amountCents,
+                accountId = account.id,
+                merchant = merchant,
+                channel = channel,
                 occurredAt = occurredAt
             )
+            if (!allowAuthoritativeBalanceOverride) {
+                requireSufficientAssetBalance(
+                    accountId = account.id,
+                    amountCents = amountCents,
+                    type = type,
+                    occurredAt = occurredAt
+                )
+            }
             // 退款只使用用户在编辑器里明确选中的原消费；不再按金额猜测，避免冲错分类和预算。
             val linkedRefund = refundOfId.takeIf { type == TransactionType.REFUND }
             val transactionId = UUID.randomUUID().toString()
@@ -1907,6 +2086,40 @@ class LedgerRepository(
             val shortfall = -projected
             "资产账户余额不足，还差 ${shortfall / 100}.${(shortfall % 100).toString().padStart(2, '0')} 元"
         }
+    }
+
+    /** 退款关联是写入层不变量：只能退同账户/渠道/商户的有效支出，且不能超过剩余可退额。 */
+    private suspend fun validateRefundLink(
+        type: TransactionType,
+        refundOfId: String?,
+        amountCents: Long,
+        accountId: String,
+        merchant: String?,
+        channel: String?,
+        occurredAt: Long,
+        replacing: TransactionEntity? = null
+    ) {
+        if (type != TransactionType.REFUND || refundOfId == null) return
+        val source = requireNotNull(database.transactionDao().findById(refundOfId)) { "原消费流水不存在或已删除" }
+        require(source.id != replacing?.id) { "退款不能关联自身" }
+        require(source.type == TransactionType.EXPENSE.name) { "退款只能关联支出流水" }
+        require(source.accountId == accountId) { "退款必须回到原支出账户" }
+        val sourceChannel = source.channel?.trim().orEmpty()
+        val refundChannel = channel?.trim().orEmpty()
+        require(sourceChannel.isNotEmpty() && sourceChannel.equals(refundChannel, ignoreCase = true)) {
+            "退款支付渠道必须与原支出一致"
+        }
+        val sourceMerchant = source.merchant?.trim().orEmpty()
+        val refundMerchant = merchant?.trim().orEmpty()
+        require(sourceMerchant.isNotEmpty() && sourceMerchant.equals(refundMerchant, ignoreCase = true)) {
+            "退款商户必须与原支出一致"
+        }
+        require(occurredAt >= source.occurredAt) { "退款时间不能早于原支出" }
+        val refunded = database.transactionDao().allIncludingDeleted()
+            .asSequence()
+            .filter { it.deletedAt == null && it.id != replacing?.id && it.refundOfId == source.id }
+            .sumOf { it.amountCents }
+        require(refunded + amountCents <= source.amountCents) { "退款金额超过原消费剩余可退额度" }
     }
 
     /**
@@ -2073,13 +2286,29 @@ class LedgerRepository(
         lendingRole: String? = null,
         evidenceSources: List<EvidenceSourceRef>? = null,
         evidenceGroupId: String? = null,
-        evidenceRole: String = "POSTED_EVENT"
+        evidenceRole: String = "POSTED_EVENT",
+        allowAuthoritativeBalanceOverride: Boolean = false
     ): String {
         require(amountCents > 0)
         require(fromAccountId != toAccountId)
         return database.withTransaction {
-            requireNotNull(database.accountDao().find(fromAccountId))
+            val from = requireNotNull(database.accountDao().find(fromAccountId))
             requireNotNull(database.accountDao().find(toAccountId))
+            if (lendingPlanId == null) {
+                require(
+                    database.lendingPlanDao().findByReceivableAccount(fromAccountId) == null &&
+                        database.lendingPlanDao().findByReceivableAccount(toAccountId) == null
+                ) { "出借计划的应收账户不能用于普通划转，请使用借出或收回入口" }
+            }
+            require(from.type == AccountType.ASSET.name) { "划转必须从资产账户转出" }
+            if (!allowAuthoritativeBalanceOverride) {
+                requireSufficientAssetBalance(
+                    accountId = fromAccountId,
+                    amountCents = amountCents,
+                    type = TransactionType.EXPENSE,
+                    occurredAt = occurredAt
+                )
+            }
             val transferId = UUID.randomUUID().toString()
             database.transferDao().insert(
                 TransferEntity(
@@ -2144,16 +2373,85 @@ class LedgerRepository(
         }
     }
 
+    /** 只读划转详情：基于发生时刻之前的检查点和事件重放，无法消除同刻歧义时返回 null。 */
+    suspend fun transferBalanceDetail(id: String): TransferBalanceDetail? {
+        val transfer = database.transferDao().findById(id) ?: return null
+        suspend fun balanceAt(accountId: String, before: Boolean): Long? {
+            val account = database.accountDao().find(accountId) ?: return null
+            val checkpoints = database.balanceCheckpointDao().allFor(accountId)
+            if (checkpoints.any { it.checkedAt == transfer.occurredAt }) return null
+            val checkpoint = checkpoints.filter { it.checkedAt < transfer.occurredAt }.maxByOrNull { it.checkedAt }
+            val base = checkpoint?.balanceCents ?: 0L
+            val afterCheckpoint = checkpoint?.checkedAt ?: Long.MIN_VALUE
+            val txs = database.transactionDao().all().filter {
+                it.accountId == accountId && it.occurredAt > afterCheckpoint && it.occurredAt < transfer.occurredAt
+            }
+            val otherTransfers = database.transferDao().all().filter {
+                it.id != transfer.id &&
+                    (it.fromAccountId == accountId || it.toAccountId == accountId) &&
+                    it.occurredAt > afterCheckpoint && it.occurredAt < transfer.occurredAt
+            }
+            if (database.transactionDao().all().any { it.accountId == accountId && it.occurredAt == transfer.occurredAt } ||
+                database.transferDao().all().any {
+                    it.id != transfer.id && it.occurredAt == transfer.occurredAt &&
+                        (it.fromAccountId == accountId || it.toAccountId == accountId)
+                }) return null
+            val type = AccountType.valueOf(account.type)
+            val beforeCents = base + txs.sumOf {
+                BalanceMath.transactionDelta(type, TransactionType.valueOf(it.type), it.amountCents)
+            } + otherTransfers.sumOf {
+                when {
+                    it.fromAccountId == accountId -> BalanceMath.transferOutDelta(type, it.amountCents)
+                    else -> BalanceMath.transferInDelta(type, it.amountCents)
+                }
+            }
+            if (before) return beforeCents
+            val delta = when {
+                transfer.fromAccountId == accountId -> BalanceMath.transferOutDelta(type, transfer.amountCents)
+                else -> BalanceMath.transferInDelta(type, transfer.amountCents)
+            }
+            return beforeCents + delta
+        }
+        return TransferBalanceDetail(
+            transfer = transfer,
+            fromBeforeCents = balanceAt(transfer.fromAccountId, true),
+            fromAfterCents = balanceAt(transfer.fromAccountId, false),
+            toBeforeCents = balanceAt(transfer.toAccountId, true),
+            toAfterCents = balanceAt(transfer.toAccountId, false)
+        )
+    }
+
     /** 删除划转采用软删除：先反向撤销信用卡匹配，再重算两端账户；七天后才物理清除。 */
     suspend fun deleteTransfer(id: String, deletedAt: Long = System.currentTimeMillis()) {
         database.withTransaction {
             val tf = database.transferDao().findById(id) ?: return@withTransaction
             val before = captureTransferEffectState(id)
+            val notificationIds = database.ledgerEvidenceLinkDao()
+                .findBySubject(EvidenceSubjectType.TRANSFER, id)
+                .filter { it.sourceType == EvidenceSourceType.RAW_NOTIFICATION }
+                .map { it.sourceId }
+                .distinct()
+            val feeTransactions = database.transactionDao().allIncludingDeleted().filter {
+                it.deletedAt == null &&
+                    it.type == TransactionType.FEE.name &&
+                    it.accountId == tf.fromAccountId &&
+                    it.occurredAt == tf.occurredAt &&
+                    it.notificationId in notificationIds
+            }
             cardInstallmentService.reverseTransferMatches(id)
             rollbackLendingTransferEffects(tf)
             val after = captureTransferEffectState(id)
-            check(database.transferDao().moveToTrash(id, deletedAt, JSONObject().put("before", JSONObject(before)).put("after", JSONObject(after)).toString()) == 1) {
+            val trashContext = JSONObject()
+                .put("before", JSONObject(before))
+                .put("after", JSONObject(after))
+                .put("feeTransactionIds", JSONArray(feeTransactions.map { it.id }))
+            check(database.transferDao().moveToTrash(id, deletedAt, trashContext.toString()) == 1) {
                 "划转状态已变化，请刷新后重试"
+            }
+            feeTransactions.forEach { fee ->
+                check(database.transactionDao().moveToTrash(fee.id, deletedAt, null) == 1) {
+                    "划转手续费状态已变化，请刷新后重试"
+                }
             }
             updateRawNotificationLifecycleForTransfer(
                 transferId = tf.id,
@@ -2187,6 +2485,22 @@ class LedgerRepository(
         database.withTransaction {
             val tf = requireNotNull(database.transferDao().findIncludingDeleted(id)) { "垃圾箱中没有这条划转" }
             require(tf.deletedAt != null) { "这条划转不在垃圾箱" }
+            // 删除后同一原始通知若已被重新确认生成新的活动划转，旧划转不能再次恢复，
+            // 否则会让同一笔资金在当前时间线出现双记账。
+            val sourceIds = database.ledgerEvidenceLinkDao()
+                .findBySubject(EvidenceSubjectType.TRANSFER, id)
+                .filter { it.sourceType == EvidenceSourceType.RAW_NOTIFICATION }
+                .map { it.sourceId }
+                .distinct()
+            require(sourceIds.none { sourceId ->
+                database.ledgerEvidenceLinkDao()
+                    .findBySource(EvidenceSourceType.RAW_NOTIFICATION, sourceId)
+                    .any { link ->
+                        link.subjectType == EvidenceSubjectType.TRANSFER &&
+                            link.subjectId != id &&
+                            database.transferDao().findById(link.subjectId) != null
+                    }
+            }) { "同一通知已重新记账，不能恢复旧垃圾箱划转" }
             val context = requireNotNull(tf.trashContextJson) { "缺少划转联动快照，无法安全恢复" }
             val root = JSONObject(context)
             val current = captureTransferEffectState(id)
@@ -2195,6 +2509,19 @@ class LedgerRepository(
             }
             applyTransferEffectState(root.getJSONObject("before").toString())
             check(database.transferDao().restoreFromTrash(id) == 1) { "划转状态已变化，请刷新后重试" }
+            if (root.has("feeTransactionIds")) {
+                val fees = root.getJSONArray("feeTransactionIds")
+                for (index in 0 until fees.length()) {
+                    val feeId = fees.getString(index)
+                    val fee = requireNotNull(database.transactionDao().findIncludingDeleted(feeId)) {
+                        "关联手续费已被永久删除，不能恢复这条划转"
+                    }
+                    require(fee.deletedAt != null) { "关联手续费已单独恢复，请先重新删除手续费后再恢复划转" }
+                    check(database.transactionDao().restoreFromTrash(feeId) == 1) {
+                        "关联手续费状态已变化，请刷新后重试"
+                    }
+                }
+            }
             updateRawNotificationLifecycleForTransfer(
                 transferId = tf.id,
                 status = "LINKED",
@@ -2243,6 +2570,14 @@ class LedgerRepository(
                 action = EvidenceAction.PURGED
             )
             database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(id)
+            if (tf.trashContextJson != null) {
+                val fees = JSONObject(tf.trashContextJson).optJSONArray("feeTransactionIds")
+                if (fees != null) for (index in 0 until fees.length()) {
+                    database.transactionDao().findIncludingDeleted(fees.getString(index))?.let { fee ->
+                        if (fee.deletedAt != null) database.transactionDao().deleteById(fee.id)
+                    }
+                }
+            }
             database.transferDao().delete(id)
         }
     }
@@ -2276,6 +2611,14 @@ class LedgerRepository(
                     payload = JSONObject().put("expired", true)
                 )
                 database.creditCardInstallmentPaymentMatchDao().deleteByTransfer(it.id)
+                if (it.trashContextJson != null) {
+                    val fees = JSONObject(it.trashContextJson).optJSONArray("feeTransactionIds")
+                    if (fees != null) for (index in 0 until fees.length()) {
+                        database.transactionDao().findIncludingDeleted(fees.getString(index))?.let { fee ->
+                            if (fee.deletedAt != null) database.transactionDao().deleteById(fee.id)
+                        }
+                    }
+                }
                 database.transferDao().delete(it.id)
             }
             expired.size
@@ -2425,7 +2768,10 @@ class LedgerRepository(
         val today = java.time.LocalDate.now().toEpochDay()
         if (database.snapshotDao().findByDay(today) != null) return
         val all = allAccounts().filter { !it.archived }
-        val assets = all.filter { it.type == AccountType.ASSET.name }.sumOf { it.balanceCents }
+        val receivableAccountIds = database.lendingPlanDao().all().mapTo(hashSetOf()) { it.receivableAccountId }
+        val assets = all.filter {
+            it.type == AccountType.ASSET.name && it.id !in receivableAccountIds
+        }.sumOf { it.balanceCents }
         val debts = all.filter { it.type != AccountType.ASSET.name }.sumOf { it.balanceCents }
         database.snapshotDao().upsert(
             SnapshotEntity(
@@ -3009,7 +3355,8 @@ class LedgerRepository(
         feeCents: Long,
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
-        notificationId: String? = null
+        notificationId: String? = null,
+        allowAuthoritativeBalanceOverride: Boolean = false
     ) {
         require(totalCents > 0)
         require(principalCents >= 0 && interestCents >= 0 && feeCents >= 0)
@@ -3017,6 +3364,9 @@ class LedgerRepository(
         database.withTransaction {
             val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
             require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以还款" }
+            require(database.accountDao().find(cashAccountId)?.type == AccountType.ASSET.name) {
+                "贷款还款必须从资产账户付款"
+            }
             require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
             val transactionId = addTransaction(
                 accountId = cashAccountId,
@@ -3030,7 +3380,8 @@ class LedgerRepository(
                 interestCents = interestCents,
                 feeCents = feeCents,
                 loanPlanId = planId,
-                notificationId = notificationId
+                notificationId = notificationId,
+                allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
             )
             // 本金、利息、手续费都完整覆盖才推进期次。先息后本的 0 本金期不能仅凭
             // “0 <= 本次本金”把后续所有期次一起标为已还。
@@ -3088,6 +3439,9 @@ class LedgerRepository(
         database.withTransaction {
             val plan = requireNotNull(database.loanPlanDao().findById(planId)) { "贷款计划不存在" }
             require(plan.status == "ACTIVE") { "只有已放款且未结清的计划可以提前还款" }
+            require(database.accountDao().find(cashAccountId)?.type == AccountType.ASSET.name) {
+                "贷款提前还款必须从资产账户付款"
+            }
             require(principalCents <= remainingEffective(plan)) { "本金超过剩余本金" }
             val transactionId = addTransaction(
                 accountId = cashAccountId,
@@ -3278,17 +3632,15 @@ class LedgerRepository(
 
     suspend fun deleteLendingPlan(id: String) = database.withTransaction {
         val plan = requireNotNull(database.lendingPlanDao().findById(id)) { "出借计划不存在" }
-        require(database.transferDao().findActiveByLendingPlan(id).isEmpty() &&
-            database.transactionDao().findActiveByLendingPlan(id).isEmpty()) {
-            "请先删除该计划关联的借出、收回或利息流水"
-        }
         val receivableAccount = requireNotNull(database.accountDao().find(plan.receivableAccountId)) { "出借计划账户不存在" }
-        require(
-            receivableAccount.balanceStatus == "CONFIRMED" &&
-                receivableAccount.balanceCents == 0L
-        ) {
-            "请先完成应收账户对账，确认该计划余额已恢复为零后才能删除"
-        }
+        requireLendingPlanDeletable(
+            originType = plan.originType,
+            hasActiveFlows = database.transferDao().findActiveByLendingPlan(id).isNotEmpty() ||
+                database.transactionDao().findActiveByLendingPlan(id).isNotEmpty(),
+            receivableBalanceStatus = receivableAccount.balanceStatus,
+            receivableBalanceCents = receivableAccount.balanceCents,
+            remainingPrincipalCents = plan.remainingPrincipalCents
+        )
         database.transactionDao().findIncludingDeletedByLendingPlan(id)
             .filter { it.deletedAt != null }
             .forEach { permanentlyDeleteTrashedTransaction(it) }
@@ -3308,7 +3660,16 @@ class LedgerRepository(
             subjectType = EvidenceSubjectType.LENDING_PLAN,
             subjectId = id,
             action = EvidenceAction.PURGED,
-            payload = JSONObject().put("reason", "LENDING_PLAN_REMOVED_AFTER_RECONCILIATION")
+            payload = JSONObject()
+                .put(
+                    "reason",
+                    if (plan.originType == LendingOriginType.OPENING_BALANCE) {
+                        "OPENING_LENDING_REMOVED_WITHOUT_CASH_RESTATEMENT"
+                    } else {
+                        "LENDING_PLAN_REMOVED_AFTER_RECONCILIATION"
+                    }
+                )
+                .put("removedReceivableCents", receivableAccount.balanceCents)
         )
         database.lendingPlanDao().deleteById(id)
         database.balanceAdjustmentDao().deleteByAccount(plan.receivableAccountId)
@@ -3344,8 +3705,13 @@ class LedgerRepository(
         bankBalanceCents: Long? = null,
         bankCardTail: String? = null
     ) = database.withTransaction {
+        val notification = database.rawNotificationDao().findById(notificationId) ?: return@withTransaction
+        requireEarliestNotificationFirst(notification, cashAccountId, bankBalanceCents, bankCardTail)
         if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) return@withTransaction
-        val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt ?: System.currentTimeMillis()
+        val postedAt = notification.postedAt
+        val allowAuthoritativeBalanceOverride = canUseAuthoritativeBalance(
+            cashAccountId, bankBalanceCents, bankCardTail
+        )
         recordLendingDisbursement(
             cashAccountId = cashAccountId,
             planId = planId,
@@ -3353,7 +3719,8 @@ class LedgerRepository(
             note = note,
             occurredAt = postedAt,
             sources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
-            groupId = "notification:$notificationId"
+            groupId = "notification:$notificationId",
+            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
         )
         database.rawNotificationDao().updateStatus(notificationId, "LINKED")
         if (bankBalanceCents != null && bankCardTail != null) {
@@ -3368,7 +3735,8 @@ class LedgerRepository(
         note: String?,
         occurredAt: Long,
         sources: List<EvidenceSourceRef>,
-        groupId: String
+        groupId: String,
+        allowAuthoritativeBalanceOverride: Boolean = false
     ): String {
         require(amountCents > 0L)
         val plan = requireNotNull(database.lendingPlanDao().findById(planId)) { "出借计划不存在" }
@@ -3388,7 +3756,8 @@ class LedgerRepository(
             lendingRole = LendingTransferRole.DISBURSEMENT,
             evidenceSources = sources,
             evidenceGroupId = groupId,
-            evidenceRole = "LENDING_DISBURSEMENT"
+            evidenceRole = "LENDING_DISBURSEMENT",
+            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
         )
         database.lendingPlanDao().upsert(
             plan.copy(
@@ -3439,8 +3808,10 @@ class LedgerRepository(
         bankCardTail: String? = null
     ) = database.withTransaction {
         require(principalCents + interestCents == totalCents) { "本金与利息合计必须等于到账金额" }
+        val notification = database.rawNotificationDao().findById(notificationId) ?: return@withTransaction
+        requireEarliestNotificationFirst(notification, cashAccountId, bankBalanceCents, bankCardTail)
         if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) return@withTransaction
-        val postedAt = database.rawNotificationDao().findById(notificationId)?.postedAt ?: System.currentTimeMillis()
+        val postedAt = notification.postedAt
         recordLendingRepayment(
             cashAccountId = cashAccountId,
             planId = planId,

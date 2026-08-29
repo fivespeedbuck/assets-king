@@ -8,6 +8,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -60,6 +62,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.assetsking.app.LedgerUiState
@@ -86,6 +89,7 @@ import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.ReimbursementYellow
 import com.assetsking.ui.theme.BalanceBlue
 import com.assetsking.ui.theme.RepaymentPurple
+import com.assetsking.ui.theme.UiTokens
 import com.assetsking.ui.theme.DeficitRed
 import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.ui.theme.cashBalanceColor
@@ -123,6 +127,7 @@ private val privacyIconKeys = listOf(
  * ②本月预算（必要预算 + 自由开销两条总进度 + 前 4 分类）
  * ③收支与还款趋势（收入/结余组成柱 + 支出/还款组成柱，3/6/12 月切换）
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StatsScreen(
     state: LedgerUiState,
@@ -183,8 +188,8 @@ fun StatsScreen(
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(horizontal = UiTokens.PagePadding, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(UiTokens.GroupGap)
     ) {
         // ── 月份切换（REQ 统计§21）──
         item {
@@ -443,11 +448,14 @@ fun StatsScreen(
         item {
             GlassCard(contentPadding = Modifier) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 15.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("收支与还款趋势", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Row {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(3, 6, 12).forEach { n ->
-                                FilterChip(selected = trendMonths == n, onClick = { trendMonths = n }, label = { Text("${n}月") }, modifier = Modifier.padding(horizontal = 2.dp))
+                                FilterChip(selected = trendMonths == n, onClick = { trendMonths = n }, label = { Text("${n}月") })
                             }
                         }
                     }
@@ -1364,7 +1372,11 @@ private fun TrendChart(
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     fontWeight = if (tickVisible && ym == selectedMonth) FontWeight.Bold else null,
-                    modifier = Modifier.weight(1f).clickable { onBarClick(ym) },
+                     modifier = Modifier
+                         .weight(1f)
+                         .defaultMinSize(minHeight = UiTokens.MinimumTouch)
+                         .clickable { onBarClick(ym) }
+                         .padding(vertical = 8.dp),
                     textAlign = TextAlign.Center
                 )
             }

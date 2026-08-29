@@ -27,7 +27,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -81,6 +80,7 @@ import com.assetsking.model.RepaymentMethod
 import com.assetsking.ui.component.ChipRow
 import com.assetsking.ui.component.FormField
 import com.assetsking.ui.component.GlassCard
+import com.assetsking.ui.component.CleanLinearProgressIndicator
 import com.assetsking.ui.component.Sheet
 import com.assetsking.app.ui.privacy.LocalPrivacyChaosFrame
 import com.assetsking.app.ui.privacy.animatePrivacyValue
@@ -99,6 +99,7 @@ import com.assetsking.ui.theme.ForecastChargeYellow
 import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.ui.theme.RepaymentPurple
+import com.assetsking.ui.theme.UiTokens
 import com.assetsking.ui.theme.debtAmountColor
 import com.assetsking.ui.theme.debtCompositionSemanticColor
 import org.json.JSONArray
@@ -196,10 +197,9 @@ internal fun visibleLoanCreditAccounts(
 fun LoanScreen(
     plans: List<LoanPlanEntity>,
     accounts: List<AccountEntity>,
-    onSave: (LoanPlanEntity) -> Unit,
+    onSave: (LoanPlanEntity, (Result<Unit>) -> Unit) -> Unit,
     onDelete: (String) -> Unit,
     onAddLoanAccount: () -> Unit = {},
-    onAddCreditAccount: () -> Unit = {},
     v5: V5Metrics? = null,
     cardInstallments: List<CreditCardInstallmentEntity> = emptyList(),
     cardInstallmentAllocations: List<CreditCardInstallmentAllocationEntity> = emptyList(),
@@ -212,8 +212,8 @@ fun LoanScreen(
     onConfirmInstallmentPayment: (String, String, Long, (Result<Unit>) -> Unit) -> Unit = { _, _, _, callback -> callback(Result.failure(IllegalStateException("未连接还款匹配服务"))) },
     onOpenCreditAccount: (AccountEntity) -> Unit = {},
     onRecordPayment: (LoanPlanEntity) -> Unit = {},
-    onPrepay: (String, String, Long, Long, String?) -> Unit = { _, _, _, _, _ -> },
-    onSettle: (String, String, Long, Long, Long, String?) -> Unit = { _, _, _, _, _, _ -> },
+    onPrepay: (String, String, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit = { _, _, _, _, _, callback -> callback(Result.failure(IllegalStateException("未连接提前还款服务"))) },
+    onSettle: (String, String, Long, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit = { _, _, _, _, _, _, callback -> callback(Result.failure(IllegalStateException("未连接结清服务"))) },
     onUpdateInstallment: (String, Int, Long?, Long?, Long?, Long?, String?) -> Unit = { _, _, _, _, _, _, _ -> },
     lendingPlans: List<LendingPlanEntity> = emptyList(),
     onCreateLendingPlan: (LendingPlanDraft, (Result<String>) -> Unit) -> Unit = { _, callback -> callback(Result.failure(IllegalStateException("未连接出借计划服务"))) },
@@ -247,6 +247,14 @@ fun LoanScreen(
     var repayingLendingPlan by remember { mutableStateOf<LendingPlanEntity?>(null) }
     var deletingLendingPlan by remember { mutableStateOf<LendingPlanEntity?>(null) }
     var lendingMessage by remember { mutableStateOf<String?>(null) }
+    val receivableAccountIds = remember(lendingPlans) {
+        lendingPlans.mapTo(hashSetOf()) { it.receivableAccountId }
+    }
+    val cashAccounts = remember(accounts, receivableAccountIds) {
+        accounts.filter {
+            it.type == AccountType.ASSET.name && !it.archived && it.id !in receivableAccountIds
+        }
+    }
 
     // 本月还款列表（REQ 贷款页§2-3/§11）：逾期置顶 → 本月待还 → 本月已还（删除线）
     val todayDay = java.time.LocalDate.now().toEpochDay()
@@ -327,8 +335,8 @@ fun LoanScreen(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier = Modifier.fillMaxSize().padding(horizontal = UiTokens.PagePadding, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(UiTokens.GroupGap)
     ) {
         item {
             LoanDashboardCard(
@@ -475,26 +483,21 @@ fun LoanScreen(
         }
 
         item {
-            Column(
-                Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("信用账户", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = onAddCreditAccount,
-                                enabled = !privacyEnabled
-                            ) { Text("新增信用卡") }
-                            Button(
-                                onClick = { showCreditInstallmentSheet = true },
-                                enabled = installmentCandidates.isNotEmpty() && !privacyEnabled
-                            ) { Text("创建分期") }
-                        }
+                        Button(
+                            onClick = { showCreditInstallmentSheet = true },
+                            enabled = installmentCandidates.isNotEmpty() && !privacyEnabled
+                        ) { Text("创建分期") }
                     }
                     installmentMessage?.let { message ->
                         Text(message, style = MaterialTheme.typography.bodySmall, color = if (message.startsWith("失败")) DeficitRed else IncomeGreen)
@@ -549,7 +552,7 @@ fun LoanScreen(
                         pendingPaymentConfirmations.forEach { payment ->
                             GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
                                 Column(
-                                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                                     Modifier.fillMaxWidth().padding(horizontal = UiTokens.CardPadding, vertical = 14.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Text("这笔还款对应多个分期，请确认归属", fontWeight = FontWeight.Medium)
@@ -597,10 +600,15 @@ fun LoanScreen(
                             }
                         }
                     }
+                }
             }
 
         val lendingSection: @Composable () -> Unit = {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = Modifier) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -675,7 +683,14 @@ fun LoanScreen(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                        Text(statusLabel, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = statusColor)
+                                         Text(
+                                             statusLabel,
+                                             style = MaterialTheme.typography.labelMedium,
+                                             fontWeight = FontWeight.Bold,
+                                             color = statusColor,
+                                             maxLines = 2,
+                                             textAlign = TextAlign.End
+                                         )
                                         Icon(
                                             if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
                                             contentDescription = if (expanded) "收起出借详情" else "展开出借详情"
@@ -702,17 +717,18 @@ fun LoanScreen(
                                         }
                                         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                             Text("预计收回", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            Text(
-                                                if (privacyEnabled) privacyFakeDateTime(1_540 + plan.id.hashCode()).substringBefore(' ')
-                                                else plan.expectedDueDateEpochDay?.let { java.time.LocalDate.ofEpochDay(it).toString() } ?: "未设置",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = when {
-                                                    plan.expectedDueDateEpochDay == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                                                    overdue -> DeficitRed
-                                                    else -> PendingOrange
-                                                }
-                                            )
+                                             Text(
+                                                 if (privacyEnabled) privacyFakeDateTime(1_540 + plan.id.hashCode()).substringBefore(' ')
+                                                 else plan.expectedDueDateEpochDay?.let { java.time.LocalDate.ofEpochDay(it).toString() } ?: "未设置",
+                                                 style = MaterialTheme.typography.bodyMedium,
+                                                 fontWeight = FontWeight.Bold,
+                                                 color = when {
+                                                     plan.expectedDueDateEpochDay == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                                     overdue -> DeficitRed
+                                                     else -> PendingOrange
+                                                 },
+                                                 maxLines = 2
+                                             )
                                             Text(
                                                 "已收利息 ${if (privacyEnabled) privacyFakeAmount(1_550 + plan.id.hashCode()) else formatMoney(plan.receivedInterestCents)}",
                                                 style = MaterialTheme.typography.labelSmall,
@@ -772,6 +788,7 @@ fun LoanScreen(
                             }
                         }
                 }
+            }
             }
         }
 
@@ -1094,7 +1111,7 @@ fun LoanScreen(
     disbursingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
         LendingDisbursementSheet(
             plan = plan,
-            cashAccounts = accounts.filter { it.type == AccountType.ASSET.name && !it.archived && it.id != plan.receivableAccountId },
+            cashAccounts = cashAccounts,
             onConfirm = { cashId, note, callback ->
                 onLendingDisbursement(cashId, plan.id, plan.principalCents, note) { result ->
                     result.onSuccess {
@@ -1111,7 +1128,7 @@ fun LoanScreen(
     repayingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
         LendingRepaymentSheet(
             plan = plan,
-            cashAccounts = accounts.filter { it.type == AccountType.ASSET.name && !it.archived && it.id != plan.receivableAccountId },
+            cashAccounts = cashAccounts,
             onConfirm = { cashId, principal, interest, note, callback ->
                 onLendingRepayment(cashId, plan.id, principal, interest, note) { result ->
                     result.onSuccess {
@@ -1126,21 +1143,43 @@ fun LoanScreen(
     }
 
     deletingLendingPlan?.takeUnless { privacyEnabled }?.let { plan ->
+        val currentReceivableCents = accounts.firstOrNull { it.id == plan.receivableAccountId }?.balanceCents
+            ?: plan.remainingPrincipalCents
+        val isOpening = plan.originType == LendingOriginType.OPENING_BALANCE
         AlertDialog(
             onDismissRequest = { deletingLendingPlan = null },
             title = { Text("删除出借计划？") },
-            text = { Text("请先处理完相关流水并完成应收账户对账；只有该计划的关联影响已清理且专属应收余额恢复为零时，才能删除此计划。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDeleteLendingPlan(plan.id) { result ->
-                        result.onSuccess {
-                            lendingMessage = "出借计划已删除"
-                            deletingLendingPlan = null
-                        }.onFailure { lendingMessage = "失败：${it.message ?: "无法删除计划"}" }
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(plan.label, fontWeight = FontWeight.Bold)
+                    if (isOpening) {
+                        Text("将移除期初应收 ${formatMoney(currentReceivableCents)} 和对应的专属应收账户。")
+                        Text("首页可用总资产预计变化：${formatMoney(0L)}。系统从未记录这笔钱从银行卡或钱包借出，因此不会给任何现金账户补回资金。")
+                    } else {
+                        Text("请先删除该计划关联的借出、收回和利息流水，使剩余应收本金恢复为零。无关账户的其他流水不会阻止删除。")
+                        Text("当前剩余应收：${formatMoney(currentReceivableCents)}")
                     }
-                }) { Text("删除", color = DeficitRed) }
+                }
             },
-            dismissButton = { TextButton(onClick = { deletingLendingPlan = null }) { Text("取消") } }
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteLendingPlan(plan.id) { result ->
+                            result.onSuccess {
+                                lendingMessage = "出借计划已删除"
+                                deletingLendingPlan = null
+                            }.onFailure { lendingMessage = "失败：${it.message ?: "无法删除计划"}" }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) { Text(if (isOpening) "删除期初应收" else "删除计划") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { deletingLendingPlan = null }) { Text("取消") }
+            }
         )
     }
 
@@ -1151,7 +1190,17 @@ fun LoanScreen(
             // 保留底层贷款计划表单；新建账户 Sheet 关闭后原输入和编辑上下文仍在，
             // accounts 更新会自动把新贷款账户带回当前表单。
             onAddLoanAccount = onAddLoanAccount,
-            onSave = { onSave(it); showSheet = false; editingPlan = null },
+            onSave = { plan, callback ->
+                onSave(plan) { result ->
+                    result.onSuccess {
+                        showSheet = false
+                        editingPlan = null
+                    }.onFailure { error ->
+                        lendingMessage = "失败：${error.message ?: "无法保存贷款计划"}"
+                    }
+                    callback(result)
+                }
+            },
             onDismiss = { showSheet = false; editingPlan = null }
         )
     }
@@ -1294,7 +1343,8 @@ fun LoanScreen(
             title = { Text("取消消费分期？") },
             text = { Text("原消费流水不会删除，总负债也不会变化；计划、关联和操作记录将保留，剩余本金可重新分期。") },
             confirmButton = {
-                TextButton(onClick = {
+                Button(
+                    onClick = {
                     onCancelInstallment(installment.id) { result ->
                         result.onSuccess {
                             installmentMessage = "分期已取消，原流水和审计关联均已保留"
@@ -1303,19 +1353,24 @@ fun LoanScreen(
                             installmentMessage = "失败：${error.message ?: "无法取消分期"}"
                         }
                     }
-                }) { Text("确认取消", color = DeficitRed) }
+                }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("确认取消") }
             },
-            dismissButton = { TextButton(onClick = { cancellingCardInstallment = null }) { Text("返回") } }
+            dismissButton = { OutlinedButton(onClick = { cancellingCardInstallment = null }) { Text("返回") } }
         )
     }
 
     prepaying?.takeUnless { privacyEnabled }?.let { plan ->
         PrepaySheet(
             plan = plan,
-            accounts = accounts,
-            onConfirm = { cashId, principalCents, feeCents, note ->
-                onPrepay(cashId, plan.id, principalCents, feeCents, note)
-                prepaying = null
+            accounts = cashAccounts,
+            onConfirm = { cashId, principalCents, feeCents, note, callback ->
+                onPrepay(cashId, plan.id, principalCents, feeCents, note) { result ->
+                    result.onSuccess {
+                        lendingMessage = "提前还款已入账"
+                        prepaying = null
+                    }.onFailure { error -> lendingMessage = "失败：${error.message ?: "无法提前还款"}" }
+                    callback(result)
+                }
             },
             onDismiss = { prepaying = null }
         )
@@ -1324,10 +1379,15 @@ fun LoanScreen(
     settling?.takeUnless { privacyEnabled }?.let { plan ->
         SettleSheet(
             plan = plan,
-            accounts = accounts,
-            onConfirm = { cashId, principalCents, interestCents, feeCents, note ->
-                onSettle(cashId, plan.id, principalCents, interestCents, feeCents, note)
-                settling = null
+            accounts = cashAccounts,
+            onConfirm = { cashId, principalCents, interestCents, feeCents, note, callback ->
+                onSettle(cashId, plan.id, principalCents, interestCents, feeCents, note) { result ->
+                    result.onSuccess {
+                        lendingMessage = "贷款已结清"
+                        settling = null
+                    }.onFailure { error -> lendingMessage = "失败：${error.message ?: "无法结清贷款"}" }
+                    callback(result)
+                }
             },
             onDismiss = { settling = null }
         )
@@ -1345,9 +1405,12 @@ fun LoanScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { onDelete(plan.id); deleteConfirm = null }) { Text("永久删除", color = DeficitRed) }
+                Button(
+                    onClick = { onDelete(plan.id); deleteConfirm = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
+                ) { Text("永久删除") }
             },
-            dismissButton = { TextButton(onClick = { deleteConfirm = null }) { Text("取消") } }
+            dismissButton = { OutlinedButton(onClick = { deleteConfirm = null }) { Text("取消") } }
         )
     }
 
@@ -1637,7 +1700,7 @@ private fun LoanDashboardCard(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                LinearProgressIndicator(
+                CleanLinearProgressIndicator(
                     progress = { if (privacyEnabled) privacyRepaymentProgress else dashboard.repaymentProgress },
                     modifier = Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(50)),
                     color = RepaymentPurple,
@@ -2243,7 +2306,7 @@ internal fun loanSchedulePrincipalGapCents(
 private fun PrepaySheet(
     plan: LoanPlanEntity,
     accounts: List<AccountEntity>,
-    onConfirm: (String, Long, Long, String?) -> Unit,
+    onConfirm: (String, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     val assetAccounts = accounts.filter { it.type == com.assetsking.model.AccountType.ASSET.name }
@@ -2285,7 +2348,7 @@ private fun PrepaySheet(
             onClick = {
                 val parsedPrincipal = principalCents ?: return@Button
                 val parsedFee = feeCents ?: return@Button
-                onConfirm(cashAccountId, parsedPrincipal, parsedFee, note.trim().takeIf { it.isNotEmpty() })
+                onConfirm(cashAccountId, parsedPrincipal, parsedFee, note.trim().takeIf { it.isNotEmpty() }) {}
             },
             enabled = principalCents?.let { it in 1..planRemaining(plan) } == true && feeCents != null && cashAccountId.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
@@ -2298,7 +2361,7 @@ private fun PrepaySheet(
 private fun SettleSheet(
     plan: LoanPlanEntity,
     accounts: List<AccountEntity>,
-    onConfirm: (String, Long, Long, Long, String?) -> Unit,
+    onConfirm: (String, Long, Long, Long, String?, (Result<Unit>) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     val assetAccounts = accounts.filter { it.type == com.assetsking.model.AccountType.ASSET.name }
@@ -2336,7 +2399,7 @@ private fun SettleSheet(
                 val p = runCatching { java.math.BigDecimal(principal.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull() ?: return@Button
                 val i = runCatching { java.math.BigDecimal(interest.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull() ?: 0L
                 val f = runCatching { java.math.BigDecimal(fee.ifBlank { "0" }.trim()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact() }.getOrNull() ?: 0L
-                onConfirm(cashAccountId, p, i, f, note.trim().takeIf { it.isNotEmpty() })
+                onConfirm(cashAccountId, p, i, f, note.trim().takeIf { it.isNotEmpty() }) {}
             },
             enabled = (principal.toDoubleOrNull() ?: 0.0) + (interest.toDoubleOrNull() ?: 0.0) + (fee.toDoubleOrNull() ?: 0.0) > 0 && cashAccountId.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
@@ -3195,7 +3258,7 @@ private fun LoanPlanSheet(
     existingPlan: LoanPlanEntity?,
     accounts: List<AccountEntity>,
     onAddLoanAccount: () -> Unit,
-    onSave: (LoanPlanEntity) -> Unit,
+    onSave: (LoanPlanEntity, (Result<Unit>) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     val isEdit = existingPlan != null
@@ -3536,7 +3599,7 @@ private fun LoanPlanSheet(
                         originType = existingPlan?.originType ?: originType,
                         disbursementTransactionId = existingPlan?.disbursementTransactionId
                     )
-                )
+                ) {}
             },
             enabled = principalCents != null && accountId.isNotBlank() &&
                 runCatching { java.time.LocalDate.parse(loanStartDate) }.isSuccess &&

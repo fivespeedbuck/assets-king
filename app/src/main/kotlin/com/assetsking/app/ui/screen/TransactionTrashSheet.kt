@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -171,8 +172,12 @@ fun TransactionTrashSheet(
             title = { Text("永久删除这条流水？") },
             text = { Text("永久删除后无法恢复；原通知的忽略标记仍会保留，避免同一短信再次入库。") },
             confirmButton = {
-                TextButton(
+                Button(
                     enabled = busyId == null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
                     onClick = {
                         busyId = transaction.id
                         message = null
@@ -182,7 +187,7 @@ fun TransactionTrashSheet(
                                 .onFailure { message = it.message ?: "永久删除失败" }
                         }
                     }
-                ) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
+                ) { Text("永久删除") }
             },
             dismissButton = {
                 TextButton(onClick = { permanentDeleteTarget = null }, enabled = busyId == null) { Text("取消") }
@@ -196,7 +201,13 @@ fun TransactionTrashSheet(
             title = { Text("永久删除这条划转？") },
             text = { Text("永久删除后无法恢复；与信用卡分期的联动快照也会一并清除。") },
             confirmButton = {
-                TextButton(enabled = busyId == null, onClick = {
+                Button(
+                    enabled = busyId == null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    onClick = {
                     busyId = transfer.id
                     message = null
                     onPermanentlyDeleteTransfer(transfer.id) { result ->
@@ -204,7 +215,7 @@ fun TransactionTrashSheet(
                         result.onSuccess { permanentTransferTarget = null }
                             .onFailure { message = it.message ?: "永久删除划转失败" }
                     }
-                }) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
+                }) { Text("永久删除") }
             },
             dismissButton = { TextButton(onClick = { permanentTransferTarget = null }, enabled = busyId == null) { Text("取消") } }
         )

@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -40,7 +41,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +57,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -66,8 +68,11 @@ import com.assetsking.app.R
 import com.assetsking.app.notification.AssetsNotificationListenerService
 import com.assetsking.app.notification.VaultRuntimeStatus
 import com.assetsking.app.ui.privacy.LocalPrivacyChaosFrame
+import com.assetsking.app.ui.privacy.PrivacyEntryController
 import com.assetsking.app.ui.privacy.animatePrivacyValue
+import com.assetsking.app.ui.privacy.privacyToggleGesture
 import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyDisplayMoney
 import com.assetsking.app.ui.privacy.privacyFakeCount
 import com.assetsking.app.ui.privacy.privacyFakeDateTime
 import com.assetsking.app.ui.privacy.privacyObfuscatedText
@@ -77,6 +82,7 @@ import com.assetsking.database.CategoryEntity
 import com.assetsking.database.CreditCardInstallmentEntity
 import com.assetsking.database.CreditCardInstallmentScheduleEntity
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.LendingPlanEntity
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.model.AccountType
@@ -91,6 +97,7 @@ import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.ui.theme.PrivacyEmblemFog
 import com.assetsking.ui.theme.PrivacyEmblemPurple
+import com.assetsking.ui.theme.UiTokens
 import com.assetsking.ui.theme.ReimbursementYellow
 import com.assetsking.ui.theme.RecurringDebitOrange
 import com.assetsking.ui.theme.RepaymentPurple
@@ -122,10 +129,12 @@ fun HomeTab(
     categories: List<CategoryEntity>,
     recurringRules: List<RecurringRuleEntity>,
     loanPlans: List<LoanPlanEntity>,
+    lendingPlans: List<LendingPlanEntity>,
     cardInstallments: List<CreditCardInstallmentEntity>,
     cardInstallmentSchedules: List<CreditCardInstallmentScheduleEntity>,
     freeSpendingCents: Long,
     privacyEnabled: Boolean,
+    privacyEntryController: PrivacyEntryController,
     onTogglePrivacy: () -> Unit,
     onShowPending: () -> Unit,
     onShowReconciliation: () -> Unit,
@@ -139,11 +148,8 @@ fun HomeTab(
     var showAssetAccounts by remember { mutableStateOf(false) }
     var showDebtAccounts by remember { mutableStateOf(false) }
     val privacyFrame = LocalPrivacyChaosFrame.current
-    fun money(cents: Long, slot: Int) = if (privacyEnabled) {
-        privacyFrame.fakeAmounts[Math.floorMod(slot, privacyFrame.fakeAmounts.size)]
-    } else {
-        formatMoney(cents)
-    }
+    @Composable
+    fun money(cents: Long, slot: Int) = privacyDisplayMoney(cents, slot)
 
     // 本月收支（REQ 首页信息优先级§6/收入§2-3）：实际收入只算 INCOME；支出扣已关联退款与已报销
     val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -222,8 +228,10 @@ fun HomeTab(
     val dueEarliest = dueSoon.minOfOrNull { it.dueDay }
     val anyOverdue = dueSoon.any { it.dueDay < today.toEpochDay() }
 
+    // 两张紧凑任务卡在手机上固定并排；其余模块继续跨两列。
+    val gridColumns = 2
     LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
+        columns = GridCells.Fixed(gridColumns),
         modifier = Modifier.fillMaxSize().padding(padding),
         contentPadding = PaddingValues(16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -244,13 +252,22 @@ fun HomeTab(
                             fontWeight = FontWeight.Bold
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            IconButton(
-                                onClick = onTogglePrivacy,
-                                modifier = Modifier.size(40.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(UiTokens.MinimumTouch)
+                                    .privacyToggleGesture(privacyEntryController, onTogglePrivacy)
+                                    .semantics {
+                                        contentDescription = if (privacyEnabled) {
+                                            "长按3秒退出隐秘模式"
+                                        } else {
+                                            "长按3秒进入隐秘模式"
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     painter = painterResource(R.drawable.ic_privacy_emblem_fog),
-                                    contentDescription = if (privacyEnabled) "退出隐私模式" else "进入隐私模式",
+                                    contentDescription = null,
                                     tint = if (privacyEnabled) PrivacyEmblemFog else PrivacyEmblemPurple,
                                     modifier = Modifier.size(28.dp)
                                 )
@@ -304,7 +321,7 @@ fun HomeTab(
                         ) {
                             HomeRepaymentPager(
                                 pages = repaymentPages,
-                                money = ::money,
+                                money = { cents, slot -> money(cents, slot) },
                                 privacyEnabled = privacyEnabled,
                                 onClick = onGotoLoans,
                                 modifier = Modifier.weight(1f)
@@ -320,9 +337,9 @@ fun HomeTab(
                         }
                     }
                     // 最近还款提醒（REQ 首页UI§5-7）：到期前 3 天窗口或逾期
-                    if (dueSoon.isNotEmpty() || privacyEnabled) {
+                    if (dueSoon.isNotEmpty()) {
                         Row(
-                            Modifier.fillMaxWidth().clickable { onGotoLoans() }.background(
+                                 Modifier.fillMaxWidth().defaultMinSize(minHeight = UiTokens.MinimumTouch).clickable { onGotoLoans() }.background(
                                 if (anyOverdue) HomeRed.copy(alpha = 0.12f) else HomeOrange.copy(alpha = 0.16f),
                                 RoundedCornerShape(8.dp)
                             ).padding(10.dp),
@@ -342,9 +359,9 @@ fun HomeTab(
                                 },
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
+                                maxLines = 2,
+                                softWrap = true,
+                                overflow = TextOverflow.Clip
                             )
                         }
                     }
@@ -380,17 +397,17 @@ fun HomeTab(
                 LedgerRepository.defaultModuleOrder.getOrNull(index - 1) in compactKeys ||
                     LedgerRepository.defaultModuleOrder.getOrNull(index + 1) in compactKeys
             )
-            val moduleSpan = if (hasAdjacentCompactPartner) 1 else 2
+            val moduleSpan = if (hasAdjacentCompactPartner && gridColumns > 1) 1 else gridColumns
             item(key = "module-$module", span = { GridItemSpan(moduleSpan) }) {
                 HomeModuleCard(
-                    modifier = Modifier.fillMaxWidth().then(if (moduleSpan == 1) Modifier.height(124.dp) else Modifier),
+                    modifier = Modifier.fillMaxWidth().then(if (moduleSpan == 1) Modifier.defaultMinSize(minHeight = 112.dp) else Modifier),
                     key = module,
                     state = state,
                     budgets = budgets,
                     categories = categories,
                     recurringRules = recurringRules,
                     freeSpendingCents = freeSpendingCents,
-                    money = ::money,
+                     money = { cents, slot -> money(cents, slot) },
                     onGotoBills = onGotoBills,
                     onGotoReimbursement = onGotoReimbursement
                 )
@@ -398,9 +415,12 @@ fun HomeTab(
         }
     }
     if (showAssetAccounts) {
+        val receivableAccountIds = lendingPlans.mapTo(hashSetOf()) { it.receivableAccountId }
         AccountListDialog(
             title = "资产账户",
-            accounts = state.accounts.filter { it.type == AccountType.ASSET.name && !it.archived },
+            accounts = state.accounts.filter {
+                it.type == AccountType.ASSET.name && !it.archived && it.id !in receivableAccountIds
+            },
             debtAccounts = false,
             onEdit = { showAssetAccounts = false; onEditAccount(it) },
             onAdd = { showAssetAccounts = false; onAddAccount(AccountType.ASSET) },
@@ -429,7 +449,7 @@ private fun HomeModuleCard(
     categories: List<CategoryEntity>,
     recurringRules: List<RecurringRuleEntity>,
     freeSpendingCents: Long,
-    money: (Long, Int) -> String,
+    money: @Composable (Long, Int) -> String,
     onGotoBills: () -> Unit,
     onGotoReimbursement: () -> Unit
 ) {
@@ -439,7 +459,6 @@ private fun HomeModuleCard(
     val monthStart = YearMonth.now().atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
     val monthEnd = YearMonth.now().plusMonths(1).atDay(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
     val monthTxs = state.transactions.filter { it.occurredAt in monthStart..monthEnd }
-    val compact = key == "reimbursement" || key == "recurring"
     GlassCard(
         modifier.clickable {
             when (key) {
@@ -452,9 +471,9 @@ private fun HomeModuleCard(
     ) {
         Column(
             modifier = Modifier
-                .then(if (compact) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
-                .padding(14.dp),
-            verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Top
+                .fillMaxWidth()
+                .padding(UiTokens.CardPadding),
+            verticalArrangement = Arrangement.Top
         ) {
             when (key) {
                 "budget" -> {
@@ -482,6 +501,7 @@ private fun HomeModuleCard(
                     val reimbursed = monthTxs.filter { it.type == "REIMBURSEMENT" }.sumOf { it.amountCents }
                     val pendingCents = pending.sumOf(::reimbursementRemainingCents)
                     HomeModuleHeader("待报销")
+                    Spacer(Modifier.height(8.dp))
                     Text(
                         money(pendingCents, 6),
                         modifier = Modifier.fillMaxWidth(),
@@ -491,6 +511,7 @@ private fun HomeModuleCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         if (privacyEnabled) "${privacyFakeCount(21)}笔 · 已报 ${money(reimbursed, 7)}"
                         else "${pending.size}笔 · 已报 ${money(reimbursed, 7)}",
@@ -504,6 +525,7 @@ private fun HomeModuleCard(
                 "recurring" -> {
                     val debitSummary = recurringDebitMonthSummary(recurringRules, monthTxs, monthStart, monthEnd)
                     HomeModuleHeader("本月待扣")
+                    Spacer(Modifier.height(8.dp))
                     Text(
                         money(debitSummary.pendingCents, 8),
                         modifier = Modifier.fillMaxWidth(),
@@ -513,6 +535,7 @@ private fun HomeModuleCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         when {
                             privacyEnabled -> "已扣 ${money(debitSummary.deductedCents, 9)} · ${privacyFakeCount(22)} 笔"
@@ -544,7 +567,7 @@ private fun HomeModuleCard(
 @Composable
 private fun HomeRepaymentPager(
     pages: List<HomeRepaymentPage>,
-    money: (Long, Int) -> String,
+    money: @Composable (Long, Int) -> String,
     privacyEnabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -720,7 +743,13 @@ private fun HomeMetric(
     onClick: (() -> Unit)? = null
 ) {
     val interactiveModifier = if (onClick == null) modifier else modifier.clickable(onClick = onClick)
-    Column(interactiveModifier.padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        interactiveModifier
+            .defaultMinSize(minHeight = UiTokens.MinimumTouch)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -729,7 +758,7 @@ private fun HomeMetric(
         )
         Text(
             value,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = color,
             maxLines = 1,
@@ -752,7 +781,8 @@ private fun HomeHeroMetric(
     Column(
         modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+             .defaultMinSize(minHeight = UiTokens.MinimumTouch)
+             .padding(horizontal = 6.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
@@ -762,25 +792,17 @@ private fun HomeHeroMetric(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1
         )
-        if (hidden) {
-            Text(
-                privacyFakeAmount(label.hashCode()),
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = color,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Clip,
-                textAlign = TextAlign.Center
-            )
-        } else {
-            BigMoney(
-                cents = cents,
-                color = color,
-                style = MaterialTheme.typography.headlineMedium
-            )
-        }
+        Text(
+            text = privacyDisplayMoney(cents, label.hashCode()),
+            modifier = Modifier.fillMaxWidth(),
+            style = if (hidden) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

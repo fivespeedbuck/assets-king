@@ -1,10 +1,12 @@
 package com.assetsking.ui.theme
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 
 /**
  * 5 套主题（REQ 主题§1/§12）：碳水大王式浅绿默认 + 三套浅色变体 + 「龙巢」深色特例。
@@ -78,18 +80,89 @@ private val LongNestScheme = darkColorScheme(
 @Composable
 fun AssetsKingTheme(
     theme: AppTheme = AppTheme.LIGHT_GREEN,
+    transitionTo: AppTheme = theme,
+    transitionProgress: Float = 1f,
+    contentAlpha: Float = 1f,
     content: @Composable () -> Unit
 ) {
+    val interpolated = lerpColorScheme(
+        from = colorSchemeFor(theme),
+        to = colorSchemeFor(transitionTo),
+        fraction = transitionProgress
+    )
     MaterialTheme(
-        colorScheme = when (theme) {
-            AppTheme.LIGHT_GREEN -> lightScheme(ThemePrimaryGreen, ThemePrimaryGreenSoft, ThemePrimaryGreenSoftText)
-            AppTheme.SKY_BLUE -> lightScheme(ThemePrimaryBlue, ThemePrimaryBlueSoft, ThemePrimaryBlueSoftText)
-            AppTheme.VIOLET -> lightScheme(ThemePrimaryViolet, ThemePrimaryVioletSoft, ThemePrimaryVioletSoftText)
-            AppTheme.WARM -> lightScheme(ThemePrimaryWarm, ThemePrimaryWarmSoft, ThemePrimaryWarmSoftText)
-            AppTheme.LONG_NEST -> LongNestScheme
-        },
+        colorScheme = fadeContentColors(interpolated, contentAlpha),
         typography = AssetsKingTypography,
         shapes = AssetsKingShapes,
         content = content
+    )
+}
+
+private fun fadeContentColors(scheme: ColorScheme, alpha: Float): ColorScheme {
+    val value = alpha.coerceIn(0f, 1f)
+    fun Color.faded() = copy(alpha = this.alpha * value)
+    return scheme.copy(
+        onPrimary = scheme.onPrimary.faded(),
+        onPrimaryContainer = scheme.onPrimaryContainer.faded(),
+        onSecondary = scheme.onSecondary.faded(),
+        onSecondaryContainer = scheme.onSecondaryContainer.faded(),
+        onTertiary = scheme.onTertiary.faded(),
+        onTertiaryContainer = scheme.onTertiaryContainer.faded(),
+        onBackground = scheme.onBackground.faded(),
+        onSurface = scheme.onSurface.faded(),
+        onSurfaceVariant = scheme.onSurfaceVariant.faded(),
+        onError = scheme.onError.faded(),
+        onErrorContainer = scheme.onErrorContainer.faded(),
+        inverseOnSurface = scheme.inverseOnSurface.faded()
+    )
+}
+
+private fun colorSchemeFor(theme: AppTheme): ColorScheme = when (theme) {
+    AppTheme.LIGHT_GREEN -> lightScheme(ThemePrimaryGreen, ThemePrimaryGreenSoft, ThemePrimaryGreenSoftText)
+    AppTheme.SKY_BLUE -> lightScheme(ThemePrimaryBlue, ThemePrimaryBlueSoft, ThemePrimaryBlueSoftText)
+    AppTheme.VIOLET -> lightScheme(ThemePrimaryViolet, ThemePrimaryVioletSoft, ThemePrimaryVioletSoftText)
+    AppTheme.WARM -> lightScheme(ThemePrimaryWarm, ThemePrimaryWarmSoft, ThemePrimaryWarmSoftText)
+    AppTheme.LONG_NEST -> LongNestScheme
+}
+
+private fun lerpColorScheme(from: ColorScheme, to: ColorScheme, fraction: Float): ColorScheme {
+    val t = fraction.coerceIn(0f, 1f)
+    return from.copy(
+        primary = lerp(from.primary, to.primary, t),
+        onPrimary = lerp(from.onPrimary, to.onPrimary, t),
+        primaryContainer = lerp(from.primaryContainer, to.primaryContainer, t),
+        onPrimaryContainer = lerp(from.onPrimaryContainer, to.onPrimaryContainer, t),
+        inversePrimary = lerp(from.inversePrimary, to.inversePrimary, t),
+        secondary = lerp(from.secondary, to.secondary, t),
+        onSecondary = lerp(from.onSecondary, to.onSecondary, t),
+        secondaryContainer = lerp(from.secondaryContainer, to.secondaryContainer, t),
+        onSecondaryContainer = lerp(from.onSecondaryContainer, to.onSecondaryContainer, t),
+        tertiary = lerp(from.tertiary, to.tertiary, t),
+        onTertiary = lerp(from.onTertiary, to.onTertiary, t),
+        tertiaryContainer = lerp(from.tertiaryContainer, to.tertiaryContainer, t),
+        onTertiaryContainer = lerp(from.onTertiaryContainer, to.onTertiaryContainer, t),
+        background = lerp(from.background, to.background, t),
+        onBackground = lerp(from.onBackground, to.onBackground, t),
+        surface = lerp(from.surface, to.surface, t),
+        onSurface = lerp(from.onSurface, to.onSurface, t),
+        surfaceVariant = lerp(from.surfaceVariant, to.surfaceVariant, t),
+        onSurfaceVariant = lerp(from.onSurfaceVariant, to.onSurfaceVariant, t),
+        surfaceTint = lerp(from.surfaceTint, to.surfaceTint, t),
+        inverseSurface = lerp(from.inverseSurface, to.inverseSurface, t),
+        inverseOnSurface = lerp(from.inverseOnSurface, to.inverseOnSurface, t),
+        error = lerp(from.error, to.error, t),
+        onError = lerp(from.onError, to.onError, t),
+        errorContainer = lerp(from.errorContainer, to.errorContainer, t),
+        onErrorContainer = lerp(from.onErrorContainer, to.onErrorContainer, t),
+        outline = lerp(from.outline, to.outline, t),
+        outlineVariant = lerp(from.outlineVariant, to.outlineVariant, t),
+        scrim = lerp(from.scrim, to.scrim, t),
+        surfaceBright = lerp(from.surfaceBright, to.surfaceBright, t),
+        surfaceDim = lerp(from.surfaceDim, to.surfaceDim, t),
+        surfaceContainer = lerp(from.surfaceContainer, to.surfaceContainer, t),
+        surfaceContainerHigh = lerp(from.surfaceContainerHigh, to.surfaceContainerHigh, t),
+        surfaceContainerHighest = lerp(from.surfaceContainerHighest, to.surfaceContainerHighest, t),
+        surfaceContainerLow = lerp(from.surfaceContainerLow, to.surfaceContainerLow, t),
+        surfaceContainerLowest = lerp(from.surfaceContainerLowest, to.surfaceContainerLowest, t)
     )
 }

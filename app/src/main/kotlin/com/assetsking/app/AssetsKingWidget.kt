@@ -31,7 +31,10 @@ class AssetsKingWidget : AppWidgetProvider() {
                 val app = context.applicationContext as AssetsKingApplication
                 val repo = app.repository
                 val accounts = repo.accounts.let { it.first() }
-                val assets = accounts.filter { it.type == AccountType.ASSET.name }.sumOf { it.balanceCents }
+                val receivableAccountIds = repo.lendingPlans.first().mapTo(hashSetOf()) { it.receivableAccountId }
+                val assets = accounts.filter {
+                    it.type == AccountType.ASSET.name && it.id !in receivableAccountIds
+                }.sumOf { it.balanceCents }
                 val debts = accounts.filter { it.type != AccountType.ASSET.name }.sumOf { it.balanceCents }
                 val netWorth = assets - debts
                 val txs = repo.allTransactions()

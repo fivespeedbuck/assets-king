@@ -51,6 +51,9 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE notificationId = :notificationId AND deletedAt IS NULL LIMIT 1")
     suspend fun findActiveByNotificationId(notificationId: String): TransactionEntity?
 
+    @Query("SELECT * FROM transactions WHERE notificationId IN (:notificationIds) AND deletedAt IS NULL")
+    suspend fun findActiveByNotificationIds(notificationIds: List<String>): List<TransactionEntity>
+
     @Query("UPDATE transactions SET category = :category WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateCategory(id: String, category: String)
 
@@ -337,6 +340,13 @@ interface RawNotificationDao {
 
     @Query("SELECT * FROM raw_notifications ORDER BY receivedAt DESC")
     suspend fun all(): List<RawNotificationEntity>
+
+    @Query(
+        "SELECT * FROM raw_notifications " +
+            "WHERE postedAt <= :postedAt AND status IN ('NEW', 'PENDING_CONFIRMATION', 'LINKING') " +
+            "ORDER BY postedAt ASC, receivedAt ASC"
+    )
+    suspend fun pendingUpTo(postedAt: Long): List<RawNotificationEntity>
 
     @Query("UPDATE raw_notifications SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)

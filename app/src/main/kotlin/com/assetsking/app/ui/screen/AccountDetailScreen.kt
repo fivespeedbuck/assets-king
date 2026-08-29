@@ -58,9 +58,10 @@ private val DetailOrange = Color(0xFFFFB74D)
 
 private fun checkpointSourceLabel(source: String): String = when (source) {
     "OPENING" -> "开户"
+    "OPENING_LENDING" -> "期初出借应收"
     "BANK_SMS" -> "银行短信"
     "MANUAL" -> "手动对账"
-    else -> source
+    else -> "其他账务来源"
 }
 
 /**
@@ -74,6 +75,7 @@ fun AccountDetailScreen(
     viewModel: LedgerViewModel,
     transactions: List<TransactionEntity> = emptyList(),
     statementRemainingCents: Long = account.statementOriginalDueCents,
+    isLendingReceivable: Boolean = false,
     onOpenTransaction: (TransactionEntity) -> Unit = {},
     onEdit: () -> Unit,
     onReconcile: () -> Unit,
@@ -113,7 +115,11 @@ fun AccountDetailScreen(
             GlassCard {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Text(
-                        if (account.type == AccountType.CREDIT.name) "总欠款" else "余额",
+                        when {
+                            isLendingReceivable -> "剩余应收本金"
+                            account.type == AccountType.CREDIT.name -> "总欠款"
+                            else -> "余额"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

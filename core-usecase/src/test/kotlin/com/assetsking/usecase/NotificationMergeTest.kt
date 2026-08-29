@@ -186,6 +186,27 @@ class NotificationMergeTest {
     }
 
     @Test
+    fun `sms receiver and system sms notification with different titles merge by identical body`() {
+        val body = "【招商银行】您账户3683于08月28日00:31在支付宝消费1299.00元，余额2934.82元"
+        assertTrue(
+            NotificationMerge.isSameContentEvidence(
+                "sms", "sms:one", "95555", body, 1_000_000L,
+                "com.android.mms.service", "mms:two", "招商银行", body, 1_003_000L
+            )
+        )
+    }
+
+    @Test
+    fun `different sms bodies with same amount remain separate`() {
+        assertFalse(
+            NotificationMerge.isSameContentEvidence(
+                "sms", "sms:one", "95555", "【招商银行】账户3683消费1299.00元，余额2934.82元", 1_000_000L,
+                "com.android.mms.service", "mms:two", "招商银行", "【招商银行】账户3683消费1299.00元，余额1635.82元", 1_003_000L
+            )
+        )
+    }
+
+    @Test
     fun `same system notification key repost days apart is one evidence`() {
         val fp = NotificationMerge.contentFingerprint("交易提醒", "支出40.00元")
         assertTrue(

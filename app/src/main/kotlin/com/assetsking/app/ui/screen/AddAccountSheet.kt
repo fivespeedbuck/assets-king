@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,15 +21,17 @@ import com.assetsking.ui.component.Sheet
 @Composable
 fun AddAccountSheet(
     initialType: AccountType,
-    onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit,
+    onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long, (Result<Unit>) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     Sheet(title = if (initialType == AccountType.LOAN) "新建贷款账户" else "新建账户", onDismiss = onDismiss) {
         AddAccountForm(
             initialType = initialType,
-            onAddAccount = { name, type, balance, tail, statementDay, dueDay, limit ->
-                onAddAccount(name, type, balance, tail, statementDay, dueDay, limit)
-                onDismiss()
+            onAddAccount = { name, type, balance, tail, statementDay, dueDay, limit, callback ->
+                onAddAccount(name, type, balance, tail, statementDay, dueDay, limit) { result ->
+                    result.onSuccess { onDismiss() }
+                    callback(result)
+                }
             }
         )
     }
@@ -37,7 +40,7 @@ fun AddAccountSheet(
 @Composable
 private fun AddAccountForm(
     initialType: AccountType,
-    onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long) -> Unit
+    onAddAccount: (String, AccountType, String, String?, Int?, Int?, Long, (Result<Unit>) -> Unit) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var type by remember(initialType) { mutableStateOf(initialType) }
@@ -46,6 +49,7 @@ private fun AddAccountForm(
     var statementDay by remember { mutableStateOf("") }
     var dueDay by remember { mutableStateOf("") }
     var creditLimit by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
 
     if (initialType == AccountType.LOAN) {
         Text("贷款账户")
@@ -117,11 +121,12 @@ private fun AddAccountForm(
                 statementDay.toIntOrNull(),
                 dueDay.toIntOrNull(),
                 limit
-            )
+            ) { result -> error = result.exceptionOrNull()?.message }
         },
         enabled = name.isNotBlank() && balance.toDoubleOrNull() != null,
         modifier = Modifier.fillMaxWidth()
     ) {
         Text("添加账户")
     }
+    error?.let { Text("失败：$it", color = MaterialTheme.colorScheme.error) }
 }
