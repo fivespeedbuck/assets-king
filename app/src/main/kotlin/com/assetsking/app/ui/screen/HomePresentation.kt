@@ -9,6 +9,20 @@ internal data class HomeRepaymentPage(
     val amountCents: Long
 )
 
+/** 两列主金额按较长值共用字号，避免窄屏裁切并保持视觉同级。 */
+internal fun homeHeroAmountFontSizeSp(vararg amountsCents: Long): Int {
+    val widestWholePart = amountsCents.maxOfOrNull { cents ->
+        val wholeDigits = (cents / 100L).toString().count(Char::isDigit)
+        val groupingSeparators = (wholeDigits - 1).coerceAtLeast(0) / 3
+        wholeDigits + groupingSeparators * 0.5 + if (cents < 0L) 0.5 else 0.0
+    } ?: 1.0
+    return when {
+        widestWholePart <= 4.5 -> 24
+        widestWholePart <= 6.5 -> 20
+        else -> 18
+    }
+}
+
 internal fun homeRepaymentPages(
     totalDueCount: Int,
     totalDueCents: Long,

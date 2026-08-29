@@ -13,6 +13,13 @@ import kotlin.test.assertTrue
 
 class HomePresentationTest {
     @Test
+    fun homeHeroAmountsUseOneSmallerSizeWhenEitherValueNeedsIt() {
+        assertEquals(24, homeHeroAmountFontSizeSp(999_999L, 0L))
+        assertEquals(20, homeHeroAmountFontSizeSp(999_999L, 1_000_000L))
+        assertEquals(18, homeHeroAmountFontSizeSp(100_000_000L, 0L))
+    }
+
+    @Test
     fun zeroDebtCreditAccountsStayInTheSharedDebtAccountListForManagement() {
         val accounts = listOf(
             AccountEntity("cash", "现金", AccountType.ASSET.name, 100_000L),

@@ -63,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.assetsking.app.LedgerUiState
 import com.assetsking.app.R
 import com.assetsking.app.notification.AssetsNotificationListenerService
@@ -277,24 +278,29 @@ fun HomeTab(
                         }
                     }
                     Spacer(Modifier.height(6.dp))
+                    val totalAssetCents = state.v5?.availableCashCents ?: 0L
+                    val totalDebtCents = state.v5?.totalDebtCents ?: 0L
+                    val heroAmountFontSizeSp = homeHeroAmountFontSizeSp(totalAssetCents, totalDebtCents)
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         HomeHeroMetric(
                             label = "总资产",
-                            cents = state.v5?.availableCashCents ?: 0L,
+                            cents = totalAssetCents,
                             hidden = privacyEnabled,
                             color = MaterialTheme.colorScheme.primary,
+                            fontSizeSp = heroAmountFontSizeSp,
                             modifier = Modifier.weight(1f),
                             onClick = { showAssetAccounts = true }
                         )
                         VerticalDivider(Modifier.height(66.dp))
                         HomeHeroMetric(
                             label = "总欠款",
-                            cents = state.v5?.totalDebtCents ?: 0L,
+                            cents = totalDebtCents,
                             hidden = privacyEnabled,
                             color = HomeRed,
+                            fontSizeSp = heroAmountFontSizeSp,
                             modifier = Modifier.weight(1f),
                             onClick = { showDebtAccounts = true }
                         )
@@ -777,6 +783,7 @@ private fun HomeHeroMetric(
     cents: Long,
     hidden: Boolean,
     color: Color,
+    fontSizeSp: Int,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -797,7 +804,9 @@ private fun HomeHeroMetric(
         Text(
             text = privacyDisplayMoney(cents, label.hashCode()),
             modifier = Modifier.fillMaxWidth(),
-            style = if (hidden) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium,
+            style = (if (hidden) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineMedium).copy(
+                fontSize = (if (hidden) minOf(fontSizeSp, 20) else fontSizeSp).sp
+            ),
             fontWeight = FontWeight.Bold,
             color = color,
             maxLines = 1,

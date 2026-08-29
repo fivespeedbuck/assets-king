@@ -8,7 +8,7 @@
 
 ## 当前版本
 
-GitHub Release：[资产大王 v0.1.1](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.1)。本版本恢复贷款页新增信用卡入口，修复银行短信商户/支付渠道识别、贷款利率精度与统一月供输入，并补充商户映射删除。
+GitHub Release：[资产大王 v0.1.10](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.10)。本版本修复首页总资产与总欠款长金额在窄屏下被裁切的问题，两项金额按较长值统一适配字号并保持完整精度。
 
 ## 当前可用功能
 
