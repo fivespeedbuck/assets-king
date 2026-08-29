@@ -72,7 +72,9 @@ import com.assetsking.app.ui.privacy.PrivacyEntryController
 import com.assetsking.app.ui.privacy.animatePrivacyValue
 import com.assetsking.app.ui.privacy.privacyToggleGesture
 import com.assetsking.app.ui.privacy.privacyFakeAmount
+import com.assetsking.app.ui.privacy.privacyDisplayCount
 import com.assetsking.app.ui.privacy.privacyDisplayMoney
+import com.assetsking.app.ui.privacy.privacyDisplayObfuscatedText
 import com.assetsking.app.ui.privacy.privacyFakeCount
 import com.assetsking.app.ui.privacy.privacyFakeDateTime
 import com.assetsking.app.ui.privacy.privacyObfuscatedText
@@ -840,12 +842,25 @@ private fun VaultStatusCard(
         HomeVaultSeverity.WARNING, HomeVaultSeverity.RECOVERING -> HomeOrange.copy(alpha = 0.07f)
         HomeVaultSeverity.NORMAL -> MaterialTheme.colorScheme.surfaceContainer
     }
-    val recentValue = when {
-        privacyEnabled -> privacyFakeDateTime(300)
+    val realRecentValue = when {
         lastReceivedAt <= 0L -> "等待第一笔账目"
         runtimeStatus == VaultRuntimeStatus.RECOVERING -> "补收中 · ${formatTime(lastReceivedAt)}"
         else -> formatTime(lastReceivedAt)
     }
+    val displayTitle = privacyDisplayObfuscatedText(presentation.title, 300)
+    val displayBadge = privacyDisplayObfuscatedText(presentation.badge, 301)
+    val displayGapHint = presentation.gapHint?.let { privacyDisplayObfuscatedText(it, 302) }
+    val recentValue = privacyDisplayObfuscatedText(realRecentValue, 303)
+    val displayStatusDetail = privacyDisplayObfuscatedText("入库状态：${presentation.title}", 313)
+    val displayRecentDetail = privacyDisplayObfuscatedText("最近入库：$realRecentValue", 314)
+    val displayPendingCount = privacyDisplayCount(pendingCount, 304)
+    val displayUnprocessedCount = privacyDisplayCount(unprocessedCount, 305)
+    val displayPendingNet = privacyDisplayMoney(pendingNetCents, 306)
+    val displayReconciliationCount = privacyDisplayCount(needsReconciliationCount, 307)
+    val displayReconciliationDetail = privacyDisplayObfuscatedText(
+        if (needsReconciliationCount > 0) "查看账户" else "无需处理",
+        308
+    )
     GlassCard(contentPadding = Modifier) {
         Column(
             Modifier
@@ -873,7 +888,7 @@ private fun VaultStatusCard(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        if (privacyEnabled && presentation.title == "金库正常") "金库异常" else presentation.title,
+                        displayTitle,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = if (presentation.severity == HomeVaultSeverity.WARNING) MaterialTheme.colorScheme.onSurface else statusColor,
@@ -881,9 +896,9 @@ private fun VaultStatusCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (presentation.badge.isNotBlank()) {
+                if (displayBadge.isNotBlank()) {
                     Text(
-                        presentation.badge,
+                        displayBadge,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = statusColor,
@@ -893,7 +908,7 @@ private fun VaultStatusCard(
                     )
                 }
             }
-            presentation.gapHint?.let {
+            displayGapHint?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     it,
@@ -905,8 +920,8 @@ private fun VaultStatusCard(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 VaultMetric(
-                    label = "入库状态",
-                    value = "最近入库",
+                    label = privacyDisplayObfuscatedText("入库状态", 309),
+                    value = privacyDisplayObfuscatedText("最近入库", 310),
                     detail = recentValue,
                     icon = Icons.Filled.AccountBalance,
                     color = statusColor,
@@ -915,14 +930,12 @@ private fun VaultStatusCard(
                 )
                 VerticalDivider(Modifier.height(86.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 VaultMetric(
-                    label = "待确认",
-                    value = if (privacyEnabled) "${privacyFakeCount(301)} 笔" else "$pendingCount 笔",
-                    detail = if (privacyEnabled) {
-                        "${privacyFakeCount(302)} 条 · ${privacyFakeAmount(303)}"
-                    } else if (unprocessedCount > 0) {
-                        "$unprocessedCount 条待恢复"
+                    label = privacyDisplayObfuscatedText("待确认", 311),
+                    value = "$displayPendingCount 笔",
+                    detail = if (unprocessedCount > 0) {
+                        "$displayUnprocessedCount 条待恢复"
                     } else {
-                        "${if (pendingNetCents > 0L) "+" else ""}${formatMoney(pendingNetCents)}"
+                        displayPendingNet
                     },
                     icon = Icons.AutoMirrored.Filled.ReceiptLong,
                     color = if (privacyEnabled) MaterialTheme.colorScheme.primary else if (pendingCount > 0) HomeOrange else MaterialTheme.colorScheme.primary,
@@ -931,9 +944,9 @@ private fun VaultStatusCard(
                 )
                 VerticalDivider(Modifier.height(86.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 VaultMetric(
-                    label = "需核对",
-                    value = if (privacyEnabled) "${privacyFakeCount(304)} 项" else "$needsReconciliationCount 项",
-                    detail = if (privacyEnabled) privacyObfuscatedText("状态变动", 305) else if (needsReconciliationCount > 0) "查看账户" else "无需处理",
+                    label = privacyDisplayObfuscatedText("需核对", 312),
+                    value = "$displayReconciliationCount 项",
+                    detail = displayReconciliationDetail,
                     icon = Icons.AutoMirrored.Filled.FactCheck,
                     color = if (privacyEnabled) MaterialTheme.colorScheme.primary else if (needsReconciliationCount > 0) HomeOrange else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(1f),
@@ -970,17 +983,22 @@ private fun VaultStatusCard(
             title = { Text("金库状态", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("入库状态：${presentation.title}", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        if (privacyEnabled) "最近入库：${privacyFakeDateTime(306)}"
-                        else if (lastReceivedAt > 0) "最近入库：${formatTime(lastReceivedAt)}" else "最近入库：等待第一笔账目",
+                        displayStatusDetail,
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        if (smsGranted) "短信补收：已开启" else "短信补收：未开启",
+                        displayRecentDetail,
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    presentation.gapHint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = statusColor) }
+                    Text(
+                        privacyDisplayObfuscatedText(
+                            if (smsGranted) "短信补收：已开启" else "短信补收：未开启",
+                            315
+                        ),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    displayGapHint?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = statusColor) }
                     Text(
                         "银行短信和支付消息先入库，你确认后才正式记账。入库中断期间可由短信补收遗漏账目。",
                         style = MaterialTheme.typography.bodySmall,
