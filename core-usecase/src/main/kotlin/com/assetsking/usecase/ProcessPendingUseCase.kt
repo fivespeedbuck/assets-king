@@ -40,10 +40,12 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             ignored
         ).toMutableList()
         val newNotifications = repository.observeNewNotifications().first()
+            .sortedWith(compareBy<RawNotificationEntity> { it.postedAt }.thenBy { it.receivedAt })
         if (newNotifications.isEmpty()) return 0
 
         val statementEvidence = mutableListOf<RawNotificationEntity>()
         val accounts = repository.accounts.first().toMutableList()
+        val claimedExternalRefundEvidenceIds = mutableSetOf<String>()
 
         var processed = 0
         for (notification in newNotifications) {
@@ -136,7 +138,22 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                     raw,
                     seen.map { it.toWechatEvidence() }
                 )
+                val externalRefund = WechatNotificationEvidence
+                    .matchAmountlessRefundToExternalRefund(
+                        raw,
+                        seen.map { it.toWechatEvidence() },
+                        excludedEvidenceIds = claimedExternalRefundEvidenceIds
+                    )
                 when {
+                    externalRefund != null -> {
+                        claimedExternalRefundEvidenceIds += externalRefund.evidenceId
+                        repository.updateNotificationStatus(notification.id, "IGNORED")
+                        repository.updateNotificationNote(
+                            notification.id,
+                            "微信无金额退款证据已并入有金额退款 kept=${externalRefund.evidenceId}"
+                        )
+                        continue
+                    }
                     inferredRefund != null -> parsed = parsed.copy(
                         amountCents = inferredRefund.amountCents,
                         isExpense = false,
@@ -154,6 +171,24 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
                         repository.updateNotificationNote(notification.id, "无法识别金额")
                         continue
                     }
+                }
+            }
+
+            // 外部来源（如美团）先于微信聚合退款到达时，反向收下已经在箱中的
+            // 微信无金额证据；后续确认外部退款即可把两条原文写入同一证据组。
+            if (parsed.isRefund) {
+                val amountlessWechat = WechatNotificationEvidence
+                    .matchExternalRefundToAmountless(
+                        notification.toWechatEvidence(),
+                        seen.map { it.toWechatEvidence() }
+                    )
+                if (amountlessWechat != null) {
+                    repository.updateNotificationStatus(amountlessWechat.evidenceId, "IGNORED")
+                    repository.updateNotificationNote(
+                        amountlessWechat.evidenceId,
+                        "微信无金额退款证据已并入有金额退款 kept=${notification.id}"
+                    )
+                    seen.removeIf { it.id == amountlessWechat.evidenceId }
                 }
             }
 
@@ -235,29 +270,6 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
             if (ignoredDup != null) {
                 repository.updateNotificationStatus(notification.id, "IGNORED")
                 repository.updateNotificationNote(notification.id, "与已忽略通知重复（同笔交易换来源）")
-                continue
-            }
-
-            // ── 付款 / 退款对冲 ──
-            // 下单又整单取消：一笔支出 + 一笔**完全同额**的退款，净额为零。两条都还没确认时
-            // 直接抵消，不必让人去确认两笔互相抵消的账。
-            //
-            // 金额不同的部分退款（买菜少给一斤退 1.5 元）不在此列 —— 那是真实发生的钱，
-            // 照常进待确认箱记成退款。
-            // 只在两条都还没确认时抵消：付款若已入账，退款就必须如实记成一笔收入。
-            val offset = seen.firstOrNull { other ->
-                if (other.id == notification.id) return@firstOrNull false
-                NotificationMerge.isRefundOffset(
-                    parsed, notification.postedAt,
-                    NotificationParser.parse(other.content, other.title), other.postedAt
-                )
-            }
-            if (offset != null) {
-                repository.updateNotificationStatus(offset.id, "IGNORED")
-                repository.updateNotificationNote(offset.id, "与同额退款对冲，净额为零")
-                repository.updateNotificationStatus(notification.id, "IGNORED")
-                repository.updateNotificationNote(notification.id, "与同额付款对冲，净额为零")
-                seen.remove(offset)
                 continue
             }
 

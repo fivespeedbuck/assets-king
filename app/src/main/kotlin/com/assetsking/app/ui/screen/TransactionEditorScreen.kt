@@ -95,6 +95,7 @@ import com.assetsking.database.LendingPlanStatus
 import com.assetsking.database.LoanPlanEntity
 import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.ledger.PaymentChannel
 import com.assetsking.ledger.AmountExpression
 import com.assetsking.ledger.BalanceMath
 import com.assetsking.model.AccountType
@@ -184,7 +185,7 @@ internal fun refundSourceCandidates(
                 it.type == TransactionType.EXPENSE.name &&
                 it.accountId == accountId &&
                 it.merchant?.trim()?.equals(requiredMerchant, ignoreCase = true) == true &&
-                it.channel?.trim().orEmpty().equals(requiredChannel, ignoreCase = true) &&
+                PaymentChannel.equivalent(it.channel, requiredChannel) &&
                 it.occurredAt <= refundOccurredAt
         }
         .map { expense ->
@@ -527,10 +528,6 @@ fun TransactionEditorScreen(
     val selectedRefundSource = refundOfId?.let { selectedId ->
         refundCandidates.firstOrNull { it.transaction.id == selectedId }
     }
-    LaunchedEffect(accountId, amountCents, refundCandidates, refundOfId) {
-        if (refundOfId != null && selectedRefundSource == null) refundOfId = null
-    }
-
     LaunchedEffect(amountCents, kind, incomeSub, selectableReimbursableTxs, reimbursementSelectionTouched) {
         if (
             kind == EditorKind.INCOME &&
@@ -932,6 +929,7 @@ fun TransactionEditorScreen(
                                         kind == EditorKind.EXPENSE -> selectedCategoryName
                                         incomeSub == IncomeSub.INCOME -> selectedCategoryName
                                         incomeSub == IncomeSub.REFUND -> selectedRefundSource?.transaction?.category
+                                            ?: editingTransaction?.category
                                             ?: com.assetsking.model.TransactionCategory.UNCATEGORIZED.name
                                         else -> editingTransaction.category.ifBlank { com.assetsking.model.TransactionCategory.UNCATEGORIZED.name }
                                     }
@@ -974,8 +972,12 @@ fun TransactionEditorScreen(
                                 doSave(
                                     kind, incomeSub, repaySub, lendingSub, amountCents, occurredAt, accountId, toAccountId, channel,
                                     merchantText.trim(),
-                                    if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.category.orEmpty() else selectedCategoryName,
-                                    if (incomeSub == IncomeSub.REFUND) selectedRefundSource?.transaction?.necessity else necessity,
+                                    if (incomeSub == IncomeSub.REFUND) {
+                                        selectedRefundSource?.transaction?.category ?: editingTransaction?.category.orEmpty()
+                                    } else selectedCategoryName,
+                                    if (incomeSub == IncomeSub.REFUND) {
+                                        selectedRefundSource?.transaction?.necessity ?: editingTransaction?.necessity
+                                    } else necessity,
                                     isReimbursable, note,
                                     loanPlanId, lendingPlanId, principalCents ?: 0L, interestCents ?: 0L, feeCents ?: 0L,
                                     transferFeeCents, expenseIds.value, bankBalanceForSave,
@@ -2342,7 +2344,7 @@ private fun RefundSourceField(
                 Text(
                     selected?.let {
                         "${it.transaction.merchant ?: "未命名"} · ${formatMoney(it.transaction.amountCents)}"
-                    } ?: "不关联原消费",
+                    } ?: if (selectedId != null) "原关联待校验" else "不关联原消费",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2380,6 +2382,7 @@ private fun RefundSourceField(
         Text(
             when {
                 selected != null -> "将继承原消费分类与必要性，并冲减对应预算"
+                selectedId != null -> "原关联仍保留，但当前商户、渠道、账户、时间或金额不再匹配；恢复条件或取消关联后再保存"
                 merchantName.trim().isEmpty() -> "请先填写商户名称，下面只显示同商户、同渠道、同账户的可退款流水"
                 candidates.isEmpty() -> "请确认商户和支付渠道；没有找到同商户、同渠道、同账户且可退款的消费，可不关联直接入账"
                 else -> "未关联时退款不冲减消费分类和预算，可之后编辑补绑"

@@ -245,4 +245,30 @@ class TransactionEditorSuggestionsTest {
             ).map { it.remainingCents }
         )
     }
+
+    @Test
+    fun refundCandidateTreatsWechatAndWechatPayAsTheSameChannel() {
+        val expense = TransactionEntity(
+            id = "meituan-expense",
+            accountId = "cmb",
+            amountCents = 3_621L,
+            type = TransactionType.EXPENSE.name,
+            category = "餐饮",
+            occurredAt = 10L,
+            merchant = "美团-美团宁波象鲜科技有限公司",
+            channel = "微信支付"
+        )
+
+        assertEquals(
+            listOf("meituan-expense"),
+            refundSourceCandidates(
+                transactions = listOf(expense),
+                accountId = "cmb",
+                refundAmountCents = 17L,
+                refundOccurredAt = 20L,
+                merchantName = "美团-美团宁波象鲜科技有限公司",
+                refundChannel = "微信"
+            ).map { it.transaction.id }
+        )
+    }
 }

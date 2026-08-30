@@ -20,6 +20,34 @@ class NotificationAdmissionPolicyTest {
     }
 
     @Test
+    fun officialWechatWalletDebitOnMessageChannelIsKept() {
+        assertTrue(
+            shouldKeepMessageLikeNotification(
+                packageName = "com.tencent.mm",
+                channelId = "message_channel_new_id",
+                category = "msg",
+                title = "微信支付",
+                content = "[14条]微信支付: 零钱扣款¥6.00",
+                parsedAmountCents = 600L
+            )
+        )
+    }
+
+    @Test
+    fun officialWechatAutomaticDebitOnMessageChannelIsKept() {
+        assertTrue(
+            shouldKeepMessageLikeNotification(
+                packageName = "com.tencent.mm",
+                channelId = "message_channel_new_id",
+                category = "msg",
+                title = "微信支付",
+                content = "[3条]微信支付: 自动扣费¥1.00",
+                parsedAmountCents = 100L
+            )
+        )
+    }
+
+    @Test
     fun ordinaryWechatChatContainingPriceIsStillRejected() {
         assertFalse(
             shouldKeepMessageLikeNotification(

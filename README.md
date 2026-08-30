@@ -8,7 +8,7 @@
 
 ## 当前版本
 
-GitHub Release：[资产大王 v0.1.10](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.10)。本版本修复首页总资产与总欠款长金额在窄屏下被裁切的问题，两项金额按较长值统一适配字号并保持完整精度。
+GitHub Release：[资产大王 v0.1.11](https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.11)。本版本修复微信零钱自动扣费漏入库、退款关联保存/回显丢失、微信通知槽覆盖证据，以及美团退款金额和多来源退款证据归并问题。
 
 ## 当前可用功能
 

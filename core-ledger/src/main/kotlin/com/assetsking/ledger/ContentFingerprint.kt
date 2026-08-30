@@ -85,6 +85,18 @@ object ContentFingerprint {
     }
 
     /**
+     * Android App 可能反复更新同一个通知槽（微信支付后立即退款就是如此）。
+     * 系统 key 与 postTime 都可能保持不变，因此主键必须包含正文摘要；同一正文的
+     * 重复回调仍得到同一 id，不同正文更新则各自留下原始证据。
+     */
+    fun stableNotificationEvidenceId(
+        systemKey: String,
+        title: String?,
+        content: String,
+        postedAt: Long
+    ): String = "$systemKey:$postedAt:${digest(of(title, content))}"
+
+    /**
      * 判定两个已持久化来源是否是同一条证据重生。
      *
      * 普通 Android 通知同包不同系统 key 仍视为两次真实发布；内部 sms 来源没有稳定系统 key，
@@ -112,9 +124,20 @@ object ContentFingerprint {
     }
 
     private fun notificationKey(id: String): String? {
-        val separator = id.lastIndexOf(':')
-        if (separator <= 0 || id.substring(separator + 1).toLongOrNull() == null) return null
-        return id.substring(0, separator)
+        val lastSeparator = id.lastIndexOf(':')
+        if (lastSeparator <= 0) return null
+        val lastPart = id.substring(lastSeparator + 1)
+        if (lastPart.toLongOrNull() != null) return id.substring(0, lastSeparator)
+
+        val postedAtSeparator = id.lastIndexOf(':', lastSeparator - 1)
+        if (postedAtSeparator <= 0 ||
+            id.substring(postedAtSeparator + 1, lastSeparator).toLongOrNull() == null
+        ) return null
+        return id.substring(0, postedAtSeparator)
     }
+
+    private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte) }
 
 }

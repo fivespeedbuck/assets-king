@@ -196,6 +196,81 @@ class ProcessPendingIntegrationTest {
     }
 
     @Test
+    fun fullWechatMeituanRefundKeepsExpenseAndRefundWithAllEvidence() = runBlocking {
+        val evidence = listOf(
+            rawNotification("wechat-stream:1000", "[1条]微信支付: 已支付¥14.60").copy(
+                packageName = "com.tencent.mm",
+                sourceLabel = "微信",
+                title = "微信支付",
+                postedAt = 1_000L,
+                receivedAt = 1_000L
+            ),
+            rawNotification("meituan-pay", "您的美团订单已支付成功，点击查看详情>").copy(
+                packageName = "com.sankuai.meituan",
+                sourceLabel = "美团",
+                title = "您已成功付款14.60元",
+                postedAt = 1_100L,
+                receivedAt = 1_100L
+            ),
+            rawNotification("wechat-stream:2000", "[2条]微信支付: 退款到账通知").copy(
+                packageName = "com.tencent.mm",
+                sourceLabel = "微信",
+                title = "微信支付",
+                postedAt = 2_000L,
+                receivedAt = 2_000L
+            ),
+            rawNotification("meituan-refund", "您有一笔14.60元的退款，点击查看详情！").copy(
+                packageName = "com.sankuai.meituan",
+                sourceLabel = "美团",
+                title = "退款通知",
+                postedAt = 2_100L,
+                receivedAt = 2_100L
+            )
+        )
+        evidence.forEach { database.rawNotificationDao().insert(it) }
+
+        assertEquals(2, ProcessPendingUseCase(repository).invoke())
+        assertEquals(2, database.rawNotificationDao().countPendingConfirmation())
+
+        repository.confirmNotification(
+            notificationId = "wechat-stream:1000",
+            accountId = "cash",
+            amountCents = 1_460L,
+            type = TransactionType.EXPENSE,
+            category = "餐饮",
+            merchant = "美团",
+            note = null,
+            channel = "微信"
+        )
+        val expense = database.transactionDao().all().single()
+        repository.confirmNotification(
+            // 有明确金额与商户语义的美团退款作为 keeper；微信无金额退款只补充证据。
+            notificationId = "meituan-refund",
+            accountId = "cash",
+            amountCents = 1_460L,
+            type = TransactionType.REFUND,
+            category = "餐饮",
+            merchant = "美团",
+            note = null,
+            channel = "微信支付",
+            refundOfId = expense.id
+        )
+
+        val transactions = database.transactionDao().all()
+        assertEquals(setOf(TransactionType.EXPENSE.name, TransactionType.REFUND.name), transactions.map { it.type }.toSet())
+        assertEquals(expense.id, transactions.single { it.type == TransactionType.REFUND.name }.refundOfId)
+        assertTrue(evidence.all { database.rawNotificationDao().findById(it.id)?.status == "LINKED" })
+        transactions.forEach { transaction ->
+            assertEquals(
+                2,
+                database.ledgerEvidenceLinkDao().findBySubject("TRANSACTION", transaction.id)
+                    .count { it.sourceType == "RAW_NOTIFICATION" }
+            )
+        }
+        assertEquals(10_000L, database.accountDao().find("cash")?.balanceCents)
+    }
+
+    @Test
     fun guangfaStatementUpdatesBillStateOnceAndNeverCreatesATransaction() = runBlocking {
         database.accountDao().upsert(
             AccountEntity(

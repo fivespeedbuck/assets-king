@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.10",
-  "name": "资产大王 v0.1.10",
-  "body": "修复首页总资产与总欠款长金额在窄屏下末位被裁切的问题；两项金额按较长值统一适配字号，保持单行、同级与完整精度。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.10",
+  "tag_name": "v0.1.11",
+  "name": "资产大王 v0.1.11",
+  "body": "修复微信零钱自动扣费漏入库、退款关联保存/回显丢失、微信通知槽覆盖证据，以及美团退款金额和多来源退款证据归并问题。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.11",
   "assets": [
     {
-      "name": "assets-king-v0.1.10.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.10/assets-king-v0.1.10.apk",
+      "name": "assets-king-v0.1.11.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.11/assets-king-v0.1.11.apk",
       "size": 31433998,
-      "digest": "sha256:6dbee53b5385b1adc53a65d6214151f77282d496469f83414616b016001a2f6a"
+      "digest": "sha256:7def6aef9b82efb258bb748cfd3482184bf6cfccf92938a345d68fea7b300044"
     }
   ]
 }

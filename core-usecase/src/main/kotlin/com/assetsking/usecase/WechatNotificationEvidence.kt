@@ -14,7 +14,7 @@ object WechatNotificationEvidence {
         val postedAt: Long
     )
 
-    data class Match(val paymentId: String, val amountCents: Long)
+    data class Match(val evidenceId: String, val amountCents: Long)
 
     fun isOfficialPaymentSender(title: String?, content: String): Boolean {
         val normalizedTitle = title.orEmpty().trim()
@@ -38,6 +38,54 @@ object WechatNotificationEvidence {
             NotificationParser.parse(raw.content, raw.title).amountCents == null
 
     fun shouldKeepAmountless(raw: Raw): Boolean = isAmountlessRefund(raw) || isAmountlessWithdrawal(raw)
+
+    /**
+     * 微信退款通知没有金额时，尝试挂到同一时间窗内唯一一条外部退款证据（例如美团）。
+     * 只接受唯一最近候选；多笔退款同时靠近时宁可留待补金额，也不猜错订单。
+     */
+    fun matchAmountlessRefundToExternalRefund(
+        raw: Raw,
+        candidates: List<Raw>,
+        excludedEvidenceIds: Set<String> = emptySet()
+    ): Match? {
+        if (!isAmountlessRefund(raw)) return null
+        val matches = candidates.mapNotNull { candidate ->
+            if (candidate.id in excludedEvidenceIds || candidate.packageName == WECHAT_PACKAGE) {
+                return@mapNotNull null
+            }
+            val parsed = NotificationParser.parse(candidate.content, candidate.title)
+            val amount = parsed.amountCents ?: return@mapNotNull null
+            if (!parsed.isRefund) return@mapNotNull null
+            val delay = kotlin.math.abs(raw.postedAt - candidate.postedAt)
+            if (delay > MAX_ADJACENT_DELAY_MS) return@mapNotNull null
+            Match(candidate.id, amount) to delay
+        }
+        if (matches.isEmpty()) return null
+        val nearestDistance = matches.minOf { it.second }
+        val nearest = matches.filter { it.second == nearestDistance }
+        return nearest.singleOrNull()?.first
+    }
+
+    /** 外部有金额退款先到时，反向寻找唯一相邻的微信无金额退款证据。 */
+    fun matchExternalRefundToAmountless(
+        externalRefund: Raw,
+        candidates: List<Raw>
+    ): Match? {
+        val externalParsed = NotificationParser.parse(externalRefund.content, externalRefund.title)
+        if (externalRefund.packageName == WECHAT_PACKAGE ||
+            externalParsed.amountCents == null ||
+            !externalParsed.isRefund
+        ) return null
+        val matches = candidates.mapNotNull { candidate ->
+            if (!isAmountlessRefund(candidate)) return@mapNotNull null
+            val delay = kotlin.math.abs(externalRefund.postedAt - candidate.postedAt)
+            if (delay > MAX_ADJACENT_DELAY_MS) return@mapNotNull null
+            Match(candidate.id, externalParsed.amountCents) to delay
+        }
+        if (matches.isEmpty()) return null
+        val nearestDistance = matches.minOf { it.second }
+        return matches.filter { it.second == nearestDistance }.singleOrNull()?.first
+    }
 
     /**
      * 微信把支付与退款更新在同一系统通知流里。只有流 key 相同、聚合序号正好 +1、
@@ -67,8 +115,16 @@ object WechatNotificationEvidence {
         sequencePattern.find(content)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
     private fun streamKey(id: String): String? {
-        val separator = id.lastIndexOf(':')
-        if (separator <= 0 || id.substring(separator + 1).toLongOrNull() == null) return null
-        return id.substring(0, separator)
+        val lastSeparator = id.lastIndexOf(':')
+        if (lastSeparator <= 0) return null
+        if (id.substring(lastSeparator + 1).toLongOrNull() != null) {
+            return id.substring(0, lastSeparator)
+        }
+        val postedAtSeparator = id.lastIndexOf(':', lastSeparator - 1)
+        if (postedAtSeparator <= 0 ||
+            id.substring(postedAtSeparator + 1, lastSeparator).toLongOrNull() == null
+        ) return null
+        return id.substring(0, postedAtSeparator)
     }
+
 }

@@ -21,6 +21,7 @@ import com.assetsking.app.GUARDIAN_SENTENCE
 import com.assetsking.app.MainActivity
 import com.assetsking.app.R
 import com.assetsking.database.RawNotificationEntity
+import com.assetsking.ledger.ContentFingerprint
 import com.assetsking.usecase.NotificationParser
 import com.assetsking.usecase.WechatNotificationEvidence
 import kotlinx.coroutines.CoroutineScope
@@ -222,11 +223,18 @@ class AssetsNotificationListenerService : NotificationListenerService() {
             )
         ) return null
 
+        val evidenceId = ContentFingerprint.stableNotificationEvidenceId(
+            sbn.key,
+            title,
+            content,
+            sbn.postTime
+        )
+
         // 普通无金额消息仍丢弃；微信官方退款/提现可能只给“到账”而不带金额，
         // 必须保留证据，后续唯一匹配或让用户补齐，不能静默漏单。
         if (parsedAmountCents == null && !WechatNotificationEvidence.shouldKeepAmountless(
-                WechatNotificationEvidence.Raw(
-                    id = "${sbn.key}:${sbn.postTime}",
+            WechatNotificationEvidence.Raw(
+                    id = evidenceId,
                     packageName = sbn.packageName,
                     title = title,
                     content = content,
@@ -236,7 +244,7 @@ class AssetsNotificationListenerService : NotificationListenerService() {
         ) return null
 
         return RawNotificationEntity(
-            id = "${sbn.key}:${sbn.postTime}",
+            id = evidenceId,
             packageName = sbn.packageName,
             sourceLabel = appLabel,
             title = title,

@@ -111,29 +111,6 @@ class NotificationMergeTest {
         assertFalse(NotificationMerge.isDuplicate(notif(3500, true), 100_000, notif(3500, true), 100_000 + 6 * 60_000))
     }
 
-    // ── 退款对冲 vs 转账 ──
-
-    @Test
-    fun `refund plus expense same amount is offset`() {
-        assertTrue(NotificationMerge.isRefundOffset(notif(3500, false, refund = true), 100_000, notif(3500, true), 100_000 + 60_000))
-    }
-
-    @Test
-    fun `transfer out and in is NOT offset`() {
-        // 转出 + 转入，均无退款字样：是对冲不该抵消
-        assertFalse(NotificationMerge.isRefundOffset(notif(10000, true), 100_000, notif(10000, false), 100_000 + 60_000))
-    }
-
-    @Test
-    fun `same direction is not offset`() {
-        assertFalse(NotificationMerge.isRefundOffset(notif(3500, true), 100_000, notif(3500, true), 100_000 + 60_000))
-    }
-
-    @Test
-    fun `beyond 24h is not offset`() {
-        assertFalse(NotificationMerge.isRefundOffset(notif(3500, false, refund = true), 100_000, notif(3500, true), 100_000 + 25 * 3600_000))
-    }
-
     // ── 内容指纹（REQ 监听 §12）──
 
     @Test

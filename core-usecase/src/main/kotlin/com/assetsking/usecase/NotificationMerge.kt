@@ -8,8 +8,8 @@ import kotlin.math.abs
  *
  * 关键区分：
  * - 判重：同一笔被多个 app 各推一条（同额 + 同向 + 5 分钟内 + 至少一方缺商户）→ 合并。
- * - 退款对冲：下单又整单取消（同额 + 反向 + 其中一方带「退款」字样）→ 抵消。
- * - 转账：转出 + 转入（同额 + 反向 + 均无退款字样）→ 不是对冲，不能抵消（REQ §350）。
+ * - 付款与退款：即使同额也是两次真实资金移动，分别进入待确认并由退款关联原消费。
+ * - 转账：转出 + 转入（同额 + 反向）不是重复，不能抵消（REQ §350）。
  *
  * 时间基准一律用证据的 postedAt（通知/短信的原始时间戳），不用 receivedAt：
  * 补扫读回的旧短信 receivedAt=补扫时刻，与直收的那条相差可达 7 天，用 receivedAt
@@ -17,7 +17,6 @@ import kotlin.math.abs
  */
 object NotificationMerge {
     const val DEDUP_WINDOW_MS = ContentFingerprint.DEDUP_WINDOW_MS
-    const val OFFSET_WINDOW_MS = 24 * 3600_000L
 
     /** 内容指纹（REQ 通知监听 §12），实现在 [[ContentFingerprint]]。 */
     fun contentFingerprint(title: String?, content: String): String =
@@ -109,15 +108,5 @@ object NotificationMerge {
         b: ParsedNotification,
         bAt: Long
     ): Boolean = aPackage != bPackage && isDuplicate(a, aAt, b, bAt)
-
-    /** 退款对冲：同额 + 反向 + 24h 内，且其中一方带退款字样。净额为零才抵消。 */
-    fun isRefundOffset(a: ParsedNotification, aAt: Long, b: ParsedNotification, bAt: Long): Boolean {
-        if (a.amountCents == null || b.amountCents == null) return false
-        if (a.amountCents != b.amountCents) return false
-        if (a.isExpense == null || b.isExpense == null) return false
-        if (a.isExpense == b.isExpense) return false
-        if (abs(aAt - bAt) >= OFFSET_WINDOW_MS) return false
-        return a.isRefund || b.isRefund
-    }
 
 }

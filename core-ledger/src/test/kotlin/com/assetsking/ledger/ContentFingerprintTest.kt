@@ -59,4 +59,32 @@ class ContentFingerprintTest {
             ContentFingerprint.of(null, "支出35元")
         )
     }
+
+    @Test
+    fun `same notification slot keeps every distinct content update`() {
+        val key = "0|com.tencent.mm|wechat-pay|null|10323"
+        val postedAt = 1_787_651_241_232L
+
+        val payment = ContentFingerprint.stableNotificationEvidenceId(
+            key,
+            "微信支付",
+            "[1条]微信支付: 已支付¥36.21",
+            postedAt
+        )
+        val repeatedPayment = ContentFingerprint.stableNotificationEvidenceId(
+            key,
+            "微信支付",
+            "[1条]微信支付: 已支付¥36.21",
+            postedAt
+        )
+        val refund = ContentFingerprint.stableNotificationEvidenceId(
+            key,
+            "微信支付",
+            "[2条]微信支付: 退款到账通知",
+            postedAt
+        )
+
+        assertEquals(payment, repeatedPayment)
+        assertNotEquals(payment, refund)
+    }
 }

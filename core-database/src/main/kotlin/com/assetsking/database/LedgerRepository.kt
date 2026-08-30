@@ -8,6 +8,7 @@ import com.assetsking.ledger.ContentFingerprint
 import com.assetsking.ledger.DefaultCategories
 import com.assetsking.ledger.InstallmentMatcher
 import com.assetsking.ledger.LedgerDelta
+import com.assetsking.ledger.PaymentChannel
 import com.assetsking.ledger.ReimbursementSplit
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.ledger.SmsSenderWhitelist
@@ -722,6 +723,19 @@ class LedgerRepository(
             // 短信接收器和系统短信通知可能各自留下一个待确认项；若其中一个已经
             // 确认入账，第二个必须在认领前按“正文完全相同”拦截，避免重复正式流水。
             val currentEvidence = database.rawNotificationDao().findById(notificationId)
+            val mergedEvidenceIds = database.rawNotificationDao().all()
+                .asSequence()
+                .filter { it.id != notificationId && it.status == "IGNORED" }
+                .filter { evidence ->
+                    evidence.processingNote?.let { note ->
+                        "kept=" in note && note.substringAfterLast("kept=") == notificationId
+                    } == true
+                }
+                .map { it.id }
+                .toList()
+            val sourceIds = (mergedEvidenceIds + notificationId).distinct().sorted()
+            val evidenceSources = sourceIds.map { EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, it) }
+            val evidenceGroupId = "notifications:${sourceIds.joinToString("|")}"
             if (currentEvidence != null) {
                 val linkedMirrorIds = database.rawNotificationDao().all()
                     .filter { it.id != notificationId && it.status == "LINKED" }
@@ -797,6 +811,7 @@ class LedgerRepository(
                             feeCents = inst.fee.cents,
                             loanPlanId = plan.id,
                             necessity = necessity, channel = channel, notificationId = notificationId,
+                            evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                             allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
                         markInstallmentPaid(plan, inst.number, inst.principal.cents)
@@ -805,6 +820,7 @@ class LedgerRepository(
                             accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
                             occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
                             necessity = necessity, channel = channel, notificationId = notificationId,
+                            evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                             allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
                     }
@@ -814,17 +830,18 @@ class LedgerRepository(
                         occurredAt = postedAt, recurringRuleId = ruleId,
                         refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
                         necessity = necessity, channel = channel, notificationId = notificationId,
+                        evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                         allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                     )
                 }
             } else {
                 database.transactionDao().attachNotification(ruleTx.id, notificationId)
                 evidenceRecorder.link(
-                    groupId = "notification:$notificationId",
+                    groupId = evidenceGroupId,
                     subjectType = EvidenceSubjectType.TRANSACTION,
                     subjectId = ruleTx.id,
                     subjectRole = "CONFIRMED_RECURRING_EVENT",
-                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, notificationId)),
+                    sources = evidenceSources,
                     linkedAt = postedAt
                 )
                 evidenceRecorder.lifecycle(
@@ -838,6 +855,10 @@ class LedgerRepository(
                 )
             }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+            mergedEvidenceIds.forEach { id ->
+                database.rawNotificationDao().updateStatus(id, "LINKED")
+                database.rawNotificationDao().updateProcessingNote(id, "作为合并证据关联至 $notificationId")
+            }
             // addTransaction 刚按增量改过余额；银行自报的余额是权威值，最后再盖一次。
             // 顺序不能反，否则增量会把对好的余额又推歪。
             if (bankBalanceCents != null && bankCardTail != null) {
@@ -2106,7 +2127,7 @@ class LedgerRepository(
         require(source.accountId == accountId) { "退款必须回到原支出账户" }
         val sourceChannel = source.channel?.trim().orEmpty()
         val refundChannel = channel?.trim().orEmpty()
-        require(sourceChannel.isNotEmpty() && sourceChannel.equals(refundChannel, ignoreCase = true)) {
+        require(sourceChannel.isNotEmpty() && PaymentChannel.equivalent(sourceChannel, refundChannel)) {
             "退款支付渠道必须与原支出一致"
         }
         val sourceMerchant = source.merchant?.trim().orEmpty()

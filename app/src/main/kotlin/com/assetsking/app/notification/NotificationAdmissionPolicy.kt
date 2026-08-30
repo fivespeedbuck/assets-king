@@ -28,7 +28,13 @@ internal fun shouldKeepMessageLikeNotification(
         "收款到账",
         "已退款",
         "退款到账",
-        "提现已到账"
+        "提现已到账",
+        "零钱扣款",
+        "已扣款",
+        "扣款成功",
+        "自动扣费",
+        "已扣费",
+        "扣费成功"
     ).any { it in normalizedTitle || it in content }
     val amountlessOfficialEvent = WechatNotificationEvidence.shouldKeepAmountless(
         WechatNotificationEvidence.Raw("", packageName, title, content, 0L)

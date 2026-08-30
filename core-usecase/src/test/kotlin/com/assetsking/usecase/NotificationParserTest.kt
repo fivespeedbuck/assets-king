@@ -123,6 +123,40 @@ class NotificationParserTest {
     }
 
     @Test
+    fun `微信零钱扣款消息解析为支出`() {
+        val p = NotificationParser.parse(content = "[14条]微信支付: 零钱扣款¥6.00", title = "微信支付")
+        assertEquals(600L, p.amountCents)
+        assertEquals(true, p.isExpense)
+    }
+
+    @Test
+    fun `微信自动扣费消息解析为支出`() {
+        val p = NotificationParser.parse(content = "[3条]微信支付: 自动扣费¥1.00", title = "微信支付")
+        assertEquals(100L, p.amountCents)
+        assertEquals(true, p.isExpense)
+    }
+
+    @Test
+    fun `美团括号退款金额不能误取到账天数`() {
+        val p = NotificationParser.parse(
+            content = "您在歪马送酒有一笔【47.00】元的退款，预计1-3个工作日到账。",
+            title = "退款状态提醒"
+        )
+        assertEquals(4_700L, p.amountCents)
+        assertEquals(false, p.isExpense)
+        assertEquals(true, p.isRefund)
+    }
+
+    @Test
+    fun `到账天数区间本身不是金额`() {
+        val p = NotificationParser.parse(
+            content = "您的订单已取消，退款将原路返回，预计1-3个工作日到账。",
+            title = "订单已取消"
+        )
+        assertEquals(null, p.amountCents)
+    }
+
+    @Test
     fun `美团订单支付成功真机样本`() {
         val p = NotificationParser.parse(
             content = "您的美团订单已支付成功，点击查看详情>",
