@@ -7,7 +7,7 @@ internal enum class TransactionLinkBadge(val label: String, val colorKey: String
     BORROWING_PLAN("借款计划", "loan"),
     LOAN_PLAN("贷款计划", "loan"),
     LENDING_PLAN("出借计划", "lending"),
-    RECURRING_PAYMENT("周期付款", "recurring")
+    RECURRING_PAYMENT("周期扣款", "recurring")
 }
 
 internal fun transactionLinkBadges(transaction: TransactionEntity): List<TransactionLinkBadge> = buildList {

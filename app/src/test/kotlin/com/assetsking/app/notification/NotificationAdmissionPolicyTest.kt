@@ -76,7 +76,7 @@ class NotificationAdmissionPolicyTest {
     }
 
     @Test
-    fun alipayChatMessageBehaviorIsNotLoosenedWithoutRealEvidence() {
+    fun alipayGenericMessageWithOnlyBareExpenseWordIsStillRejected() {
         assertFalse(
             shouldKeepMessageLikeNotification(
                 packageName = "com.eg.android.AlipayGphone",
@@ -84,6 +84,48 @@ class NotificationAdmissionPolicyTest {
                 category = "msg",
                 title = "交易提醒",
                 content = "支出19.80元",
+                parsedAmountCents = 1980L
+            )
+        )
+    }
+
+    @Test
+    fun realAlipayAutomaticDebitMessageOnMessageChannelIsKept() {
+        assertTrue(
+            shouldKeepMessageLikeNotification(
+                packageName = "com.eg.android.AlipayGphone",
+                channelId = "message_channel",
+                category = "msg",
+                title = "交易提醒",
+                content = "你有一笔34.75元的免密/自动扣款支付，点此查看详情。",
+                parsedAmountCents = 3475L
+            )
+        )
+    }
+
+    @Test
+    fun realAlipayExpenseSummaryMessageOnMessageChannelIsKept() {
+        assertTrue(
+            shouldKeepMessageLikeNotification(
+                packageName = "com.eg.android.AlipayGphone",
+                channelId = "VPushChannel_1",
+                category = "msg",
+                title = "交易提醒",
+                content = "你有一笔34.75元的支出，点此查看详情。",
+                parsedAmountCents = 3475L
+            )
+        )
+    }
+
+    @Test
+    fun alipayMarketingMessageWithAmountIsRejected() {
+        assertFalse(
+            shouldKeepMessageLikeNotification(
+                packageName = "com.eg.android.AlipayGphone",
+                channelId = "message_channel",
+                category = "msg",
+                title = "会员权益",
+                content = "消费满19.80元可领取优惠券，点击查看详情。",
                 parsedAmountCents = 1980L
             )
         )

@@ -153,6 +153,26 @@ class LedgerRepositoryIntegrationTest {
     }
 
     @Test
+    fun notificationConfirmationPersistsTheSelectedReimbursableFlag() = runBlocking {
+        val notification = pendingNotification("reimbursable-expense")
+        database.rawNotificationDao().insert(notification)
+        seedCash(1_250L)
+
+        repository.confirmNotification(
+            notificationId = notification.id,
+            accountId = "cash",
+            amountCents = 1_250L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.UNCATEGORIZED.name,
+            merchant = "公司垫付",
+            note = null,
+            isReimbursable = true
+        )
+
+        assertTrue(database.transactionDao().all().single().isReimbursable)
+    }
+
+    @Test
     fun smsMirrorConfirmationCannotCreateSecondTransaction() = runBlocking {
         val body = "【招商银行】您账户3683于08月28日00:31在支付宝消费1299.00元，余额2934.82元"
         val sms = pendingNotification("sms-mirror").copy(
@@ -393,6 +413,38 @@ class LedgerRepositoryIntegrationTest {
         assertTrue(result.exceptionOrNull() is IllegalArgumentException)
         assertEquals(1, database.transactionDao().all().size)
         assertTrue(database.transactionDao().all().all { it.type != TransactionType.REFUND.name })
+    }
+
+    @Test
+    fun partialRefundPersistsOriginalLinkAndMatchingOrderPlatform() = runBlocking {
+        seedCash(10_000L)
+        val sourceId = repository.addTransaction(
+            accountId = "cash",
+            amountCents = 3_621L,
+            type = TransactionType.EXPENSE,
+            category = TransactionCategory.SHOPPING.name,
+            merchant = "美团宁波象鲜科技有限公司",
+            note = null,
+            occurredAt = 1L,
+            channel = "微信",
+            orderPlatform = "美团"
+        )
+        val refundId = repository.addTransaction(
+            accountId = "cash",
+            amountCents = 17L,
+            type = TransactionType.REFUND,
+            category = TransactionCategory.SHOPPING.name,
+            merchant = "美团宁波象鲜科技有限公司",
+            note = null,
+            occurredAt = 2L,
+            channel = "微信",
+            orderPlatform = "美团",
+            refundOfId = sourceId
+        )
+
+        val reopened = requireNotNull(database.transactionDao().findById(refundId))
+        assertEquals(sourceId, reopened.refundOfId)
+        assertEquals("美团", reopened.orderPlatform)
     }
 
     @Test
@@ -814,6 +866,31 @@ class LedgerRepositoryIntegrationTest {
     }
 
     @Test
+    fun legacyRulePersistsItsOriginalAnchorWhenItFirstAdvances() = runBlocking {
+        val zone = ZoneId.systemDefault()
+        fun at(date: LocalDate): Long = date.atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+        val august31 = at(LocalDate.of(2026, 8, 31))
+        val legacy = recurringRule(august31).copy(firstRunAt = 0L)
+        database.recurringRuleDao().upsert(legacy)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "legacy-august-charge",
+                accountId = legacy.accountId,
+                amountCents = legacy.amountCents,
+                type = legacy.type,
+                category = legacy.category,
+                merchant = legacy.merchant,
+                occurredAt = august31
+            )
+        )
+
+        assertEquals(1, repository.processRecurring(now = august31))
+        val advanced = database.recurringRuleDao().findById(legacy.id)!!
+        assertEquals(august31, advanced.firstRunAt)
+        assertEquals(LocalDate.of(2026, 9, 30), java.time.Instant.ofEpochMilli(advanced.nextRunAt).atZone(zone).toLocalDate())
+    }
+
+    @Test
     fun recurringRuleAdvancesWhenIncomingChargeWasAlreadyAutoLinked() = runBlocking {
         val dueAt = System.currentTimeMillis() - 60_000L
         val rule = recurringRule(dueAt)
@@ -834,6 +911,134 @@ class LedgerRepositoryIntegrationTest {
         assertEquals(0, repository.processRecurring())
         assertTrue(database.recurringRuleDao().observeAll().first().single().nextRunAt > dueAt)
         assertEquals(1, database.transactionDao().all().size)
+    }
+
+    @Test
+    fun recurringRuleWithoutAccountWaitsForManualClaimEvenWithUniqueSameDayAmount() = runBlocking {
+        val dueAt = System.currentTimeMillis() - 60_000L
+        val rule = recurringRule(dueAt).copy(
+            id = "unbound-recurring",
+            accountId = "",
+            category = "",
+            merchant = null,
+            note = "房租"
+        )
+        database.recurringRuleDao().upsert(rule)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "savings-charge",
+                accountId = "savings",
+                amountCents = rule.amountCents,
+                type = TransactionType.EXPENSE.name,
+                category = TransactionCategory.HOUSING.name,
+                merchant = "房东",
+                occurredAt = dueAt
+            )
+        )
+
+        assertEquals(0, repository.processRecurring())
+        assertEquals(null, database.transactionDao().findById("savings-charge")?.recurringRuleId)
+        assertEquals(dueAt, database.recurringRuleDao().findById(rule.id)!!.nextRunAt)
+    }
+
+    @Test
+    fun manualRecurringLinkAllowsAmountWithinToleranceButRejectsOutOfRange() = runBlocking {
+        val dueAt = System.currentTimeMillis() - 60_000L
+        val rule = recurringRule(dueAt).copy(id = "manual-match", accountId = "", merchant = null, category = "", amountCents = 3_000L)
+        database.recurringRuleDao().upsert(rule)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "within-range",
+                accountId = "savings",
+                amountCents = 2_500L,
+                type = TransactionType.EXPENSE.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                occurredAt = dueAt
+            )
+        )
+        repository.linkToRecurringRule("within-range", rule.id)
+        assertEquals(rule.id, database.transactionDao().findById("within-range")?.recurringRuleId)
+
+        val outOfRange = rule.copy(id = "manual-match-out-of-range", nextRunAt = dueAt)
+        database.recurringRuleDao().upsert(outOfRange)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "out-of-range",
+                accountId = "savings",
+                amountCents = 2_000L,
+                type = TransactionType.EXPENSE.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                occurredAt = dueAt
+            )
+        )
+
+        var failed = false
+        try {
+            repository.linkToRecurringRule("out-of-range", outOfRange.id)
+        } catch (_: IllegalArgumentException) {
+            failed = true
+        }
+        assertTrue(failed)
+        assertEquals(null, database.transactionDao().findById("out-of-range")?.recurringRuleId)
+    }
+
+    @Test
+    fun historicalShortMonthOccurrenceCanBeClaimedAndAdvancesToTheRestoredAnchorDay() = runBlocking {
+        val zone = ZoneId.systemDefault()
+        fun at(date: LocalDate): Long = date.atTime(9, 0).atZone(zone).toInstant().toEpochMilli()
+        val august31 = at(LocalDate.of(2026, 8, 31))
+        val september30 = at(LocalDate.of(2026, 9, 30))
+        val rule = recurringRule(august31).copy(
+            id = "historic-month-end",
+            accountId = "",
+            merchant = null,
+            category = "",
+            firstRunAt = august31
+        )
+        database.recurringRuleDao().upsert(rule)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "september-historic-charge",
+                accountId = "savings",
+                amountCents = rule.amountCents,
+                type = TransactionType.EXPENSE.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                occurredAt = september30
+            )
+        )
+
+        repository.linkToRecurringRule("september-historic-charge", rule.id)
+
+        assertEquals(rule.id, database.transactionDao().findById("september-historic-charge")?.recurringRuleId)
+        val nextDate = java.time.Instant.ofEpochMilli(database.recurringRuleDao().findById(rule.id)!!.nextRunAt)
+            .atZone(zone)
+            .toLocalDate()
+        assertEquals(LocalDate.of(2026, 10, 31), nextDate)
+    }
+
+    @Test
+    fun cancellingCurrentRecurringLinkMakesTheSameOccurrenceSelectableAgain() = runBlocking {
+        val dueAt = System.currentTimeMillis() - 60_000L
+        val rule = recurringRule(dueAt).copy(id = "cancel-recurring", accountId = "", merchant = null, category = "")
+        database.recurringRuleDao().upsert(rule)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "cancel-charge",
+                accountId = "savings",
+                amountCents = rule.amountCents,
+                type = rule.type,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                occurredAt = dueAt
+            )
+        )
+
+        repository.linkToRecurringRule("cancel-charge", rule.id)
+        val advanced = database.recurringRuleDao().findById(rule.id)!!.nextRunAt
+        assertTrue(advanced > dueAt)
+        repository.linkToRecurringRule("cancel-charge", null)
+
+        assertEquals(null, database.transactionDao().findById("cancel-charge")?.recurringRuleId)
+        assertEquals(dueAt, database.recurringRuleDao().findById(rule.id)!!.nextRunAt)
     }
 
     @Test
@@ -874,10 +1079,13 @@ class LedgerRepositoryIntegrationTest {
             accountId = "cash",
             occurredAt = System.currentTimeMillis(),
             necessity = true,
-            channel = "支付宝"
+            channel = "支付宝",
+            orderPlatform = "美团"
         )
 
-        assertEquals("支付宝", database.transactionDao().findById("editable-channel")?.channel)
+        val saved = database.transactionDao().findById("editable-channel")
+        assertEquals("支付宝", saved?.channel)
+        assertEquals("美团", saved?.orderPlatform)
 
         repository.updateTransaction(
             id = "editable-channel",
@@ -889,10 +1097,13 @@ class LedgerRepositoryIntegrationTest {
             accountId = "cash",
             occurredAt = System.currentTimeMillis(),
             necessity = true,
-            channel = null
+            channel = null,
+            orderPlatform = null
         )
 
-        assertEquals(null, database.transactionDao().findById("editable-channel")?.channel)
+        val cleared = database.transactionDao().findById("editable-channel")
+        assertEquals(null, cleared?.channel)
+        assertEquals(null, cleared?.orderPlatform)
     }
 
     @Test
@@ -1237,7 +1448,8 @@ class LedgerRepositoryIntegrationTest {
             accountId = "card",
             occurredAt = billedAt,
             necessity = null,
-            channel = null
+            channel = null,
+            orderPlatform = null
         )
         database.transactionDao().insert(
             TransactionEntity(
@@ -1316,7 +1528,8 @@ class LedgerRepositoryIntegrationTest {
             accountId = "card",
             occurredAt = unbilledAt,
             necessity = null,
-            channel = null
+            channel = null,
+            orderPlatform = null
         )
         val service = CreditCardInstallmentService(database, now = { fixedNow })
         service.create(
@@ -1376,7 +1589,8 @@ class LedgerRepositoryIntegrationTest {
             accountId = "card",
             occurredAt = unbilledAt,
             necessity = null,
-            channel = null
+            channel = null,
+            orderPlatform = null
         )
         database.transactionDao().insert(
             TransactionEntity(

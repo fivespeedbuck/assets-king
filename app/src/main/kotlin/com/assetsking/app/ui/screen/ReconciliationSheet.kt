@@ -31,6 +31,28 @@ import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
 
+internal data class ReconciliationNeed(val reason: String)
+
+internal fun reconciliationNeed(
+    account: AccountEntity,
+    now: Long,
+    intervalMs: Long = 7L * 24 * 60 * 60 * 1000
+): ReconciliationNeed? {
+    if (account.archived) return null
+    if (account.balanceStatus == "DISCREPANCY") {
+        return ReconciliationNeed("存在余额差额")
+    }
+    val lastCheckedAt = account.lastCheckedAt
+    if (lastCheckedAt == null || lastCheckedAt <= 0L) {
+        return ReconciliationNeed("尚未对账")
+    }
+    if (now - lastCheckedAt > intervalMs) {
+        val days = (intervalMs / (24L * 60 * 60 * 1000)).coerceAtLeast(1L)
+        return ReconciliationNeed("已超过 ${days} 天未对账")
+    }
+    return null
+}
+
 @Composable
 fun ReconciliationSheet(
     accounts: List<AccountEntity>,
@@ -39,17 +61,13 @@ fun ReconciliationSheet(
     onDismiss: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
+    val now = System.currentTimeMillis()
     val visibleAccounts = remember(accounts) {
         accounts.asSequence()
             .filter { !it.archived }
             .sortedWith(
                 compareBy<AccountEntity> { account ->
-                    val checkedAt = account.lastCheckedAt
-                    when {
-                        account.balanceStatus == "DISCREPANCY" -> 0
-                        checkedAt == null || checkedAt <= 0L -> 1
-                        else -> 2
-                    }
+                    reconciliationNeed(account, now) == null
                 }.thenBy { it.lastCheckedAt ?: Long.MIN_VALUE }
                     .thenBy { it.name }
                     .thenBy { it.cardTail.orEmpty() }
@@ -74,6 +92,33 @@ fun ReconciliationSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(8.dp))
+        val needs = visibleAccounts.mapNotNull { account ->
+            reconciliationNeed(account, now)?.let { account to it }
+        }
+        if (needs.isNotEmpty()) {
+            Text(
+                "需要核对的账户",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+            )
+            needs.forEach { (account, need) ->
+                Text(
+                    "${if (privacyEnabled) privacyObfuscatedText(account.name, 2680 + visibleAccounts.indexOf(account)) else account.name}：${need.reason}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        } else {
+            Text(
+                "当前没有超过对账周期或存在余额差额的账户。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(8.dp))
+        }
         listOf(
             "资产账户" to assetAccounts,
             "应收账户" to receivableAccounts,
@@ -126,6 +171,17 @@ fun ReconciliationSheet(
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
+                            reconciliationNeed(account, now)?.let { need ->
+                                Text(
+                                    "需要核对 · ${need.reason}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            } ?: Text(
+                                "已在对账周期内",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                             if (account.balanceStatus == "DISCREPANCY") {
                                 Text(
                                     "余额与银行报告存在差异，请核对流水后手动调整",

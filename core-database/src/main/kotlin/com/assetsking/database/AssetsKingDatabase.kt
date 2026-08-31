@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CategoryEntity::class, MerchantEntity::class,
         LedgerEvidenceLinkEntity::class, LedgerLifecycleEventEntity::class
     ],
-    version = 26,
+    version = 28,
     exportSchema = false
 )
 abstract class AssetsKingDatabase : RoomDatabase() {
@@ -295,6 +295,26 @@ abstract class AssetsKingDatabase : RoomDatabase() {
             }
         }
 
+        /** v26→v27：交易记录保存下单平台，与支付渠道和资金账户分开。 */
+        internal val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transactions ADD COLUMN orderPlatform TEXT")
+            }
+        }
+
+        /**
+         * v27→v28：周期规则分开保存支付渠道、订单平台和预算纳入语义；
+         * 删除没有独立业务价值的订阅标记，历史规则默认纳入预算。
+         */
+        internal val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `recurring_rules_new` (`id` TEXT NOT NULL, `accountId` TEXT NOT NULL, `amountCents` INTEGER NOT NULL, `type` TEXT NOT NULL, `category` TEXT NOT NULL, `merchant` TEXT, `note` TEXT, `interval` TEXT NOT NULL, `nextRunAt` INTEGER NOT NULL, `isActive` INTEGER NOT NULL, `channel` TEXT, `orderPlatform` TEXT, `includeInBudget` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `firstRunAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+                db.execSQL("INSERT INTO recurring_rules_new (id, accountId, amountCents, type, category, merchant, note, interval, nextRunAt, isActive, channel, orderPlatform, includeInBudget, createdAt, firstRunAt) SELECT id, accountId, amountCents, type, category, merchant, note, interval, nextRunAt, isActive, NULL, NULL, 1, 0, 0 FROM recurring_rules")
+                db.execSQL("DROP TABLE recurring_rules")
+                db.execSQL("ALTER TABLE recurring_rules_new RENAME TO recurring_rules")
+            }
+        }
+
         /** v19→v20：categories 加 kind 列（收入分类库独立于消费分类，REQ 预期收入§4）。只加列，非破坏性。 */
         private val MIGRATION_19_20 = object : Migration(19, 20) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -408,7 +428,7 @@ abstract class AssetsKingDatabase : RoomDatabase() {
                 context.applicationContext,
                 AssetsKingDatabase::class.java,
                 "assets-king.db"
-            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26).build().also { instance = it }
+            ).addMigrations(MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28).build().also { instance = it }
         }
     }
 }

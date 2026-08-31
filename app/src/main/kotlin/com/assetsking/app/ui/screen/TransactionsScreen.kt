@@ -57,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,6 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.assetsking.app.LedgerUiState
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.ui.privacy.privacyFakeAmount
@@ -78,6 +80,7 @@ import com.assetsking.database.MerchantEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.database.TransferBalanceDetail
 import com.assetsking.model.TransactionType
+import com.assetsking.ledger.OrderPlatform
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.component.IconLibrary
 import com.assetsking.ui.component.Sheet
@@ -592,7 +595,6 @@ fun TransactionsScreen(
                                                 ledgerItem.transaction?.let { tx ->
                                                     TransactionListRow(
                                                         tx = tx,
-                                                        accountName = accountNameOf(tx.accountId),
                                                         category = categories.firstOrNull { it.name == tx.category },
                                                         privacyIndex = dayIndex * 20 + index,
                                                         multiSelect = multiSelect,
@@ -866,7 +868,6 @@ fun TransactionsScreen(
 @Composable
 private fun TransactionListRow(
     tx: TransactionEntity,
-    accountName: String,
     category: CategoryEntity?,
     privacyIndex: Int,
     multiSelect: Boolean,
@@ -881,14 +882,22 @@ private fun TransactionListRow(
     val reimbursementBadge = reimbursementBadge(tx)
     val recurringDebit = isRecurringDebit(tx)
     val linkBadges = transactionLinkBadges(tx)
+    val orderPlatform = tx.orderPlatform ?: inferOrderPlatform(null, null, tx.merchant)
+    val displayMerchant = merchantForDisplay(tx.merchant, orderPlatform)
+    // 列表优先展示用户备注（如“韦力德健身买水”），没有备注才显示标准商户。
+    val displayLabel = tx.note?.trim()?.takeIf { it.isNotEmpty() } ?: displayMerchant
     val metadata = listOfNotNull(
         if (tx.type == TransactionType.REFUND.name && tx.refundOfId == null) {
             "未关联原消费"
         } else {
             transactionListCategoryLabel(tx.type, tx.category, category).ifEmpty { null }
-        },
-        if (tx.channel != null) "${tx.channel} · $accountName" else accountName.ifEmpty { null }
+        }
     ).joinToString(" · ")
+    val metadataWithTime = if (metadata.isBlank()) {
+        if (privacyEnabled) privacyFakeDateTime(760 + privacyIndex, includeDate = false) else formatClockTime(tx.occurredAt)
+    } else {
+        "$metadata-${if (privacyEnabled) privacyFakeDateTime(760 + privacyIndex, includeDate = false) else formatClockTime(tx.occurredAt)}"
+    }
     Row(
         modifier
             .fillMaxWidth()
@@ -918,11 +927,12 @@ private fun TransactionListRow(
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                if (privacyEnabled) privacyObfuscatedText(tx.merchant ?: typeLabel(tx.type), 720 + privacyIndex)
-                else tx.merchant ?: typeLabel(tx.type),
+                if (privacyEnabled) privacyObfuscatedText(displayLabel ?: typeLabel(tx.type), 720 + privacyIndex)
+                else displayLabel ?: typeLabel(tx.type),
                 fontWeight = FontWeight.Medium,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 2,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -968,34 +978,38 @@ private fun TransactionListRow(
                     Spacer(Modifier.width(6.dp))
                 }
                 Text(
-                    if (privacyEnabled) privacyObfuscatedText(metadata.ifBlank { "流水信息" }, 740 + privacyIndex) else metadata,
+                    if (privacyEnabled) privacyObfuscatedText(metadataWithTime.ifBlank { "流水信息" }, 740 + privacyIndex) else metadataWithTime,
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (privacyEnabled) privacyFakeDateTime(760 + privacyIndex, includeDate = false) else formatClockTime(tx.occurredAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
         Spacer(Modifier.width(8.dp))
+        val amountText = if (privacyEnabled) privacyFakeAmount(780 + privacyIndex) else formatSignedMoney(
+            tx.amountCents,
+            positive = when (tx.type) {
+                "EXPENSE", "FEE", "LOAN_PAYMENT", "LOAN_PREPAYMENT" -> false
+                "INCOME", "REFUND", "REIMBURSEMENT" -> true
+                else -> null
+            }
+        )
         Text(
-            if (privacyEnabled) privacyFakeAmount(780 + privacyIndex) else formatSignedMoney(
-                tx.amountCents,
-                positive = when (tx.type) {
-                    "EXPENSE", "FEE", "LOAN_PAYMENT", "LOAN_PREPAYMENT" -> false
-                    "INCOME", "REFUND", "REIMBURSEMENT" -> true
-                    else -> null
-                }
-            ),
+            amountText,
             fontWeight = FontWeight.Bold,
             color = cashFlowColor,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                // 五/六位金额加小数点时保留固定金额列，不挤压时间列；只缩字号，不截断。
+                fontSize = when {
+                    amountText.length >= 13 -> 13.sp
+                    amountText.length >= 11 -> 14.sp
+                    else -> MaterialTheme.typography.bodyLarge.fontSize
+                }
+            ),
+            modifier = Modifier.width(LedgerAmountColumnWidth),
+            textAlign = TextAlign.End,
             maxLines = 1,
             softWrap = false
         )
@@ -1017,6 +1031,8 @@ private fun MerchantCategoryLibrary(
     modifier: Modifier = Modifier
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
+    val customPaymentChannels by model.customPaymentChannels.collectAsStateWithLifecycle(initialValue = emptySet())
+    val customOrderPlatforms by model.customOrderPlatforms.collectAsStateWithLifecycle(initialValue = emptySet())
     val summary = remember(categories, merchants) { categoryLibrarySummary(categories, merchants) }
     var categoryManageKind by remember { mutableStateOf<String?>(null) }
     var newCategoryKind by remember { mutableStateOf("EXPENSE") }
@@ -1025,6 +1041,9 @@ private fun MerchantCategoryLibrary(
     var merchantSearch by remember { mutableStateOf("") }
     var mergeSource by remember { mutableStateOf<MerchantEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<MerchantEntity?>(null) }
+    var newPaymentChannel by remember { mutableStateOf("") }
+    var newOrderPlatform by remember { mutableStateOf("") }
+    var merchantsExpanded by rememberSaveable { mutableStateOf(false) }
     val shownMerchants = merchants.filter { merchant ->
         merchantSearch.isBlank() ||
             merchant.id.contains(merchantSearch, ignoreCase = true) ||
@@ -1069,80 +1088,196 @@ private fun MerchantCategoryLibrary(
             )
         }
         item {
-            Column(Modifier.padding(top = 4.dp)) {
-                Text("标准商户", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = Modifier.padding(16.dp)
+            ) {
+                Text("支付渠道管理", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    "${if (privacyEnabled) privacyFakeCount(1005) else summary.merchantCount} 个已学习商户 · 确认流水后自动沉淀",
+                    "固定渠道不可删除；自定义渠道只影响以后录入候选，不改写历史流水。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(10.dp))
+                Text("固定渠道：${commonPaymentChannels.joinToString("、")}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newPaymentChannel,
+                        onValueChange = { newPaymentChannel = it },
+                        label = { Text("新增自定义支付渠道") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !privacyEnabled
+                    )
+                    val normalized = newPaymentChannel.trim()
+                    Button(
+                        onClick = {
+                            model.rememberPaymentChannel(normalized)
+                            newPaymentChannel = ""
+                        },
+                        enabled = !privacyEnabled && normalized.isNotEmpty() &&
+                            normalized !in commonPaymentChannels && !OrderPlatform.isKnown(normalized)
+                    ) { Text("新增") }
+                }
+                if (customPaymentChannels.isEmpty()) {
+                    Text("暂无自定义支付渠道", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    customPaymentChannels.forEachIndexed { index, channel ->
+                        Row(
+                            Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (privacyEnabled) privacyObfuscatedText(channel, 1080 + index) else channel,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { model.deletePaymentChannel(channel) }, enabled = !privacyEnabled) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
             }
         }
         item {
-            OutlinedTextField(
-                value = merchantSearch,
-                onValueChange = { merchantSearch = it },
-                label = { Text("搜索商户或原名") },
+            GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-        }
-        if (shownMerchants.isEmpty()) {
-            item {
-                GlassCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = Modifier.padding(16.dp)
-                ) {
-                    Text(if (merchants.isEmpty()) "还没有标准商户" else "没有匹配的商户", fontWeight = FontWeight.Medium)
-                    Text(
-                        if (merchants.isEmpty()) "确认带商户名称的流水后，会在这里形成可复用的商户规则。" else "换个商户名或原名再试。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                contentPadding = Modifier.padding(16.dp)
+            ) {
+                Text("订单平台管理", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "固定平台不可删除；自定义平台只影响以后录入候选，不改写历史流水。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("固定平台：${commonOrderPlatforms.joinToString("、")}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newOrderPlatform,
+                        onValueChange = { newOrderPlatform = it },
+                        label = { Text("新增自定义订单平台") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = !privacyEnabled
                     )
+                    val normalized = newOrderPlatform.trim()
+                    Button(
+                        onClick = {
+                            model.rememberOrderPlatform(normalized)
+                            newOrderPlatform = ""
+                        },
+                        enabled = !privacyEnabled && normalized.isNotEmpty() &&
+                            normalized !in commonOrderPlatforms && normalized !in commonPaymentChannels
+                    ) { Text("新增") }
+                }
+                if (customOrderPlatforms.isEmpty()) {
+                    Text("暂无自定义订单平台", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    customOrderPlatforms.forEachIndexed { index, platform ->
+                        Row(
+                            Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (privacyEnabled) privacyObfuscatedText(platform, 1120 + index) else platform,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { model.deleteOrderPlatform(platform) }, enabled = !privacyEnabled) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            shownMerchants.sortedBy { it.id }.forEach { merchant ->
-                item(key = "merchant-${merchant.id}") {
-                    val accountName = merchant.learnedAccountId
-                        ?.let { accountId -> accounts.firstOrNull { it.id == accountId }?.name }
-                    val aliases = runCatching {
-                        org.json.JSONArray(merchant.aliasesJson).let { array ->
-                            (0 until array.length()).map(array::getString)
-                        }
-                    }.getOrDefault(emptyList())
+        }
+        item {
+            GlassCard(
+                modifier = Modifier.fillMaxWidth().clickable { merchantsExpanded = !merchantsExpanded },
+                contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("标准商户", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${if (privacyEnabled) privacyFakeCount(1005) else summary.merchantCount} 个已学习商户 · 确认流水后自动沉淀",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(if (merchantsExpanded) "收起" else "展开", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+        if (merchantsExpanded) {
+            item {
+                OutlinedTextField(
+                    value = merchantSearch,
+                    onValueChange = { merchantSearch = it },
+                    label = { Text("搜索商户或原名") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+            if (shownMerchants.isEmpty()) {
+                item {
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                        contentPadding = Modifier.padding(16.dp)
                     ) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    if (privacyEnabled) privacyObfuscatedText(merchant.id, 1020 + merchant.id.hashCode()) else merchant.id,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                val learnedRule = listOfNotNull(
-                                    merchant.learnedType?.let(::typeLabel),
-                                    merchant.learnedCategory,
-                                    accountName,
-                                    aliases.takeIf { it.isNotEmpty() }?.joinToString("、", prefix = "原名 ")
-                                ).joinToString(" · ")
-                                Text(
-                                    if (privacyEnabled && learnedRule.isNotBlank()) {
-                                        privacyObfuscatedText(learnedRule, 1040 + merchant.id.hashCode())
-                                    } else {
-                                        learnedRule.ifBlank { "等待学习分类与账户" }
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                        Text(if (merchants.isEmpty()) "还没有标准商户" else "没有匹配的商户", fontWeight = FontWeight.Medium)
+                        Text(
+                            if (merchants.isEmpty()) "确认带商户名称的流水后，会在这里形成可复用的商户规则。" else "换个商户名或原名再试。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else {
+                shownMerchants.sortedBy { it.id }.forEach { merchant ->
+                    item(key = "merchant-${merchant.id}") {
+                        val accountName = merchant.learnedAccountId
+                            ?.let { accountId -> accounts.firstOrNull { it.id == accountId }?.name }
+                        val aliases = runCatching {
+                            org.json.JSONArray(merchant.aliasesJson).let { array ->
+                                (0 until array.length()).map(array::getString)
                             }
-                            Row {
-                                TextButton(onClick = { mergeSource = merchant }) { Text("合并") }
-                                TextButton(onClick = { deleteTarget = merchant }) {
-                                    Text("删除", color = MaterialTheme.colorScheme.error)
+                        }.getOrDefault(emptyList())
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                        ) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        if (privacyEnabled) privacyObfuscatedText(merchant.id, 1020 + merchant.id.hashCode()) else merchant.id,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    val learnedRule = listOfNotNull(
+                                        merchant.learnedType?.let(::typeLabel),
+                                        merchant.learnedCategory,
+                                        accountName,
+                                        aliases.takeIf { it.isNotEmpty() }?.joinToString("、", prefix = "原名 ")
+                                    ).joinToString(" · ")
+                                    Text(
+                                        if (privacyEnabled && learnedRule.isNotBlank()) {
+                                            privacyObfuscatedText(learnedRule, 1040 + merchant.id.hashCode())
+                                        } else {
+                                            learnedRule.ifBlank { "等待学习分类与账户" }
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Row {
+                                    TextButton(onClick = { mergeSource = merchant }) { Text("合并") }
+                                    TextButton(onClick = { deleteTarget = merchant }) {
+                                        Text("删除", color = MaterialTheme.colorScheme.error)
+                                    }
                                 }
                             }
                         }

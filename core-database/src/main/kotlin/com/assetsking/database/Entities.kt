@@ -44,6 +44,7 @@ data class TransactionEntity(
     val reimbursedCents: Long = 0,       // 已报销覆盖金额（REQ 报销 §3-4）：到账前仍计入支出，到账后从分类/预算冲减
     val necessity: Boolean? = null,      // 本笔最终必要性（REQ 分类§2）：true=必要 false=非必要 null=按场景默认
     val channel: String? = null,         // 支付渠道（REQ 流水§5）：微信/支付宝/银行短信…与资金账户分开
+    val orderPlatform: String? = null,   // 下单平台（如美团/淘宝），与实际支付渠道分开
     val notificationId: String? = null,  // 由通知确认生成的流水；进垃圾箱时证据保持忽略，恢复时重新 LINKED
     val lendingPlanId: String? = null,   // 出借利息到账关联；本金收回使用 TransferEntity
     val deletedAt: Long? = null,         // 非空=位于流水垃圾箱；保留 7 天后物理清除
@@ -339,13 +340,18 @@ data class RecurringRuleEntity(
     val accountId: String,
     val amountCents: Long,
     val type: String,              // TransactionType name
-    val category: String,          // TransactionCategory name
+    /** 可选的预算提示；留空时只作为计划，不进入分类预算派生。 */
+    val category: String,          // 二级分类 id 或名称
     val merchant: String?,
     val note: String?,
     val interval: String,          // DAILY, WEEKLY, MONTHLY, YEARLY
     val nextRunAt: Long,           // epoch millis for next auto-create
     val isActive: Boolean = true,
-    val isSubscription: Boolean = false  // 订阅制服务标记
+    val channel: String? = null,
+    val orderPlatform: String? = null,
+    val includeInBudget: Boolean = true,
+    val createdAt: Long = 0L,
+    val firstRunAt: Long = 0L
 )
 
 // 余额检查点：银行短信/手动报告的带时间戳权威余额。账户当前余额 = 最新检查点 + 其后已确认事件增量。

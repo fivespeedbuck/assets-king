@@ -54,6 +54,9 @@ import com.assetsking.database.WindfallEntity
 import com.assetsking.model.AccountType
 import com.assetsking.ui.theme.AssetsKingTheme
 import com.assetsking.ui.theme.PrivacyEmblemPurple
+import java.time.Instant
+import java.time.YearMonth
+import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,6 +77,7 @@ fun HomeScreen(
     val reimbursable by model.reimbursable.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
     val freeSpendingCents by model.freeSpendingCents.collectAsStateWithLifecycle(initialValue = 50_000L)
     val customPaymentChannels by model.customPaymentChannels.collectAsStateWithLifecycle(initialValue = emptySet())
+    val customOrderPlatforms by model.customOrderPlatforms.collectAsStateWithLifecycle(initialValue = emptySet())
     val windfalls by model.windfalls.collectAsStateWithLifecycle(initialValue = emptyList<WindfallEntity>())
     val cardInstallments by model.cardInstallments.collectAsStateWithLifecycle(initialValue = emptyList<CreditCardInstallmentEntity>())
     val cardInstallmentAllocations by model.cardInstallmentAllocations.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -86,6 +90,18 @@ fun HomeScreen(
     val lastReceivedAt by model.lastReceivedAt.collectAsStateWithLifecycle(initialValue = 0L)
     val deletedTransactions by model.deletedTransactions.collectAsStateWithLifecycle(initialValue = emptyList<TransactionEntity>())
     val deletedTransfers by model.deletedTransfers.collectAsStateWithLifecycle(initialValue = emptyList<com.assetsking.database.TransferEntity>())
+    val effectiveBudgetMonths = remember(budgets, state.transactions) {
+        buildSet {
+            add(YearMonth.now())
+            budgets.mapNotNullTo(this) { runCatching { YearMonth.parse(it.month) }.getOrNull() }
+            state.transactions.mapTo(this) {
+                YearMonth.from(Instant.ofEpochMilli(it.occurredAt).atZone(ZoneId.systemDefault()))
+            }
+        }
+    }
+    val displayedBudgets = remember(budgets, recurringRules, effectiveBudgetMonths, categories) {
+        effectiveBudgets(budgets, recurringRules, effectiveBudgetMonths, categories)
+    }
     val context = LocalContext.current
     var showPendingBox by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf(false) }
@@ -235,7 +251,7 @@ fun HomeScreen(
                 padding = padding, state = state, listenerStatus = listenerStatus,
                 lastReceivedAt = lastReceivedAt,
                 context = context,
-                budgets = budgets, categories = categories, recurringRules = recurringRules,
+                budgets = displayedBudgets, categories = categories, recurringRules = recurringRules,
                 loanPlans = loanPlans,
                 lendingPlans = lendingPlans,
                 cardInstallments = cardInstallments,
@@ -260,7 +276,8 @@ fun HomeScreen(
                 StatsScreen(
                     state = state,
                     categories = categories,
-                    budgets = budgets,
+                    budgets = displayedBudgets,
+                    recurringRules = recurringRules,
                     repository = repository,
                     freeSpendingCents = freeSpendingCents,
                     onGotoTransactions = { m, cat ->
@@ -361,6 +378,7 @@ fun HomeScreen(
                 SettingsScreen(
                     budgets = budgets,
                     categories = categories,
+                    recurringRules = recurringRules,
                     repository = repository,
                     accounts = state.accounts,
                     onSaveBudget = { model.saveBudget(it) },
@@ -428,6 +446,7 @@ fun HomeScreen(
             transactions = state.transactions,
             pendingItems = state.pendingItems,
             accounts = state.accounts,
+            categories = categories,
             viewModel = model,
             onOpenTransaction = { transaction ->
                 if (!privacyEnabled) {
@@ -492,6 +511,7 @@ fun HomeScreen(
             reimbursableTxs = outstandingReimbursements(reimbursable),
             merchantLastAccount = state.merchantLastAccount,
             savedPaymentChannels = customPaymentChannels,
+            savedOrderPlatforms = customOrderPlatforms,
             ignoredItems = state.ignoredItems,
             viewModel = model,
             repository = repository,

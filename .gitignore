@@ -20,3 +20,11 @@ screenshot*.png
 
 # 真机取证草稿（adb 截图/UI dump/日志）
 .debug/
+
+# 本地构建与真机取证产物，不进入源码发布
+artifacts/
+release-assets/
+adb-diagnostic.db
+current.png
+uidump*.xml
+.full-gate*.log

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.assetsking.app.notification.AssetsNotificationListenerService
+import com.assetsking.app.ui.screen.inferOrderPlatform
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.BudgetEntity
 import com.assetsking.database.EvidenceAuditReport
@@ -49,7 +50,10 @@ import java.math.RoundingMode
 
 data class PendingItem(
     val notification: RawNotificationEntity,
-    val parsed: ParsedNotification
+    val parsed: ParsedNotification,
+    val orderPlatform: String? = null,
+    /** 合并证据中出现多个不同银行尾号时，禁止任何钱包/历史账户回退。 */
+    val bankEvidenceAmbiguous: Boolean = false
 )
 
 private data class BaseState(
@@ -124,7 +128,34 @@ class LedgerViewModel(
                 transfers = base.transfers,
                 unprocessedNotifications = base.count,
                 pendingItems = base.pending.map { entity ->
-                    PendingItem(entity, NotificationParser.parse(entity.content, entity.title))
+                    val merged = base.ignored.filter { it.processingNote?.contains("kept=${entity.id}") == true }
+                    val parsedEvidence = listOf(entity to NotificationParser.parse(entity.content, entity.title)) + merged
+                        .map { raw -> raw to NotificationParser.parse(raw.content, raw.title) }
+                    val primaryParsed = NotificationParser.parse(entity.content, entity.title)
+                    val bankEvidence = parsedEvidence.mapNotNull { (_, parsed) ->
+                        parsed.takeIf { it.cardTail != null }
+                    }
+                    val cardTails = bankEvidence.mapNotNull { it.cardTail }.distinct()
+                    val bankAmbiguous = cardTails.size > 1
+                    val parsed = when {
+                        bankAmbiguous -> primaryParsed.copy(cardTail = null, bankHint = null, balanceCents = null)
+                        bankEvidence.isNotEmpty() -> {
+                            val bank = bankEvidence.maxByOrNull { if (it.balanceCents != null) 1 else 0 }!!
+                            primaryParsed.copy(
+                                bankHint = bank.bankHint ?: primaryParsed.bankHint,
+                                cardTail = bank.cardTail,
+                                balanceCents = bank.balanceCents ?: primaryParsed.balanceCents
+                            )
+                        }
+                        else -> primaryParsed
+                    }
+                    val platform = sequenceOf(
+                        entity,
+                        *merged.toTypedArray()
+                    ).mapNotNull { raw ->
+                        inferOrderPlatform(raw.packageName, raw.sourceLabel, parsed.merchant)
+                    }.firstOrNull()
+                    PendingItem(entity, parsed, platform, bankAmbiguous)
                 },
                 v5 = v5,
                 merchantLastAccount = base.transactions
@@ -163,10 +194,26 @@ class LedgerViewModel(
     /** 自由开销额度（REQ 统计§12，初始 500 元/月） */
     val freeSpendingCents: Flow<Long> = repository.freeSpendingCents
     val customPaymentChannels: Flow<Set<String>> = repository.customPaymentChannels
+    val customOrderPlatforms: Flow<Set<String>> = repository.customOrderPlatforms
 
     fun rememberPaymentChannel(channel: String) {
         if (!privacyDataWritesAllowed()) return
         repository.rememberPaymentChannel(channel)
+    }
+
+    fun deletePaymentChannel(channel: String) {
+        if (!privacyDataWritesAllowed()) return
+        repository.deletePaymentChannel(channel)
+    }
+
+    fun rememberOrderPlatform(platform: String) {
+        if (!privacyDataWritesAllowed()) return
+        repository.rememberOrderPlatform(platform)
+    }
+
+    fun deleteOrderPlatform(platform: String) {
+        if (!privacyDataWritesAllowed()) return
+        repository.deleteOrderPlatform(platform)
     }
 
     fun setFreeSpendingCents(cents: Long) {
@@ -261,6 +308,7 @@ class LedgerViewModel(
         id: String, amountCents: Long, type: TransactionType,
         category: String, merchant: String?, note: String?,
         accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?,
+        orderPlatform: String? = null,
         isReimbursable: Boolean,
         refundOfId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
@@ -269,7 +317,7 @@ class LedgerViewModel(
             onResult(runCatching {
                 repository.updateTransaction(
                     id, amountCents, type, category, merchant, note,
-                    accountId, occurredAt, necessity, channel, isReimbursable, refundOfId
+                    accountId, occurredAt, necessity, channel, orderPlatform, isReimbursable, refundOfId
                 )
             })
         }
@@ -703,6 +751,7 @@ class LedgerViewModel(
         isReimbursable: Boolean = false,
         necessity: Boolean? = null,
         channel: String? = null,
+        orderPlatform: String? = null,
         refundOfId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
@@ -710,7 +759,7 @@ class LedgerViewModel(
             repository.addTransaction(
                 accountId, amountCents, type, category, merchant, note,
                 occurredAt = occurredAt, isReimbursable = isReimbursable,
-                necessity = necessity, channel = channel, refundOfId = refundOfId
+                necessity = necessity, channel = channel, orderPlatform = orderPlatform, refundOfId = refundOfId
             )
             Unit
         }
@@ -773,8 +822,8 @@ class LedgerViewModel(
         viewModelScope.launch { repository.deleteMerchantMapping(name) }
     }
 
-    fun confirmTransferPair(outId: String, inId: String, fromAccountId: String, toAccountId: String, amountCents: Long, note: String?) {
-        viewModelScope.launch { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
+    fun confirmTransferPair(outId: String, inId: String, fromAccountId: String, toAccountId: String, amountCents: Long, note: String?, onResult: (Result<Unit>) -> Unit = {}) {
+        launchWrite(onResult) { repository.confirmTransferFromNotifications(outId, inId, fromAccountId, toAccountId, amountCents, note) }
     }
 
     fun confirmTransferNotification(
@@ -857,14 +906,16 @@ class LedgerViewModel(
         bankBalanceCents: Long? = null,
         bankCardTail: String? = null,
         necessity: Boolean? = null,
+        isReimbursable: Boolean = false,
         channel: String? = null,
+        orderPlatform: String? = null,
         refundOfId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
         launchWrite(onResult) {
             repository.confirmNotification(
                 notificationId, accountId, amountCents, type, category, merchant, note,
-                bankBalanceCents, bankCardTail, necessity, channel, refundOfId
+                bankBalanceCents, bankCardTail, necessity, isReimbursable, channel, orderPlatform, refundOfId
             )
             repository.learnRule(merchant, accountId, type.name, category)
         }

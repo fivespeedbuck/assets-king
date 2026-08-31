@@ -160,7 +160,8 @@ internal fun monthSpendingBreakdown(
 internal fun necessaryBudgetCents(
     budgets: List<com.assetsking.database.BudgetEntity>,
     categories: List<CategoryEntity>,
-    month: String
+    month: String,
+    recurringRules: List<com.assetsking.database.RecurringRuleEntity> = emptyList()
 ): Long {
     val necessaryByCategory = buildMap<String, Boolean> {
         categories.filterNot { it.isArchived }.forEach { category ->
@@ -169,9 +170,31 @@ internal fun necessaryBudgetCents(
             put(category.name, necessary)
         }
     }
-    return budgets
+    val budgetTotal = budgets
         .filter { it.month == month && necessaryByCategory[it.category] == true }
         .sumOf { it.monthlyLimitCents }
+    // effectiveBudgets 已经把必要分类的周期计划合并进预算行；只有非必要/未知
+    // 分类的周期计划需要在这里补入，因为产品口径规定所有待扣都是必要消费。
+    val alreadyIncludedByNecessaryCategory = recurringRules
+        .filter { rule ->
+            rule.isActive && rule.type == com.assetsking.model.TransactionType.EXPENSE.name &&
+                rule.amountCents > 0L && necessaryByCategory[rule.category] == true
+        }
+        .sumOf { rule ->
+            recurringMonthlyPlanAmount(
+                rule,
+                runCatching { java.time.YearMonth.parse(month) }.getOrElse { java.time.YearMonth.now() }
+            )
+        }
+    val allRecurring = recurringRules
+        .filter { it.isActive && it.type == com.assetsking.model.TransactionType.EXPENSE.name && it.amountCents > 0L }
+        .sumOf { rule ->
+            recurringMonthlyPlanAmount(
+                rule,
+                runCatching { java.time.YearMonth.parse(month) }.getOrElse { java.time.YearMonth.now() }
+            )
+        }
+    return budgetTotal + (allRecurring - alreadyIncludedByNecessaryCategory).coerceAtLeast(0L)
 }
 
 internal fun visibleDebtAccounts(accounts: List<com.assetsking.database.AccountEntity>) =

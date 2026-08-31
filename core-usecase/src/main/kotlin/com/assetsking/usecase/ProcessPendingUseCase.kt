@@ -262,6 +262,12 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
 
             // ── 已忽略判重：用户忽略过的同笔交易，换一个来源再推也不复活 ──
             val ignoredDup = ignored.firstOrNull { other ->
+                // 自动归并产生的 IGNORED 只是 keeper 的附属证据（note 带 kept=），
+                // 不能再充当永久墓碑。否则链路 A(待确认) ← B(自动忽略 kept=A)，
+                // 后到的 C 会先把 A 换成更高质量的 keeper，再被 B 的“已忽略”反向压掉，
+                // 最终 A/B/C 全部 IGNORED，待确认箱一笔不剩。只有用户明确忽略或
+                // 已处理的独立证据才有资格阻止换来源重生。
+                if (other.isAutoMergedAttachment()) return@firstOrNull false
                 NotificationMerge.isDuplicateAcrossSources(
                     notification.packageName, parsed, notification.postedAt,
                     other.packageName, NotificationParser.parse(other.content, other.title), other.postedAt
@@ -299,11 +305,10 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
         if (pending.size <= 1 && linked.isEmpty() && ignored.isEmpty()) return pending
 
         val kept = mutableListOf<RawNotificationEntity>()
-        // 带 kept= 的 IGNORED 行只是某个候选的附属证据，不是独立的“用户已删除”墓碑；
-        // 否则它会反过来把自己的 keeper 也压掉，导致两条一起消失。
-        val tombstones = linked + ignored.filterNot {
-            it.processingNote?.contains("kept=") == true
-        }
+        // 自动归并文案（含 kept=，以及旧版遗漏 kept= 的同额归并文案）只是某个候选
+        // 的附属证据，不是独立的“用户已删除”墓碑；否则它会反过来把自己的 keeper
+        // 也压掉，导致多来源证据一起消失。
+        val tombstones = linked + ignored.filterNot { it.isAutoMergedAttachment() }
         val ordered = pending.sortedWith(
             compareByDescending<RawNotificationEntity>(::evidenceQuality)
                 .thenBy { it.receivedAt }
@@ -394,6 +399,16 @@ class ProcessPendingUseCase(private val repository: LedgerRepository) {
     }
 
     private fun RawNotificationEntity.wasExplicitlySplit(): Boolean = processingNote == ""
+
+    /**
+     * 自动跨来源归并留下的附属证据不是用户“永久忽略”的墓碑。
+     * 旧版本有一条同额归并文案没有写 kept=，所以同时按稳定文案识别，
+     * 让升级后的新证据不会再被历史附属行压掉。
+     */
+    private fun RawNotificationEntity.isAutoMergedAttachment(): Boolean {
+        val note = processingNote.orEmpty()
+        return "kept=" in note || "与另一条同额通知重复" in note
+    }
 
     private fun parseMerchant(entity: RawNotificationEntity): String? =
         NotificationParser.parse(entity.content, entity.title).merchant

@@ -27,8 +27,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.TransactionEntity
@@ -57,6 +59,9 @@ import com.assetsking.ui.theme.RecurringDebitOrange
 import com.assetsking.ui.theme.UiTokens
 import com.assetsking.ui.theme.PendingOrange
 import com.assetsking.ui.theme.IncomeGreen
+
+/** 流水列表右侧的固定金额列，金额统一贴同一条右边线。 */
+internal val LedgerAmountColumnWidth = 88.dp
 
 @Composable
 fun AccountRow(account: AccountEntity, onClick: () -> Unit = {}) {
@@ -147,13 +152,17 @@ fun TransactionRow(
     val category = runCatching { TransactionCategory.valueOf(transaction.category) }.getOrNull()
     val categoryText = transactionCategoryLabel(transaction.type, transaction.category).orEmpty()
     val linkBadges = transactionLinkBadges(transaction)
+    val orderPlatform = transaction.orderPlatform ?: inferOrderPlatform(null, null, transaction.merchant)
+    val displayMerchant = merchantForDisplay(transaction.merchant, orderPlatform)
+    // 备注是用户对这笔流水的可读称呼；账务层仍保留标准商户用于匹配和统计。
+    val displayLabel = transaction.note?.trim()?.takeIf { it.isNotEmpty() } ?: displayMerchant
     val isLoanTx = transaction.type == "LOAN_DISBURSEMENT" || transaction.type == "LOAN_PAYMENT" || transaction.type == "LOAN_PREPAYMENT"
     // V5：借款/还款/提前还款流水不可编辑分类（与贷款计划联动），只读展示
     val title = when {
         transaction.type == "LOAN_DISBURSEMENT" -> "借款到账"
         transaction.type == "LOAN_PAYMENT" -> "贷款还款"
         transaction.type == "LOAN_PREPAYMENT" -> "提前还款"
-        else -> transaction.merchant ?: categoryText.ifBlank { txTypeLabel(transaction.type) }
+        else -> displayLabel ?: categoryText.ifBlank { txTypeLabel(transaction.type) }
     }
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(onClick = onClick)) {
@@ -166,9 +175,9 @@ fun TransactionRow(
                 )
                 Text(
                     if (privacyEnabled) {
-                        "${privacyObfuscatedText(accountName, 821)} · ${privacyObfuscatedText(txTypeLabel(transaction.type), 822)} · ${privacyFakeDateTime(823)}"
+                        "${privacyObfuscatedText(txTypeLabel(transaction.type), 821)} · ${privacyFakeDateTime(823)}"
                     } else {
-                        "$accountName · ${txTypeLabel(transaction.type)} · ${formatTime(transaction.occurredAt)}"
+                        "${txTypeLabel(transaction.type)} · ${formatTime(transaction.occurredAt)}"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -291,27 +300,31 @@ fun TransferRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    "转账 · 划转",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    if (privacyEnabled) privacyFakeDateTime(852, includeDate = false) else formatClockTime(occurredAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text(
+                "转账 · 划转-${if (privacyEnabled) privacyFakeDateTime(852, includeDate = false) else formatClockTime(occurredAt)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
         Spacer(Modifier.width(8.dp))
+        val displayAmount = if (privacyEnabled) privacyFakeAmount(854) else formatMoney(amountCents)
         Text(
-            if (privacyEnabled) privacyFakeAmount(854) else formatMoney(amountCents),
+            displayAmount,
+            modifier = Modifier.width(LedgerAmountColumnWidth),
             fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = when {
+                    displayAmount.length >= 13 -> 13.sp
+                    displayAmount.length >= 11 -> 14.sp
+                    else -> MaterialTheme.typography.bodyLarge.fontSize
+                }
+            ),
             color = transferColor,
-            maxLines = 1
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            softWrap = false
         )
     }
 }

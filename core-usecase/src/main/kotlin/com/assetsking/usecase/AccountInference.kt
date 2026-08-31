@@ -11,7 +11,42 @@ package com.assetsking.usecase
  * 卡内有银行证据时本条链路由银行证据直接命中。
  */
 object AccountInference {
-    data class Candidate(val id: String, val name: String)
+    data class Candidate(val id: String, val name: String, val cardTail: String? = null)
+
+    data class BankAccountResolution(val accountId: String?, val isAmbiguous: Boolean = false)
+
+    /**
+     * 银行证据必须先按卡尾号匹配；卡尾号唯一时，不再要求账户名称里包含银行名。
+     * 这样合并了支付宝/微信通知的待确认项，也不会因为主通知来源是钱包而选错账户。
+     */
+    fun resolveBankAccount(
+        cardTail: String?,
+        bankHint: String?,
+        candidates: List<Candidate>
+    ): BankAccountResolution {
+        val normalizedTail = cardTail?.filter(Char::isDigit)?.takeLast(4)?.takeIf { it.length == 4 }
+        if (normalizedTail != null) {
+            val tailMatches = candidates.filter {
+                it.cardTail?.filter(Char::isDigit)?.takeLast(4) == normalizedTail
+            }
+            when {
+                tailMatches.size == 1 -> return BankAccountResolution(tailMatches.single().id)
+                tailMatches.size > 1 -> return BankAccountResolution(null, isAmbiguous = true)
+                // 银行明确给出尾号但本机尚未登记：银行名不能越过这个事实替用户猜账户，
+                // 也不能回退成来源钱包或商户历史账户。
+                else -> return BankAccountResolution(null, isAmbiguous = true)
+            }
+        }
+        val normalizedHint = bankHint?.trim()?.takeIf { it.isNotEmpty() }
+        if (normalizedHint != null) {
+            val nameMatches = candidates.filter { it.name.contains(normalizedHint) || normalizedHint.contains(it.name) }
+            when {
+                nameMatches.size == 1 -> return BankAccountResolution(nameMatches.single().id)
+                nameMatches.size > 1 -> return BankAccountResolution(null, isAmbiguous = true)
+            }
+        }
+        return BankAccountResolution(null)
+    }
 
     /**
      * 支付渠道标签（REQ 流水§5）：渠道与资金账户分开保存展示。
@@ -37,9 +72,11 @@ object AccountInference {
         bankMatchedAccountId: String?,
         merchantHistoryAccountId: String?,
         sourcePackage: String?,
-        candidates: List<Candidate>
+        candidates: List<Candidate>,
+        bankEvidenceAmbiguous: Boolean = false
     ): String? {
         // 1. 银行证据：这条交易的真实资金账户
+        if (bankEvidenceAmbiguous) return null
         bankMatchedAccountId?.let { id -> if (candidates.any { it.id == id }) return id }
         // 2. 商户历史：该标准商户最近一次使用的账户
         merchantHistoryAccountId?.let { id -> if (candidates.any { it.id == id }) return id }

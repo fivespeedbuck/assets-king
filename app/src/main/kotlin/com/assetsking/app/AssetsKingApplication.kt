@@ -43,6 +43,7 @@ class AssetsKingApplication : Application() {
 
     val database by lazy { AssetsKingDatabase.get(this) }
     val repository by lazy { LedgerRepository(this, database, getSharedPreferences("app_prefs", MODE_PRIVATE)) }
+    val adbDiagnosticChannel by lazy { AdbDiagnosticChannel(repository) }
 
     val seedAccounts by lazy { SeedAccountsUseCase(repository) }
     val recordTransaction by lazy { RecordTransactionUseCase(repository) }

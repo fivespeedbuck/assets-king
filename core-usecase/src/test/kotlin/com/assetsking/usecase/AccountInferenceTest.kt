@@ -69,4 +69,33 @@ class AccountInferenceTest {
         assertEquals("支付宝", AccountInference.channelLabel("sms", "招商银行", "支付宝"))
         assertEquals("微信支付", AccountInference.channelLabel("com.cmb.pb", "招商银行", "微信支付"))
     }
+
+    @Test
+    fun `unique bank card tail wins even when bank name is absent from account name`() {
+        val resolution = AccountInference.resolveBankAccount(
+            cardTail = "3721",
+            bankHint = "宁波银行",
+            candidates = candidates.map { it.copy(cardTail = if (it.id == "nbcb") "3721" else null) }
+        )
+        assertEquals("nbcb", resolution.accountId)
+        assertEquals("nbcb", AccountInference.infer(resolution.accountId, "alipay", "com.eg.android.AlipayGphone", candidates, resolution.isAmbiguous))
+    }
+
+    @Test
+    fun `unmapped bank card tail blocks wallet fallback`() {
+        val resolution = AccountInference.resolveBankAccount("9999", "宁波银行", candidates)
+        assertNull(resolution.accountId)
+        assertEquals(true, resolution.isAmbiguous)
+        assertNull(AccountInference.infer(resolution.accountId, null, "com.eg.android.AlipayGphone", candidates, resolution.isAmbiguous))
+    }
+
+    @Test
+    fun `conflicting account matches block wallet fallback`() {
+        val resolution = AccountInference.resolveBankAccount(
+            "3721", "宁波银行", candidates.map { it.copy(cardTail = if (it.id == "nbcb" || it.id == "cmb") "3721" else null) }
+        )
+        assertNull(resolution.accountId)
+        assertEquals(true, resolution.isAmbiguous)
+        assertNull(AccountInference.infer(resolution.accountId, "alipay", "com.eg.android.AlipayGphone", candidates, resolution.isAmbiguous))
+    }
 }

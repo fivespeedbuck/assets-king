@@ -9,6 +9,7 @@ import com.assetsking.ledger.DefaultCategories
 import com.assetsking.ledger.InstallmentMatcher
 import com.assetsking.ledger.LedgerDelta
 import com.assetsking.ledger.PaymentChannel
+import com.assetsking.ledger.OrderPlatform
 import com.assetsking.ledger.ReimbursementSplit
 import com.assetsking.ledger.RuleBasedCategorizer
 import com.assetsking.ledger.SmsSenderWhitelist
@@ -66,6 +67,7 @@ data class TransferBalanceDetail(
 private const val TRANSACTION_TRASH_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 private const val CATEGORY_SEED_VERSION_KEY = "category_seed_version"
 private const val CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW = 2
+private const val RECURRING_AMOUNT_TOLERANCE_PERCENT = 20L
 
 private val notificationCardTailPatterns = listOf(
     Regex("""尾号[为是]?\s*(\d{4})"""),
@@ -76,6 +78,28 @@ private fun RawNotificationEntity.cardTail(): String? {
     val text = listOfNotNull(title, content).joinToString(" ")
     return notificationCardTailPatterns.firstNotNullOfOrNull { it.find(text)?.groupValues?.getOrNull(1) }
 }
+
+private fun recurringChannelMatches(ruleChannel: String?, transactionChannel: String?): Boolean =
+    ruleChannel.isNullOrBlank() || PaymentChannel.equivalent(ruleChannel, transactionChannel)
+
+private fun recurringOrderPlatformMatches(rulePlatform: String?, transactionPlatform: String?): Boolean =
+    rulePlatform.isNullOrBlank() ||
+        (!transactionPlatform.isNullOrBlank() && rulePlatform.trim().equals(transactionPlatform.trim(), ignoreCase = true))
+
+/** 周期计划创建时可以不预设实际扣款账户；空值表示任意账户。 */
+private fun recurringAccountMatches(ruleAccountId: String?, transactionAccountId: String): Boolean =
+    ruleAccountId.isNullOrBlank() || ruleAccountId == transactionAccountId
+
+/** 旧规则中的商户仍可作为提示；新规则不填商户时不增加匹配门槛。 */
+private fun recurringMerchantMatches(ruleMerchant: String?, transactionMerchant: String?): Boolean {
+    val expected = ruleMerchant?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return true
+    val actual = transactionMerchant?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
+    return actual == expected || actual.contains(expected) || expected.contains(actual)
+}
+
+/** 周期计划金额是预计值；认领允许水费、优惠券等导致的小幅波动。 */
+private fun recurringAmountMatches(expectedCents: Long, actualCents: Long): Boolean =
+    expectedCents > 0L && kotlin.math.abs(actualCents - expectedCents) * 100 <= expectedCents * RECURRING_AMOUNT_TOLERANCE_PERCENT
 
 private fun coveredLoanInstallmentNumbers(
     installments: List<LoanInstallment>,
@@ -227,16 +251,53 @@ class LedgerRepository(
     }
 
     private val _customPaymentChannels = MutableStateFlow(
-        prefs.getStringSet("custom_payment_channels", emptySet()).orEmpty().toSortedSet()
+        prefs.getStringSet("custom_payment_channels", emptySet()).orEmpty()
+            .filterNot { OrderPlatform.isKnown(it) || PaymentChannel.isKnown(it) }
+            .toSortedSet()
     )
     val customPaymentChannels: Flow<Set<String>> = _customPaymentChannels
 
+    private val _customOrderPlatforms = MutableStateFlow(
+        prefs.getStringSet("custom_order_platforms", emptySet()).orEmpty()
+            .filterNot { OrderPlatform.isKnown(it) || PaymentChannel.isKnown(it) }
+            .toSortedSet()
+    )
+    val customOrderPlatforms: Flow<Set<String>> = _customOrderPlatforms
+
     fun rememberPaymentChannel(channel: String) {
         val normalized = channel.trim().takeIf { it.isNotEmpty() } ?: return
+        if (OrderPlatform.isKnown(normalized) || normalized in _customOrderPlatforms.value) return
         val updated = (_customPaymentChannels.value + normalized).toSortedSet()
         if (updated == _customPaymentChannels.value) return
         _customPaymentChannels.value = updated
         prefs.edit().putStringSet("custom_payment_channels", updated).apply()
+    }
+
+    fun deletePaymentChannel(channel: String) {
+        val normalized = channel.trim()
+        if (normalized.isEmpty()) return
+        val updated = (_customPaymentChannels.value - normalized).toSortedSet()
+        if (updated == _customPaymentChannels.value) return
+        _customPaymentChannels.value = updated
+        prefs.edit().putStringSet("custom_payment_channels", updated).apply()
+    }
+
+    fun rememberOrderPlatform(platform: String) {
+        val normalized = platform.trim().takeIf { it.isNotEmpty() } ?: return
+        if (OrderPlatform.isKnown(normalized) || PaymentChannel.isKnown(normalized) || normalized in _customPaymentChannels.value) return
+        val updated = (_customOrderPlatforms.value + normalized).toSortedSet()
+        if (updated == _customOrderPlatforms.value) return
+        _customOrderPlatforms.value = updated
+        prefs.edit().putStringSet("custom_order_platforms", updated).apply()
+    }
+
+    fun deleteOrderPlatform(platform: String) {
+        val normalized = platform.trim()
+        if (normalized.isEmpty()) return
+        val updated = (_customOrderPlatforms.value - normalized).toSortedSet()
+        if (updated == _customOrderPlatforms.value) return
+        _customOrderPlatforms.value = updated
+        prefs.edit().putStringSet("custom_order_platforms", updated).apply()
     }
 
     // ── 自由开销额度（REQ 统计§12：初始 500 元/月，设置页可改）──
@@ -263,6 +324,20 @@ class LedgerRepository(
     fun setBackupDirUri(uri: android.net.Uri?) {
         if (uri == null) prefs.edit().remove("backup_dir_uri").apply()
         else prefs.edit().putString("backup_dir_uri", uri.toString()).apply()
+    }
+
+    /**
+     * 为用户主动开启的本机 ADB 诊断通道生成一致、只读的 SQLite 副本。
+     * VACUUM INTO 由 SQLite 在同一读事务中完成快照，不暴露实时数据库或 WAL 文件。
+     */
+    suspend fun createAdbDiagnosticSnapshot(): java.io.File = withContext(Dispatchers.IO) {
+        val outputDir = java.io.File(context.cacheDir, "adb-diagnostic").apply { mkdirs() }
+        outputDir.listFiles()?.forEach { it.delete() }
+        val snapshot = java.io.File(outputDir, "assets-king-${java.util.UUID.randomUUID()}.db")
+        val escapedPath = snapshot.absolutePath.replace("'", "''")
+        database.openHelper.writableDatabase.execSQL("VACUUM INTO '$escapedPath'")
+        require(snapshot.isFile && snapshot.length() > 0L) { "数据库快照生成失败" }
+        snapshot
     }
 
     /** 立即备份（手动或自动）。密码未设返回 false。自动备份每日最多一次，保留 7 份日备份+3 份月备份；手动永不删除。 */
@@ -715,7 +790,9 @@ class LedgerRepository(
         bankBalanceCents: Long? = null,
         bankCardTail: String? = null,
         necessity: Boolean? = null,
+        isReimbursable: Boolean = false,
         channel: String? = null,
+        orderPlatform: String? = null,
         refundOfId: String? = null
     ) {
         require(amountCents > 0)
@@ -774,17 +851,26 @@ class LedgerRepository(
                 bankBalanceCents = bankBalanceCents,
                 bankCardTail = bankCardTail
             )
-            // 周期账单反向认领：规则可能先于真实扣款自动记过一笔（同账户+同类型+金额±15%+前后5天）。
+            // 周期账单反向认领：规则可能先于真实扣款自动记过一笔（同账户+同类型+金额±20%+前后5天）。
             // 认到就不再造第二笔，只把通知标 LINKED —— 否则规则+短信把同一笔记两遍。
             // ponytail: 同账户同金额同周的两笔真实消费会被误认领，宁可漏记不要虚增。
-            val ruleTx = database.transactionDao().findInRange(
-                postedAt - 5L * 24 * 60 * 60 * 1000, postedAt + 5L * 24 * 60 * 60 * 1000
-            ).firstOrNull {
-                it.recurringRuleId != null &&
-                    it.type == type.name &&
-                    it.accountId == accountId &&
-                    kotlin.math.abs(it.amountCents - amountCents) * 100 <= amountCents * 15
+            val ruleTxCandidates = buildList {
+                database.transactionDao().findInRange(
+                    postedAt - 5L * 24 * 60 * 60 * 1000, postedAt + 5L * 24 * 60 * 60 * 1000
+                ).forEach { candidate ->
+                    val ruleId = candidate.recurringRuleId ?: return@forEach
+                    val rule = database.recurringRuleDao().findById(ruleId) ?: return@forEach
+                    if (
+                        candidate.type == type.name &&
+                        recurringAccountMatches(rule.accountId, accountId) &&
+                        recurringMerchantMatches(rule.merchant, merchant) &&
+                        recurringChannelMatches(rule.channel, channel) &&
+                        recurringOrderPlatformMatches(rule.orderPlatform, orderPlatform) &&
+                        recurringAmountMatches(amountCents, candidate.amountCents)
+                    ) add(candidate)
+                }
             }
+            val ruleTx = ruleTxCandidates.singleOrNull()
             if (ruleTx == null) {
                 // 确认即认领：只有账户、类型、商户、金额与日期共同命中且候选唯一时才自动挂规则。
                 // 同日同额多条规则保持未关联，交给“待核实”，避免把真实支出认到错误计划。
@@ -793,6 +879,8 @@ class LedgerRepository(
                     accountId = accountId,
                     amountCents = amountCents,
                     merchant = merchant,
+                    channel = channel,
+                    orderPlatform = orderPlatform,
                     postedAt = postedAt
                 )?.id
                 if (type == TransactionType.LOAN_PAYMENT) {
@@ -810,7 +898,7 @@ class LedgerRepository(
                             interestCents = inst.interest.cents,
                             feeCents = inst.fee.cents,
                             loanPlanId = plan.id,
-                            necessity = necessity, channel = channel, notificationId = notificationId,
+                            necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
                             evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                             allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
@@ -819,7 +907,7 @@ class LedgerRepository(
                         addTransaction(
                             accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
                             occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
-                            necessity = necessity, channel = channel, notificationId = notificationId,
+                            necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
                             evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                             allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                         )
@@ -829,7 +917,8 @@ class LedgerRepository(
                         accountId, amountCents, type, category, merchant, note,
                         occurredAt = postedAt, recurringRuleId = ruleId,
                         refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
-                        necessity = necessity, channel = channel, notificationId = notificationId,
+                        necessity = necessity, isReimbursable = isReimbursable,
+                        channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
                         evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                         allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                     )
@@ -1135,6 +1224,7 @@ class LedgerRepository(
         occurredAt: Long,
         necessity: Boolean?,
         channel: String?,
+        orderPlatform: String? = null,
         isReimbursable: Boolean? = null,
         refundOfId: String? = null
     ) {
@@ -1153,6 +1243,7 @@ class LedgerRepository(
                 accountId = accountId,
                 merchant = merchant,
                 channel = channel,
+                orderPlatform = orderPlatform,
                 occurredAt = occurredAt,
                 replacing = old
             )
@@ -1170,7 +1261,8 @@ class LedgerRepository(
             if (!isLoanTx) {
                 database.transactionDao().update(
                     id, amountCents, type.name, category, merchant, note,
-                    accountId, occurredAt, necessity, channel
+                    accountId, occurredAt, necessity, channel,
+                    orderPlatform?.trim()?.takeIf { it.isNotEmpty() }
                 )
                 isReimbursable?.let { requested ->
                     database.transactionDao().updateReimbursable(id, requested)
@@ -1242,7 +1334,8 @@ class LedgerRepository(
                 feeCents = 0L,
                 loanPlanId = plan.id,
                 necessity = null,
-                channel = channel
+                channel = channel,
+                orderPlatform = old.orderPlatform
             )
             activateLoanPlanFromDisbursement(plan, id, amountCents, occurredAt)
             evidenceRecorder.lifecycle(
@@ -1310,7 +1403,8 @@ class LedgerRepository(
                 feeCents = feeCents,
                 loanPlanId = plan.id,
                 necessity = null,
-                channel = channel
+                channel = channel,
+                orderPlatform = old.orderPlatform
             )
             database.loanPlanDao().upsert(
                 plan.copy(
@@ -1374,7 +1468,8 @@ class LedgerRepository(
                 accountId = accountId,
                 occurredAt = occurredAt,
                 necessity = null,
-                channel = channel
+                channel = channel,
+                orderPlatform = old.orderPlatform
             )
             database.transactionDao().updateLendingPlanId(id, planId)
             database.lendingPlanDao().upsert(
@@ -1453,7 +1548,8 @@ class LedgerRepository(
                     accountId = accountId,
                     occurredAt = occurredAt,
                     necessity = null,
-                    channel = channel
+                    channel = channel,
+                    orderPlatform = old.orderPlatform
                 )
                 database.transactionDao().updateLendingPlanId(id, planId)
             } else {
@@ -1984,6 +2080,7 @@ class LedgerRepository(
         refundOfId: String? = null,
         necessity: Boolean? = null,
         channel: String? = null,
+        orderPlatform: String? = null,
         notificationId: String? = null,
         lendingPlanId: String? = null,
         evidenceSources: List<EvidenceSourceRef>? = null,
@@ -2004,6 +2101,7 @@ class LedgerRepository(
                 accountId = account.id,
                 merchant = merchant,
                 channel = channel,
+                orderPlatform = orderPlatform,
                 occurredAt = occurredAt
             )
             if (!allowAuthoritativeBalanceOverride) {
@@ -2030,6 +2128,7 @@ class LedgerRepository(
                     refundOfId = linkedRefund,
                     necessity = necessity,
                     channel = channel?.trim()?.takeIf { it.isNotEmpty() },
+                    orderPlatform = orderPlatform?.trim()?.takeIf { it.isNotEmpty() },
                     notificationId = notificationId,
                     isReimbursable = isReimbursable,
                     recurringRuleId = recurringRuleId,
@@ -2117,6 +2216,7 @@ class LedgerRepository(
         accountId: String,
         merchant: String?,
         channel: String?,
+        orderPlatform: String?,
         occurredAt: Long,
         replacing: TransactionEntity? = null
     ) {
@@ -2125,10 +2225,11 @@ class LedgerRepository(
         require(source.id != replacing?.id) { "退款不能关联自身" }
         require(source.type == TransactionType.EXPENSE.name) { "退款只能关联支出流水" }
         require(source.accountId == accountId) { "退款必须回到原支出账户" }
-        val sourceChannel = source.channel?.trim().orEmpty()
-        val refundChannel = channel?.trim().orEmpty()
-        require(sourceChannel.isNotEmpty() && PaymentChannel.equivalent(sourceChannel, refundChannel)) {
+        require(PaymentChannel.refundSourceCompatible(source.channel, channel)) {
             "退款支付渠道必须与原支出一致"
+        }
+        require(OrderPlatform.refundSourceCompatible(source.orderPlatform, orderPlatform)) {
+            "退款订单平台必须与原支出一致"
         }
         val sourceMerchant = source.merchant?.trim().orEmpty()
         val refundMerchant = merchant?.trim().orEmpty()
@@ -2280,7 +2381,8 @@ class LedgerRepository(
                 accountId = accountId,
                 occurredAt = occurredAt,
                 necessity = old.necessity,
-                channel = old.channel
+                channel = old.channel,
+                orderPlatform = old.orderPlatform
             )
             recomputeBalance(old.accountId)
             if (accountId != old.accountId) recomputeBalance(accountId)
@@ -2747,17 +2849,58 @@ class LedgerRepository(
     suspend fun linkToRecurringRule(transactionId: String, ruleId: String?) {
         database.withTransaction {
             val transaction = requireNotNull(database.transactionDao().findById(transactionId)) { "流水不存在" }
-            if (ruleId != null) requireNotNull(database.recurringRuleDao().findById(ruleId)) { "周期规则不存在" }
-            database.transactionDao().updateRecurringRuleId(transactionId, ruleId)
-            if (ruleId != null) {
-                evidenceRecorder.link(
-                    groupId = "recurring:$ruleId:$transactionId",
+            if (ruleId == null) {
+                val oldRuleId = transaction.recurringRuleId ?: return@withTransaction
+                database.transactionDao().updateRecurringRuleId(transactionId, null)
+                val oldRule = database.recurringRuleDao().findById(oldRuleId)
+                // 仅回退刚刚推进的这一期；取消历史旧期不会把规则倒拨到过去。
+                if (oldRule != null && sameLocalDate(recurringNextRunAt(oldRule, transaction.occurredAt), oldRule.nextRunAt)) {
+                    database.recurringRuleDao().upsert(oldRule.copy(nextRunAt = transaction.occurredAt))
+                }
+                evidenceRecorder.lifecycle(
                     subjectType = EvidenceSubjectType.TRANSACTION,
                     subjectId = transactionId,
-                    subjectRole = "RECURRING_OCCURRENCE",
-                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.RECURRING_RULE, ruleId)),
-                    linkedAt = transaction.occurredAt
+                    action = EvidenceAction.LINKED,
+                    payload = JSONObject().put("recurringRuleId", JSONObject.NULL).put("previousRecurringRuleId", oldRuleId)
                 )
+                return@withTransaction
+            }
+
+            val rule = requireNotNull(database.recurringRuleDao().findById(ruleId)) { "周期规则不存在" }
+            require(transaction.status == "CONFIRMED") { "只有已确认流水可以匹配周期扣款" }
+            require(transaction.type == rule.type) { "流水类型与周期规则不一致" }
+            require(recurringAmountMatches(rule.amountCents, transaction.amountCents)) {
+                "流水金额需在预计金额的 ±${RECURRING_AMOUNT_TOLERANCE_PERCENT}% 范围内"
+            }
+            require(recurringOccursOn(rule, transaction.occurredAt)) { "只能匹配规则扣款日的流水" }
+            require(transaction.recurringRuleId == null || transaction.recurringRuleId == ruleId) {
+                "这笔流水已经匹配了其他周期扣款"
+            }
+            val existingOccurrence = database.transactionDao().findByRecurringRule(ruleId)
+                .firstOrNull { occurrence ->
+                    occurrence.id != transactionId && recurringOccursOn(rule, occurrence.occurredAt) &&
+                        sameLocalDate(occurrence.occurredAt, transaction.occurredAt)
+                }
+            require(existingOccurrence == null) { "该扣款日已经匹配了另一笔流水" }
+            if (transaction.recurringRuleId == ruleId) return@withTransaction
+            database.transactionDao().updateRecurringRuleId(transactionId, ruleId)
+            evidenceRecorder.link(
+                groupId = "recurring:$ruleId:$transactionId",
+                subjectType = EvidenceSubjectType.TRANSACTION,
+                subjectId = transactionId,
+                subjectRole = "RECURRING_OCCURRENCE",
+                sources = listOf(EvidenceSourceRef(EvidenceSourceType.RECURRING_RULE, ruleId)),
+                linkedAt = transaction.occurredAt
+            )
+            // 手动认领只要求扣款日相同；规则时间若晚于流水时间，也要推进到下一期。
+            var advancedNextRun = recurringNextRunAt(rule, rule.nextRunAt)
+            while (advancedNextRun <= transaction.occurredAt) {
+                val next = recurringNextRunAt(rule, advancedNextRun)
+                if (next <= advancedNextRun) break
+                advancedNextRun = next
+            }
+            if (advancedNextRun != rule.nextRunAt) {
+                database.recurringRuleDao().upsert(rule.withPersistedRecurringAnchor(advancedNextRun))
             }
             evidenceRecorder.lifecycle(
                 subjectType = EvidenceSubjectType.TRANSACTION,
@@ -2990,30 +3133,60 @@ class LedgerRepository(
 
     val recurringRules: Flow<List<RecurringRuleEntity>> = database.recurringRuleDao().observeAll()
 
+    /** 编辑流水时读取其全部原始通知证据；余额可能在合并组里的银行短信而不是主消息。 */
+    suspend fun notificationEvidenceForTransaction(transactionId: String): List<RawNotificationEntity> {
+        val transaction = database.transactionDao().findById(transactionId) ?: return emptyList()
+        val linkedIds = database.ledgerEvidenceLinkDao()
+            .findBySubject(EvidenceSubjectType.TRANSACTION, transactionId)
+            .filter { it.sourceType == EvidenceSourceType.RAW_NOTIFICATION }
+            .map { it.sourceId }
+        return (linkedIds + listOfNotNull(transaction.notificationId))
+            .distinct()
+            .mapNotNull { database.rawNotificationDao().findById(it) }
+    }
+
     suspend fun saveRecurringRule(rule: RecurringRuleEntity) {
         database.withTransaction {
             val existing = database.recurringRuleDao().findById(rule.id)
             val occurredAt = System.currentTimeMillis()
-            database.recurringRuleDao().upsert(rule)
+            val normalized = rule.copy(
+                accountId = rule.accountId.trim(),
+                category = rule.category.trim(),
+                merchant = rule.merchant?.trim()?.takeIf { it.isNotEmpty() },
+                note = rule.note?.trim()?.takeIf { it.isNotEmpty() },
+                channel = rule.channel?.trim()?.takeIf { it.isNotEmpty() },
+                orderPlatform = rule.orderPlatform?.trim()?.takeIf { it.isNotEmpty() },
+                // v0.1.12 前的规则没有 firstRunAt；编辑时把当前计划日补为锚点，
+                // 之后短月落月底但不会永久漂移。
+                firstRunAt = rule.firstRunAt.takeIf { it > 0L }
+                    ?: existing?.firstRunAt?.takeIf { it > 0L }
+                    ?: rule.nextRunAt
+            )
+            database.recurringRuleDao().upsert(normalized)
             if (existing == null) {
                 evidenceRecorder.link(
                     groupId = "manual:recurring-rule:${rule.id}",
                     subjectType = EvidenceSubjectType.RECURRING_RULE,
-                    subjectId = rule.id,
+                    subjectId = normalized.id,
                     subjectRole = "RULE_ORIGIN",
-                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:recurring-rule:${rule.id}")),
+                    sources = listOf(EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:recurring-rule:${normalized.id}")),
                     linkedAt = occurredAt
                 )
             }
             evidenceRecorder.lifecycle(
                 subjectType = EvidenceSubjectType.RECURRING_RULE,
-                subjectId = rule.id,
+                subjectId = normalized.id,
                 action = if (existing == null) EvidenceAction.CREATED else EvidenceAction.EDITED,
                 occurredAt = occurredAt,
                 payload = JSONObject()
-                    .put("accountId", rule.accountId)
-                    .put("amountCents", rule.amountCents)
-                    .put("nextRunAt", rule.nextRunAt)
+                    .put("accountId", normalized.accountId)
+                    .put("amountCents", normalized.amountCents)
+                    .put("nextRunAt", normalized.nextRunAt)
+                    .put("category", normalized.category)
+                    .put("channel", normalized.channel ?: JSONObject.NULL)
+                    .put("orderPlatform", normalized.orderPlatform ?: JSONObject.NULL)
+                    .put("includeInBudget", normalized.includeInBudget)
+                    .put("isActive", normalized.isActive)
             )
         }
     }
@@ -3036,8 +3209,7 @@ class LedgerRepository(
      * 找不到真实扣款时保留已到期的 nextRunAt，账单页据此显示“待核实”；
      * 用户确认通知或手工关联后，下次处理才会推进规则。
      */
-    suspend fun processRecurring(): Int {
-        val now = System.currentTimeMillis()
+    suspend fun processRecurring(now: Long = System.currentTimeMillis()): Int {
         val due = database.recurringRuleDao().observeActive().let { it.first() }
             .filter { it.nextRunAt <= now }
         if (due.isEmpty()) return 0
@@ -3067,7 +3239,7 @@ class LedgerRepository(
                             )
                             linked++
                         }
-                        cursor = nextRun(cursor, rule.interval)
+                        cursor = recurringNextRunAt(rule, cursor)
                     } else {
                         // 未发生或尚未捕获都不能假定已经扣款。停在最早未核实期次，
                         // 避免余额、预算和统计被一笔“计划”污染。
@@ -3075,7 +3247,7 @@ class LedgerRepository(
                     }
                 }
                 if (cursor != rule.nextRunAt) {
-                    database.recurringRuleDao().upsert(rule.copy(nextRunAt = cursor))
+                    database.recurringRuleDao().upsert(rule.withPersistedRecurringAnchor(cursor))
                 }
             }
         }
@@ -3084,7 +3256,7 @@ class LedgerRepository(
 
     /**
      * 该周期内是否已经有一笔真实扣款（通知抓的或手工记的）。
-     * 匹配条件：同商户 + 同类型 + 金额相差 15% 以内 + 应扣日前后 5 天，且还没被别的规则认领。
+     * 已填写的账户/商户/渠道/平台只作可选提示；新规则默认按类型、金额和扣款日寻找唯一流水。
      */
     /**
      * 在所有进行中的贷款计划里匹配扣款对应的期次（REQ 贷款页 §6）。
@@ -3129,48 +3301,59 @@ class LedgerRepository(
     }
 
     private suspend fun findRealChargeFor(rule: RecurringRuleEntity, dueAt: Long): TransactionEntity? {
-        val merchant = rule.merchant?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val window = 5L * 24 * 60 * 60 * 1000
         val inWindow = database.transactionDao().findInRange(dueAt - window, dueAt + window)
         // 通知确认时可能已经唯一匹配并挂上规则；它同样证明本期真实扣款已发生，必须推进到下期。
         inWindow.firstOrNull {
-            it.recurringRuleId == rule.id && it.type == rule.type && it.accountId == rule.accountId
+            it.recurringRuleId == rule.id && it.type == rule.type && recurringAccountMatches(rule.accountId, it.accountId)
         }?.let { return it }
         val candidates = inWindow
             .filter {
                 it.recurringRuleId == null &&
                     it.type == rule.type &&
-                    it.accountId == rule.accountId &&
-                    it.merchant?.trim() == merchant &&
-                    kotlin.math.abs(it.amountCents - rule.amountCents) * 100 <= rule.amountCents * 15
+                    recurringAccountMatches(rule.accountId, it.accountId) &&
+                    recurringMerchantMatches(rule.merchant, it.merchant) &&
+                    recurringChannelMatches(rule.channel, it.channel) &&
+                    recurringOrderPlatformMatches(rule.orderPlatform, it.orderPlatform) &&
+                    recurringAmountMatches(rule.amountCents, it.amountCents)
             }
-        for (candidate in candidates) {
-            val type = runCatching { TransactionType.valueOf(candidate.type) }.getOrNull() ?: continue
-            if (uniqueRecurringRuleFor(
-                    type = type,
-                    accountId = candidate.accountId,
-                    amountCents = candidate.amountCents,
-                    merchant = candidate.merchant,
-                    postedAt = candidate.occurredAt
-                )?.id == rule.id
-            ) {
-                return candidate
-            }
+        // 新规则不预设账户/渠道/平台/商户，哪怕只有一笔候选也交给用户手动认领；
+        // 这样优惠、邀请码返利或合并水费等金额波动不会被系统擅自归因。
+        val narrowed = if (
+            rule.accountId.isBlank() && rule.merchant.isNullOrBlank() &&
+            rule.channel.isNullOrBlank() && rule.orderPlatform.isNullOrBlank()
+        ) {
+            emptyList()
+        } else {
+            candidates
         }
-        return null
+        if (narrowed.size != 1) return null
+        val candidate = narrowed.single()
+        val type = runCatching { TransactionType.valueOf(candidate.type) }.getOrNull() ?: return null
+        return candidate.takeIf {
+            uniqueRecurringRuleFor(
+                type = type,
+                accountId = candidate.accountId,
+                amountCents = candidate.amountCents,
+                merchant = candidate.merchant,
+                channel = candidate.channel,
+                orderPlatform = candidate.orderPlatform,
+                postedAt = candidate.occurredAt
+            )?.id == rule.id
+        }
     }
 
-    private fun nextRun(from: Long, interval: String): Long {
-        val cal = java.util.Calendar.getInstance().apply { timeInMillis = from }
-        when (interval) {
-            "DAILY" -> cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
-            "WEEKLY" -> cal.add(java.util.Calendar.WEEK_OF_YEAR, 1)
-            "MONTHLY" -> cal.add(java.util.Calendar.MONTH, 1)
-            "QUARTERLY" -> cal.add(java.util.Calendar.MONTH, 3)  // REQ 导航§10：每季度
-            "YEARLY" -> cal.add(java.util.Calendar.YEAR, 1)
-        }
-        return cal.timeInMillis
+    private fun sameLocalDate(first: Long, second: Long): Boolean {
+        val zone = ZoneId.systemDefault()
+        return Instant.ofEpochMilli(first).atZone(zone).toLocalDate() ==
+            Instant.ofEpochMilli(second).atZone(zone).toLocalDate()
     }
+
+    private fun RecurringRuleEntity.withPersistedRecurringAnchor(nextRunAt: Long): RecurringRuleEntity =
+        copy(
+            nextRunAt = nextRunAt,
+            firstRunAt = firstRunAt.takeIf { it > 0L } ?: this.nextRunAt
+        )
 
     // ── Loan Plan CRUD ──
 
@@ -4125,20 +4308,24 @@ class LedgerRepository(
         accountId: String,
         amountCents: Long,
         merchant: String?,
+        channel: String?,
+        orderPlatform: String?,
         postedAt: Long
     ): RecurringRuleEntity? {
-        val normalizedMerchant = merchant?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
         val window = 5L * 24 * 60 * 60 * 1000
         val candidates = database.recurringRuleDao().observeActive().first().filter { rule ->
-            val ruleMerchant = rule.merchant?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            val unboundPlan = rule.accountId.isBlank() && rule.merchant.isNullOrBlank() &&
+                rule.channel.isNullOrBlank() && rule.orderPlatform.isNullOrBlank()
             rule.type == type.name &&
-                rule.accountId == accountId &&
-                ruleMerchant != null &&
-                (normalizedMerchant.contains(ruleMerchant) || ruleMerchant.contains(normalizedMerchant)) &&
-                kotlin.math.abs(rule.amountCents - amountCents) * 100 <= rule.amountCents * 15 &&
-                kotlin.math.abs(rule.nextRunAt - postedAt) <= window &&
-                database.transactionDao().findInRange(rule.nextRunAt - window, rule.nextRunAt + window)
-                    .none { it.recurringRuleId == rule.id }
+                !unboundPlan &&
+                recurringAccountMatches(rule.accountId, accountId) &&
+                recurringMerchantMatches(rule.merchant, merchant) &&
+                recurringChannelMatches(rule.channel, channel) &&
+                recurringOrderPlatformMatches(rule.orderPlatform, orderPlatform) &&
+                recurringAmountMatches(rule.amountCents, amountCents) &&
+                recurringOccursOn(rule, postedAt) &&
+                database.transactionDao().findByRecurringRule(rule.id)
+                    .none { sameLocalDate(it.occurredAt, postedAt) }
         }
         return candidates.singleOrNull()
     }

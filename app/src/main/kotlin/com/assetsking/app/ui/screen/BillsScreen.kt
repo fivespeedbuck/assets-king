@@ -32,7 +32,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,8 +44,10 @@ import com.assetsking.app.ui.privacy.privacyFakeCompactAmount
 import com.assetsking.app.ui.privacy.privacyFakeDateTime
 import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.AccountEntity
+import com.assetsking.database.CategoryEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
+import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
 import com.assetsking.ui.format.formatMoney
@@ -70,6 +71,7 @@ fun BillsScreen(
     transactions: List<TransactionEntity>,
     pendingItems: List<PendingItem>,
     accounts: List<AccountEntity>,
+    categories: List<CategoryEntity>,
     viewModel: LedgerViewModel,
     onOpenTransaction: (TransactionEntity) -> Unit,
     onBack: () -> Unit
@@ -155,9 +157,11 @@ fun BillsScreen(
                 item {
                     RecurringRulesSection(
                         rules = sorted,
-                        accounts = accounts,
+                        categories = categories,
+                        transactions = transactions,
                         onSave = viewModel::saveRecurringRule,
                         onDelete = viewModel::deleteRecurringRule,
+                        onClaim = viewModel::linkToRecurringRule,
                         fixedType = TransactionType.EXPENSE
                     )
                 }
@@ -183,7 +187,9 @@ fun BillsScreen(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                (tx.merchant ?: rule?.merchant)?.let { if (privacyEnabled) privacyObfuscatedText(it, 2720 + tx.id.hashCode()) else it } ?: "周期扣款",
+                                (tx.note ?: tx.merchant ?: rule?.note ?: rule?.merchant)?.let {
+                                    if (privacyEnabled) privacyObfuscatedText(it, 2720 + tx.id.hashCode()) else it
+                                } ?: "周期扣款",
                                 fontWeight = FontWeight.Medium,
                                 textDecoration = TextDecoration.LineThrough
                             )
@@ -226,9 +232,17 @@ private fun RecurringRuleStatusCard(
         tx.recurringRuleId == rule.id &&
             kotlin.math.abs(tx.occurredAt - rule.nextRunAt) <= 15L * 24 * 60 * 60 * 1000
     }
+    val transactionMatches = recurringMatchCandidates(rule, transactions)
     val match = pendingItems.firstOrNull { pi ->
         val amt = pi.parsed.amountCents ?: return@firstOrNull false
-        pi.parsed.isExpense != false && kotlin.math.abs(amt - rule.amountCents) * 100 <= rule.amountCents * 15
+        pi.parsed.isExpense != false &&
+            recurringAmountMatches(rule.amountCents, amt) &&
+            recurringSameLocalDate(pi.notification.postedAt, rule.nextRunAt, ZoneId.systemDefault())
+    }
+    val pendingAccount = match?.parsed?.bankHint?.let { hint ->
+        accounts.firstOrNull { it.name.contains(hint) || hint.contains(it.name) }
+    } ?: rule.accountId.takeIf { it.isNotBlank() }?.let { ruleAccountId ->
+        accounts.firstOrNull { it.id == ruleAccountId }
     }
     val needsVerify = claimedTx == null && rule.nextRunAt < System.currentTimeMillis()
     val zone = ZoneId.systemDefault()
@@ -245,10 +259,10 @@ private fun RecurringRuleStatusCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(rule.merchant?.let { if (privacyEnabled) privacyObfuscatedText(it, 2740 + privacyIndex) else it } ?: "未命名", fontWeight = FontWeight.Medium)
+                        val reason = rule.note?.takeIf { it.isNotBlank() } ?: rule.merchant?.takeIf { it.isNotBlank() }
+                        Text(reason?.let { if (privacyEnabled) privacyObfuscatedText(it, 2740 + privacyIndex) else it } ?: "未命名", fontWeight = FontWeight.Medium)
                         Text(
-                            "${accounts.firstOrNull { it.id == rule.accountId }?.name?.let { if (privacyEnabled) privacyObfuscatedText(it, 2741 + privacyIndex) else it } ?: "?"} · " +
-                                "预计 ${if (privacyEnabled) privacyFakeAmount(2742 + privacyIndex) else formatMoney(rule.amountCents)}" +
+                            "预计 ${if (privacyEnabled) privacyFakeAmount(2742 + privacyIndex) else formatMoney(rule.amountCents)} · 认领允许±20%" +
                                 (if (claimedTx != null && claimedTx.amountCents != rule.amountCents)
                                     " · 实际 ${if (privacyEnabled) privacyFakeAmount(2743 + privacyIndex) else formatMoney(claimedTx.amountCents)}" else "") +
                                 " · 下次 ${if (privacyEnabled) privacyFakeDateTime(2744 + privacyIndex) else fmt.format(Date(rule.nextRunAt))}",
@@ -261,6 +275,29 @@ private fun RecurringRuleStatusCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                        if (transactionMatches.isNotEmpty() && claimedTx == null) {
+                            Text(
+                                if (transactionMatches.size == 1) "发现扣款当天金额接近的流水" else "扣款当天有 ${transactionMatches.size} 笔金额接近的流水，请选择",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            transactionMatches.forEachIndexed { candidateIndex, candidate ->
+                                val candidateName = candidate.note?.takeIf { it.isNotBlank() }
+                                    ?: candidate.merchant?.takeIf { it.isNotBlank() }
+                                    ?: "未命名流水"
+                                val accountName = accounts.firstOrNull { it.id == candidate.accountId }?.name ?: "未知账户"
+                                TextButton(
+                                    onClick = { viewModel.linkToRecurringRule(candidate.id, rule.id) },
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                                ) {
+                                    Text(
+                                        "匹配：${if (privacyEnabled) privacyObfuscatedText(candidateName, 2760 + privacyIndex + candidateIndex) else candidateName} · " +
+                                            "${if (privacyEnabled) privacyObfuscatedText(accountName, 2780 + privacyIndex + candidateIndex) else accountName} · " +
+                                            "实际 ${if (privacyEnabled) privacyFakeAmount(2800 + privacyIndex + candidateIndex) else formatMoney(candidate.amountCents)}"
+                                    )
+                                }
+                            }
                         }
                         if (deviatingMonths == 3) {
                             Text(
@@ -278,27 +315,23 @@ private fun RecurringRuleStatusCard(
                     }
                     when {
                         claimedTx != null -> Text("已扣", color = RecurringDebitOrange, fontWeight = FontWeight.Bold)
-                        needsVerify -> Text("待核实", color = RecurringDebitOrange, fontWeight = FontWeight.Bold)
-                        match != null -> Button(onClick = {
+                        transactionMatches.isNotEmpty() -> Text("可匹配", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        match != null && pendingAccount != null -> Button(onClick = {
                             val parsed = match.parsed
-                            val hint = parsed.bankHint
-                            val account = hint?.let { h ->
-                                accounts.firstOrNull { it.name.contains(h) || h.contains(it.name) }
-                            } ?: accounts.firstOrNull { it.id == rule.accountId } ?: accounts.firstOrNull()
-                            account?.let {
-                                viewModel.confirmNotification(
-                                    notificationId = match.notification.id,
-                                    accountId = it.id,
-                                    amountCents = parsed.amountCents ?: return@let,
-                                    type = TransactionType.valueOf(rule.type),
-                                    category = rule.category,
-                                    merchant = rule.merchant,
-                                    note = null,
-                                    bankBalanceCents = parsed.balanceCents,
-                                    bankCardTail = parsed.cardTail
-                                )
-                            }
+                            viewModel.confirmNotification(
+                                notificationId = match.notification.id,
+                                accountId = pendingAccount.id,
+                                amountCents = parsed.amountCents ?: return@Button,
+                                type = TransactionType.valueOf(rule.type),
+                                category = rule.category.takeIf { it.isNotBlank() } ?: TransactionCategory.UNCATEGORIZED.name,
+                                merchant = parsed.merchant ?: rule.merchant,
+                                note = rule.note,
+                                bankBalanceCents = parsed.balanceCents,
+                                bankCardTail = parsed.cardTail
+                            )
                         }, colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = RecurringDebitOrange)) { Text("确认") }
+                        match != null -> Text("待确认", color = RecurringDebitOrange, fontWeight = FontWeight.Bold)
+                        needsVerify -> Text("待核实", color = RecurringDebitOrange, fontWeight = FontWeight.Bold)
                         else -> Text("待扣", color = RecurringDebitOrange, fontWeight = FontWeight.Bold)
                     }
                 }

@@ -230,6 +230,74 @@ class CardInstallmentMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun version26AddsNullableOrderPlatformWithoutChangingExistingTransactions() {
+        openWith(
+            version = 26,
+            onCreate = { db ->
+                db.execSQL("CREATE TABLE transactions (id TEXT NOT NULL PRIMARY KEY, merchant TEXT)")
+                db.execSQL("INSERT INTO transactions (id, merchant) VALUES ('existing', '原商户')")
+            }
+        ).close()
+
+        val migrated = openWith(
+            version = 27,
+            onUpgrade = { db, oldVersion, newVersion ->
+                assertEquals(26, oldVersion)
+                assertEquals(27, newVersion)
+                AssetsKingDatabase.MIGRATION_26_27.migrate(db)
+            }
+        )
+        migrated.writableDatabase.query("SELECT merchant, orderPlatform FROM transactions WHERE id = 'existing'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("原商户", cursor.getString(0))
+            assertTrue(cursor.isNull(1))
+        }
+        migrated.close()
+    }
+
+    @Test
+    fun version27UpgradesRecurringRulesWithoutLosingExistingData() {
+        openWith(
+            version = 27,
+            onCreate = { db ->
+                db.execSQL("CREATE TABLE recurring_rules (id TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, amountCents INTEGER NOT NULL, type TEXT NOT NULL, category TEXT NOT NULL, merchant TEXT, note TEXT, interval TEXT NOT NULL, nextRunAt INTEGER NOT NULL, isActive INTEGER NOT NULL, isSubscription INTEGER NOT NULL)")
+                db.execSQL("INSERT INTO recurring_rules VALUES ('rule-1', 'account-1', 3475, 'EXPENSE', '宠物保险', '帕帕保险', '三花', 'MONTHLY', 123456789, 1, 1)")
+            }
+        ).close()
+
+        val migrated = openWith(
+            version = 28,
+            onUpgrade = { db, oldVersion, newVersion ->
+                assertEquals(27, oldVersion)
+                assertEquals(28, newVersion)
+                AssetsKingDatabase.MIGRATION_27_28.migrate(db)
+            }
+        )
+        migrated.writableDatabase.query("SELECT accountId, amountCents, category, merchant, note, isActive, channel, orderPlatform, includeInBudget, createdAt, firstRunAt FROM recurring_rules WHERE id = 'rule-1'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("account-1", cursor.getString(0))
+            assertEquals(3_475L, cursor.getLong(1))
+            assertEquals("宠物保险", cursor.getString(2))
+            assertEquals("帕帕保险", cursor.getString(3))
+            assertEquals("三花", cursor.getString(4))
+            assertEquals(1, cursor.getInt(5))
+            assertTrue(cursor.isNull(6))
+            assertTrue(cursor.isNull(7))
+            assertEquals(1, cursor.getInt(8))
+            assertEquals(0L, cursor.getLong(9))
+            assertEquals(0L, cursor.getLong(10))
+        }
+        migrated.writableDatabase.query("PRAGMA table_info(recurring_rules)").use { cursor ->
+            val columns = buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+            }
+            assertTrue("isSubscription" !in columns)
+            assertTrue(setOf("channel", "orderPlatform", "includeInBudget", "createdAt", "firstRunAt").all { it in columns })
+        }
+        migrated.close()
+    }
+
     private fun openWith(
         version: Int,
         onCreate: (SupportSQLiteDatabase) -> Unit = {},

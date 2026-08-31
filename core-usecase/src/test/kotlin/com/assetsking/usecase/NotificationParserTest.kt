@@ -157,6 +157,18 @@ class NotificationParserTest {
     }
 
     @Test
+    fun `美团取消退款不能把订单尾号当金额`() {
+        val p = NotificationParser.parse(
+            content = "您尾号6964的订单已取消，38.7元退款原路返还，预计1-3个工作日内到账，请注意查收。",
+            title = "订单退款提醒"
+        )
+
+        assertEquals(3_870L, p.amountCents, "应取退款 38.7 元，不能取尾号 6964 或到账区间 1-3")
+        assertEquals(false, p.isExpense)
+        assertEquals(true, p.isRefund)
+    }
+
+    @Test
     fun `美团订单支付成功真机样本`() {
         val p = NotificationParser.parse(
             content = "您的美团订单已支付成功，点击查看详情>",

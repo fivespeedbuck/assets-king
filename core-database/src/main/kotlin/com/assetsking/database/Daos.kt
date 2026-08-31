@@ -57,8 +57,8 @@ interface TransactionDao {
     @Query("UPDATE transactions SET category = :category WHERE id = :id AND deletedAt IS NULL")
     suspend fun updateCategory(id: String, category: String)
 
-    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity, channel = :channel WHERE id = :id AND deletedAt IS NULL")
-    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?)
+    @Query("UPDATE transactions SET amountCents = :amountCents, type = :type, category = :category, merchant = :merchant, note = :note, accountId = :accountId, occurredAt = :occurredAt, necessity = :necessity, channel = :channel, orderPlatform = :orderPlatform WHERE id = :id AND deletedAt IS NULL")
+    suspend fun update(id: String, amountCents: Long, type: String, category: String, merchant: String?, note: String?, accountId: String, occurredAt: Long, necessity: Boolean?, channel: String?, orderPlatform: String?)
 
     @Query("UPDATE transactions SET deletedAt = :deletedAt, trashContextJson = :trashContextJson WHERE id = :id AND deletedAt IS NULL")
     suspend fun moveToTrash(id: String, deletedAt: Long, trashContextJson: String?): Int
@@ -143,7 +143,8 @@ interface TransactionDao {
             feeCents = :feeCents,
             loanPlanId = :loanPlanId,
             necessity = :necessity,
-            channel = :channel
+            channel = :channel,
+            orderPlatform = :orderPlatform
         WHERE id = :id AND deletedAt IS NULL
     """)
     suspend fun updateManagedFields(
@@ -160,7 +161,8 @@ interface TransactionDao {
         feeCents: Long,
         loanPlanId: String?,
         necessity: Boolean?,
-        channel: String?
+        channel: String?,
+        orderPlatform: String?
     )
 
     @Query("UPDATE transactions SET category = :newName WHERE category = :oldName AND deletedAt IS NULL")

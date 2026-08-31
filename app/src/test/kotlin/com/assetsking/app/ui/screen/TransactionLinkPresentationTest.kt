@@ -28,4 +28,23 @@ class TransactionLinkPresentationTest {
             transactionLinkBadges(transaction)
         )
     }
+
+    @Test
+    fun recurringExpenseShowsTheRecurringDebitBadge() {
+        val transaction = TransactionEntity(
+            id = "recurring-expense",
+            accountId = "cash",
+            amountCents = 8_800L,
+            type = "EXPENSE",
+            category = "居住生活/房租",
+            occurredAt = 1L,
+            recurringRuleId = "monthly-rent"
+        )
+
+        assertEquals(
+            listOf(TransactionLinkBadge.RECURRING_PAYMENT),
+            transactionLinkBadges(transaction)
+        )
+        assertEquals("周期扣款", TransactionLinkBadge.RECURRING_PAYMENT.label)
+    }
 }

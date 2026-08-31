@@ -52,6 +52,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.assetsking.app.BuildConfig
+import com.assetsking.app.AssetsKingApplication
 import com.assetsking.app.UpdateChecker
 import com.assetsking.app.UpdateInstaller
 import com.assetsking.app.notification.AssetsNotificationListenerService
@@ -66,6 +67,7 @@ import com.assetsking.database.EvidenceAuditReport
 import com.assetsking.database.EvidenceAuditSeverity
 import com.assetsking.database.EvidenceAuditStatus
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.database.TransferEntity
 import com.assetsking.ledger.SmsSenderWhitelist
@@ -244,6 +246,7 @@ private fun SettingsSectionHeader(title: String, onBack: () -> Unit) {
 fun SettingsScreen(
     budgets: List<BudgetEntity>,
     categories: List<CategoryEntity>,
+    recurringRules: List<RecurringRuleEntity> = emptyList(),
     repository: LedgerRepository,
     accounts: List<AccountEntity>,
     onSaveBudget: (BudgetEntity) -> Unit,
@@ -269,6 +272,10 @@ fun SettingsScreen(
     onRootStateChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val adbDiagnosticChannel = remember(context) {
+        (context.applicationContext as AssetsKingApplication).adbDiagnosticChannel
+    }
+    val adbDiagnosticState by adbDiagnosticChannel.state.collectAsStateWithLifecycle()
     val privacyEnabled = LocalPrivacyEnabled.current
     val settingsWritable = settingsMutationEnabled(privacyEnabled)
     var showBudgetSheet by remember { mutableStateOf(false) }
@@ -387,9 +394,41 @@ fun SettingsScreen(
         "${if (runtimeStatus == VaultRuntimeStatus.RECOVERING) "补扫中 · " else ""}最近入库 ${formatTime(lastReceivedAt)}"
     }
     val latestIntakeText = privacyDisplayObfuscatedText(realLatestIntakeText, 900)
-    val currentMonth = java.time.YearMonth.now().toString()
+    val currentYearMonth = java.time.YearMonth.now()
+    val currentMonth = currentYearMonth.toString()
     val currentBudgets = budgets.filter { it.month == currentMonth }
-    val currentMonthBudgetCount = budgets.count { it.month == currentMonth }
+    val categoryIds = buildMap {
+        categories.forEach { category ->
+            put(category.id, category.id)
+            put(category.name, category.id)
+        }
+    }
+    fun canonicalBudgetCategory(category: String) = categoryIds[category] ?: category
+    val recurringBudgetByCategory = effectiveBudgets(
+        manualBudgets = emptyList(),
+        rules = recurringRules,
+        months = setOf(currentYearMonth),
+        categories = categories
+    ).associate { it.category to it.monthlyLimitCents }
+    val recurringMonthlyPlanByCategory = recurringRules
+        .asSequence()
+        .mapNotNull { rule ->
+            val categoryId = if (rule.category.isBlank()) {
+                UNCLASSIFIED_RECURRING_BUDGET_CATEGORY
+            } else {
+                canonicalBudgetCategory(rule.category)
+            }
+            recurringMonthlyPlanAmount(rule, currentYearMonth).takeIf { it > 0L }?.let { categoryId to it }
+        }
+        .groupingBy { it.first }
+        .fold(0L) { total, entry -> total + entry.second }
+    val currentManualCategoryIds = currentBudgets.map { canonicalBudgetCategory(it.category) }.toSet()
+    val recurringOnlyBudgets = recurringMonthlyPlanByCategory
+        .filterKeys { it !in currentManualCategoryIds }
+        .toList()
+        .sortedBy { it.first }
+    val currentMonthBudgetCount = currentBudgets.size + recurringOnlyBudgets.size
+    val recurringBudgetSum = recurringMonthlyPlanByCategory.values.sum()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -435,7 +474,7 @@ fun SettingsScreen(
             var incomeInput by remember(monthlyIncomeCents) {
                 mutableStateOf(if (monthlyIncomeCents > 0) "%.2f".format(monthlyIncomeCents / 100.0) else "")
             }
-            val budgetSum = currentBudgets.sumOf { it.monthlyLimitCents }
+            val budgetSum = currentBudgets.sumOf { it.monthlyLimitCents } + recurringBudgetSum
             GlassCard {
                 Text("每月预期收入与必要生活", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
@@ -468,7 +507,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(12.dp))
                 Text("必要生活（自动 = 分项预算之和）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
-                if (currentBudgets.isEmpty()) {
+                if (currentBudgets.isEmpty() && recurringOnlyBudgets.isEmpty()) {
                     Text(
                         "还没设分项预算。去下面「月度预算」把吃饭/交通/住房等每项填上，这里自动合计。",
                         style = MaterialTheme.typography.bodySmall,
@@ -476,7 +515,7 @@ fun SettingsScreen(
                     )
                 } else {
                     Text(
-                        "已汇总 ${privacyDisplayCount(currentBudgets.size, 903)} 项分项预算",
+                        "已汇总 ${privacyDisplayCount(currentMonthBudgetCount, 903)} 项分项预算（含周期计划月均）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -665,11 +704,14 @@ fun SettingsScreen(
                     Text("月度预算", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Button(onClick = { showBudgetSheet = true }, enabled = settingsWritable) { Text("＋ 新增") }
                 }
-                if (currentBudgets.isEmpty()) {
+                if (currentBudgets.isEmpty() && recurringOnlyBudgets.isEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     Text("暂无预算设置", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 } else {
                     currentBudgets.forEachIndexed { index, b ->
+                        val categoryId = canonicalBudgetCategory(b.category)
+                        // 同分类的周期计划显示为只读月均金额，不写回手填预算。
+                        val recurringMonthlyPlan = recurringMonthlyPlanByCategory[categoryId] ?: 0L
                          Column(
                              Modifier.fillMaxWidth().padding(vertical = 6.dp),
                              verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
@@ -684,7 +726,13 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    "限额 ${privacyDisplayMoney(b.monthlyLimitCents, 940 + index)}",
+                                    if (recurringMonthlyPlan > 0L) {
+                                        "手填 ${privacyDisplayMoney(b.monthlyLimitCents, 940 + index)} + 周期计划 " +
+                                            "${privacyDisplayMoney(recurringMonthlyPlan, 960 + index)} /月 = " +
+                                            privacyDisplayMoney(b.monthlyLimitCents + recurringMonthlyPlan, 980 + index)
+                                    } else {
+                                        "限额 ${privacyDisplayMoney(b.monthlyLimitCents, 940 + index)}"
+                                    },
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -695,6 +743,29 @@ fun SettingsScreen(
                                 OutlinedButton(onClick = { editingBudget = b; showBudgetSheet = true }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("编辑") }
                                 OutlinedButton(onClick = { onDeleteBudget(b.id) }, enabled = settingsWritable, modifier = Modifier.weight(1f)) { Text("删除") }
                             }
+                        }
+                    }
+                    recurringOnlyBudgets.forEachIndexed { index, (categoryId, amountCents) ->
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                        ) {
+                            Text(
+                                privacyDisplayObfuscatedText(
+                                    if (categoryId == UNCLASSIFIED_RECURRING_BUDGET_CATEGORY) {
+                                        "未分类周期计划（必要消费）"
+                                    } else {
+                                        categories.firstOrNull { it.id == categoryId }?.name ?: categoryId
+                                    },
+                                    1_000 + index
+                                ),
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "周期计划 ${privacyDisplayMoney(amountCents, 1_020 + index)} /月 · 只读，随周期账单自动更新",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -914,6 +985,60 @@ fun SettingsScreen(
                         Text(if (evidenceAuditRunning) "正在检查证据链…" else "证据链检查")
                     }
                     evidenceAuditError?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed)
+                    }
+                    Spacer(Modifier.height(UiTokens.SectionGap))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(UiTokens.ItemGap))
+                    Text("临时 ADB 诊断通道", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "仅在本机开放一次只读数据库快照，10 分钟或下载成功后自动关闭。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                "不会把正式版变成调试包，也不能远程改账或执行 SQL。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = adbDiagnosticState.active || adbDiagnosticState.starting,
+                            onCheckedChange = { enabled ->
+                                if (enabled) scope.launch { adbDiagnosticChannel.start() }
+                                else adbDiagnosticChannel.stop()
+                            },
+                            enabled = settingsWritable && !adbDiagnosticState.starting
+                        )
+                    }
+                    if (adbDiagnosticState.starting) {
+                        Text("正在开启…", style = MaterialTheme.typography.bodySmall, color = PendingOrange)
+                    }
+                    if (adbDiagnosticState.active) {
+                        val minutes = adbDiagnosticState.remainingSeconds / 60
+                        val seconds = adbDiagnosticState.remainingSeconds % 60
+                        Text(
+                            "已开启 · 端口 ${adbDiagnosticState.port} · 剩余 ${minutes}:${seconds.toString().padStart(2, '0')}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = IncomeGreen
+                        )
+                        Text(
+                            "一次性令牌：${adbDiagnosticState.token}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedButton(
+                            onClick = adbDiagnosticChannel::stop,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("立即关闭") }
+                    }
+                    adbDiagnosticState.error?.let {
                         Text(it, style = MaterialTheme.typography.labelSmall, color = DeficitRed)
                     }
                     Spacer(Modifier.height(UiTokens.SectionGap))

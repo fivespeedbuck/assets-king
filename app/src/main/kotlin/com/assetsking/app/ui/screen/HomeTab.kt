@@ -389,9 +389,10 @@ fun HomeTab(
                 pendingCount = state.pendingItems.size + state.unprocessedNotifications,
                 unprocessedCount = state.unprocessedNotifications,
                 pendingNetCents = pendingNetCents,
-                needsReconciliationCount = state.accounts.filter {
-                    it.balanceStatus == "DISCREPANCY" || System.currentTimeMillis() - (it.lastCheckedAt ?: 0L) > 7 * 24 * 60 * 60 * 1000L
-                }.size,
+                // 首页仍只显示数量；对账页使用同一规则具体点出账户和原因。
+                needsReconciliationCount = state.accounts.count {
+                    reconciliationNeed(it, System.currentTimeMillis()) != null
+                },
                 onShowPending = onShowPending,
                 onShowReconciliation = onShowReconciliation,
                 context = context
@@ -485,7 +486,7 @@ private fun HomeModuleCard(
         ) {
             when (key) {
                 "budget" -> {
-                    val budgetSum = necessaryBudgetCents(budgets, categories, YearMonth.now().toString())
+                    val budgetSum = necessaryBudgetCents(budgets, categories, YearMonth.now().toString(), recurringRules)
                     val monthSpending = monthSpendingBreakdown(state.transactions, categories, monthStart, monthEnd)
                     HomeModuleHeader("本月预算")
                     Spacer(Modifier.height(8.dp))

@@ -70,6 +70,7 @@ import com.assetsking.database.BudgetEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.app.ui.privacy.LocalPrivacyChaosFrame
 import com.assetsking.app.ui.privacy.animatePrivacyValue
 import com.assetsking.app.ui.privacy.privacyFakeIndex
@@ -133,6 +134,7 @@ fun StatsScreen(
     state: LedgerUiState,
     categories: List<CategoryEntity>,
     budgets: List<BudgetEntity>,
+    recurringRules: List<RecurringRuleEntity> = emptyList(),
     repository: LedgerRepository,
     freeSpendingCents: Long,
     onGotoTransactions: (YearMonth, String?) -> Unit
@@ -181,7 +183,7 @@ fun StatsScreen(
         .entries.sortedByDescending { it.value }
 
     // 预算：必要已花 / 非必要已花
-    val budgetSum = necessaryBudgetCents(budgets, categories, month.toString())
+    val budgetSum = necessaryBudgetCents(budgets, categories, month.toString(), recurringRules)
     val monthSpending = monthSpendingBreakdown(state.transactions, categories, monthStart, monthEnd)
     val necessarySpent = monthSpending.necessaryCents
     val optionalSpent = monthSpending.optionalCents

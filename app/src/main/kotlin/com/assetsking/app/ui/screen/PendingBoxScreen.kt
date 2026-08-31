@@ -59,6 +59,7 @@ import com.assetsking.app.ui.privacy.privacyFakeDateTime
 import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.app.ui.privacy.privacyScrambleText
 import com.assetsking.database.AccountEntity
+import com.assetsking.model.AccountType
 import com.assetsking.model.TransactionCategory
 import com.assetsking.model.TransactionType
 import com.assetsking.ui.component.GlassCard
@@ -123,7 +124,13 @@ fun PendingBoxScreen(
     // 同额转出+转入自动合并（REQ 待确认交易类型§4）；「分开处理」后恢复独立卡片
     val transferPairs = remember(sorted) {
         TransferPairMerge.findPairs(sorted.map {
-            TransferPairMerge.Leg(it.notification.id, it.parsed.amountCents ?: 0L, it.parsed.isExpense == true, it.notification.postedAt)
+            TransferPairMerge.Leg(
+                it.notification.id,
+                it.parsed.amountCents ?: 0L,
+                it.parsed.isExpense == true,
+                it.notification.postedAt,
+                it.parsed.isRefund
+            )
         }).map { p ->
             sorted.first { it.notification.id == p.out.id } to sorted.first { it.notification.id == p.inLeg.id }
         }
@@ -359,9 +366,9 @@ private fun PendingBoxCard(
     val privacyIndex = item.notification.id.hashCode()
     val parsed = item.parsed
     val amountCents = parsed.amountCents ?: 0L
-    val merchant = parsed.merchant
+    val merchant = merchantForDisplay(parsed.merchant, item.orderPlatform)
     val type = typeOf(item)
-    val category = merchant?.let { viewModel.categorize(it, null) }
+    val category = parsed.merchant?.let { viewModel.categorize(it, null) }
     val inferredId = inferAccountId(item, accounts, merchantLastAccount)
     val account = accounts.firstOrNull { it.id == inferredId && !it.archived }
     val isCompleting = System.currentTimeMillis() - item.notification.receivedAt < 10_000
@@ -414,27 +421,29 @@ private fun PendingBoxCard(
             }
 
             Spacer(Modifier.height(4.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
+            val channelLabel = AccountInference.channelLabel(
+                item.notification.packageName,
+                item.notification.sourceLabel,
+                item.parsed.paymentChannel
+            )
+            val detailRows = listOf(
+                "订单平台" to item.orderPlatform.orEmpty().ifBlank { "未识别" },
+                "支付渠道" to channelLabel.ifBlank { "未设置" },
+                "资金账户" to (account?.name ?: "未选账户"),
+                "商户" to (merchant ?: "待补全")
+            )
+            detailRows.forEachIndexed { index, (label, value) ->
                 Text(
-                    "· 分类 ${category?.let { if (privacyEnabled) privacyScrambleText(categoryLabel(it), 2202 + privacyIndex) else categoryLabel(it) } ?: "待补全"}",
+                    "$label：${if (privacyEnabled) privacyObfuscatedText(value, 2202 + privacyIndex + index) else value}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text("· ${account?.name?.let { if (privacyEnabled) privacyObfuscatedText(it, 2203 + privacyIndex) else it } ?: "未选账户"}", style = MaterialTheme.typography.labelSmall)
-                val channelLabel = AccountInference.channelLabel(
-                    item.notification.packageName,
-                    item.notification.sourceLabel,
-                    item.parsed.paymentChannel
-                )
-                Text(
-                    "· ${if (privacyEnabled) privacyObfuscatedText(channelLabel.ifBlank { "未设置" }, 2204 + privacyIndex) else channelLabel.ifBlank { "未设置" }}",
-                    style = MaterialTheme.typography.labelSmall
-                )
-                Text("· ${if (privacyEnabled) privacyFakeDateTime(2205 + privacyIndex) else formatTime(item.notification.postedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Text(
+                "分类：${category?.let { if (privacyEnabled) privacyScrambleText(categoryLabel(it), 2206 + privacyIndex) else categoryLabel(it) } ?: "待补全"} · ${if (privacyEnabled) privacyFakeDateTime(2207 + privacyIndex) else formatTime(item.notification.postedAt)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (category == null || category == TransactionCategory.UNCATEGORIZED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+            )
             val bankBalance = parsed.balanceCents
             val bankTail = parsed.cardTail
             val badges = buildList {
@@ -483,26 +492,24 @@ private fun confirmItem(
             item.notification.sourceLabel,
             item.parsed.paymentChannel
         ).takeIf { it.isNotBlank() },
+        orderPlatform = item.orderPlatform,
     )
     return true
 }
 
 private fun inferAccountId(item: PendingItem, accounts: List<AccountEntity>, merchantLastAccount: Map<String, String>): String? =
-    AccountInference.infer(
-        bankMatchedAccountId = item.parsed.bankHint?.let { hint ->
-            val active = accounts.asSequence().filterNot { it.archived }
-            active.firstOrNull { account ->
-                account.cardTail != null && account.cardTail == item.parsed.cardTail &&
-                    (account.name.contains(hint) || hint.contains(account.name))
-            }?.id ?: active.firstOrNull { account ->
-                account.name.contains(hint) || hint.contains(account.name)
-            }?.id
-        },
-        merchantHistoryAccountId = item.parsed.merchant?.let { merchantLastAccount[it] },
-        sourcePackage = item.notification.packageName,
-        candidates = accounts.filterNot { it.archived }
-            .map { AccountInference.Candidate(it.id, it.name) }
-    )
+    run {
+        val candidates = accounts.filterNot { it.archived }
+            .map { AccountInference.Candidate(it.id, it.name, it.cardTail) }
+        val bankResolution = AccountInference.resolveBankAccount(item.parsed.cardTail, item.parsed.bankHint, candidates)
+        AccountInference.infer(
+            bankMatchedAccountId = bankResolution.accountId,
+            merchantHistoryAccountId = item.parsed.merchant?.let { merchantLastAccount[it] },
+            sourcePackage = item.notification.packageName,
+            candidates = candidates,
+            bankEvidenceAmbiguous = item.bankEvidenceAmbiguous || bankResolution.isAmbiguous
+        )
+    }
 
 /** 同额转出+转入合并卡（REQ 待确认交易类型§4）：确认直接记账户转账，可「分开处理」恢复独立卡片 */
 @Composable
@@ -517,8 +524,15 @@ private fun TransferPairCard(
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
     val amount = outItem.parsed.amountCents ?: 0L
-    val fromId = inferAccountId(outItem, accounts, merchantLastAccount).orEmpty()
-    val toId = inferAccountId(inItem, accounts, merchantLastAccount).orEmpty()
+    val activeAccounts = accounts.filterNot { it.archived }
+    var fromId by remember(outItem.notification.id, activeAccounts) {
+        mutableStateOf(inferAccountId(outItem, activeAccounts, merchantLastAccount).orEmpty())
+    }
+    var toId by remember(inItem.notification.id, activeAccounts) {
+        mutableStateOf(inferAccountId(inItem, activeAccounts, merchantLastAccount).orEmpty())
+    }
+    var saveError by remember(outItem.notification.id, inItem.notification.id) { mutableStateOf<String?>(null) }
+    var saving by remember(outItem.notification.id, inItem.notification.id) { mutableStateOf(false) }
     GlassCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -537,17 +551,43 @@ private fun TransferPairCard(
                 overflow = TextOverflow.Ellipsis
             )
             Text("${if (privacyEnabled) privacyFakeDateTime(2304) else formatTime(outItem.notification.postedAt)} · 同额反向自动合并", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AccountDropdownField(
+                    label = "转出账户",
+                    accounts = activeAccounts.filter { it.type == AccountType.ASSET.name },
+                    selectedAccountId = fromId,
+                    onAccountSelected = { selected ->
+                        fromId = selected
+                        if (toId == selected) toId = ""
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                AccountDropdownField(
+                    label = "转入账户",
+                    accounts = activeAccounts.filter { it.id != fromId },
+                    selectedAccountId = toId,
+                    onAccountSelected = { toId = it },
+                    modifier = Modifier.weight(1f)
+                )
+            }
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    enabled = fromId.isNotBlank() && toId.isNotBlank() && amount > 0,
+                    enabled = fromId.isNotBlank() && toId.isNotBlank() && fromId != toId && amount > 0 && !saving,
                     onClick = {
-                        viewModel.confirmTransferPair(outItem.notification.id, inItem.notification.id, fromId, toId, amount, "账户转账（通知合并）")
-                        onConfirmed()
+                        saving = true
+                        saveError = null
+                        viewModel.confirmTransferPair(outItem.notification.id, inItem.notification.id, fromId, toId, amount, "账户转账（通知合并）") { result ->
+                            saving = false
+                            result.onSuccess { onConfirmed() }
+                                .onFailure { saveError = it.message ?: "确认转账失败" }
+                        }
                     }
-                ) { Text("确认转账") }
+                ) { Text(if (saving) "确认中…" else "确认转账") }
                 TextButton(onClick = onSplit) { Text("分开处理") }
             }
+            saveError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }
     }
 }

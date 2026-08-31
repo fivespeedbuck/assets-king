@@ -6,7 +6,13 @@ package com.assetsking.usecase
  */
 object TransferPairMerge {
 
-    data class Leg(val id: String, val amountCents: Long, val isExpense: Boolean, val postedAt: Long)
+    data class Leg(
+        val id: String,
+        val amountCents: Long,
+        val isExpense: Boolean,
+        val postedAt: Long,
+        val isRefund: Boolean = false
+    )
 
     /** 转出腿（isExpense）在前 */
     data class Pair2(val out: Leg, val inLeg: Leg)
@@ -16,9 +22,9 @@ object TransferPairMerge {
         val pairs = mutableListOf<Pair2>()
         val sorted = legs.sortedBy { it.postedAt }
         sorted.forEach { a ->
-            if (a.id in used || !a.isExpense || a.amountCents <= 0) return@forEach
+            if (a.id in used || !a.isExpense || a.isRefund || a.amountCents <= 0) return@forEach
             val b = sorted.firstOrNull { b ->
-                b.id !in used && b.id != a.id && b.isExpense != a.isExpense &&
+                b.id !in used && b.id != a.id && !b.isRefund && b.isExpense != a.isExpense &&
                     b.amountCents == a.amountCents &&
                     kotlin.math.abs(b.postedAt - a.postedAt) <= windowMillis
             } ?: return@forEach

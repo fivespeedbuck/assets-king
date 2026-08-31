@@ -196,6 +196,49 @@ class ProcessPendingIntegrationTest {
     }
 
     @Test
+    fun autoMergedIgnoredEvidenceCannotConsumeTheReplacementKeeper() = runBlocking {
+        // A 先到、无商户名；B 是另一来源的同笔副本，自动标成 kept=A；
+        // C 随后带更完整商户名，按质量应替换 A 成 keeper。B 虽然是 IGNORED，
+        // 但只是自动归并附属证据，不能反过来把 C 也压成 IGNORED。
+        val first = rawNotification("alipay-first", "支出34.75元").copy(
+            packageName = "com.eg.android.AlipayGphone",
+            sourceLabel = "支付宝",
+            title = "交易提醒",
+            postedAt = 1_000L,
+            receivedAt = 1_000L
+        )
+        val second = rawNotification("cmb-second", "您账户3683支出34.75元").copy(
+            packageName = "cmb.pb",
+            sourceLabel = "招商银行",
+            title = "招商银行",
+            postedAt = 2_000L,
+            receivedAt = 2_000L
+        )
+        val replacement = rawNotification(
+            "sms-replacement",
+            "【招商银行】您账户3683于08月30日11:32在支付宝-特约商户快捷支付34.75元，余额1335.42"
+        ).copy(
+            packageName = "sms",
+            sourceLabel = "95555",
+            title = "95555",
+            postedAt = 3_000L,
+            receivedAt = 3_000L
+        )
+
+        database.rawNotificationDao().insert(first)
+        assertEquals(1, ProcessPendingUseCase(repository).invoke())
+        database.rawNotificationDao().insert(second)
+        assertEquals(0, ProcessPendingUseCase(repository).invoke())
+        database.rawNotificationDao().insert(replacement)
+        assertEquals(1, ProcessPendingUseCase(repository).invoke())
+
+        assertEquals("IGNORED", database.rawNotificationDao().findById(first.id)?.status)
+        assertTrue(database.rawNotificationDao().findById(second.id)?.processingNote?.contains("kept=") == true)
+        assertEquals("PENDING_CONFIRMATION", database.rawNotificationDao().findById(replacement.id)?.status)
+        assertEquals(1, database.rawNotificationDao().countPendingConfirmation())
+    }
+
+    @Test
     fun fullWechatMeituanRefundKeepsExpenseAndRefundWithAllEvidence() = runBlocking {
         val evidence = listOf(
             rawNotification("wechat-stream:1000", "[1条]微信支付: 已支付¥14.60").copy(

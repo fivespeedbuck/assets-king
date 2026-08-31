@@ -7,6 +7,9 @@ import com.assetsking.database.TransactionEntity
 import com.assetsking.database.RecurringRuleEntity
 import com.assetsking.app.notification.VaultRuntimeStatus
 import com.assetsking.model.AccountType
+import com.assetsking.model.TransactionType
+import java.time.YearMonth
+import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -312,5 +315,19 @@ class HomePresentationTest {
         )
 
         assertEquals(150_000L, necessaryBudgetCents(budgets, categories, "2026-08"))
+    }
+
+    @Test
+    fun allRecurringDebitsCountAsNecessaryEvenWhenUnclassifiedOrOptional() {
+        val zone = ZoneId.of("Asia/Shanghai")
+        val month = YearMonth.of(2026, 8)
+        val firstRun = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val categories = listOf(CategoryEntity("games", "游戏", "游戏", null, "game", defaultNecessary = false))
+        val rules = listOf(
+            RecurringRuleEntity("game", "a", 3_000L, TransactionType.EXPENSE.name, "games", null, null, "MONTHLY", firstRun, includeInBudget = false, firstRunAt = firstRun),
+            RecurringRuleEntity("blank", "a", 2_000L, TransactionType.EXPENSE.name, "", null, null, "MONTHLY", firstRun, firstRunAt = firstRun)
+        )
+
+        assertEquals(5_000L, necessaryBudgetCents(emptyList(), categories, month.toString(), rules))
     }
 }

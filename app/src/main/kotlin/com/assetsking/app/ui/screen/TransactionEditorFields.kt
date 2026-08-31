@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.assetsking.database.AccountEntity
 import com.assetsking.model.AccountType
+import com.assetsking.ledger.OrderPlatform
 import com.assetsking.ui.component.FormField
 
 internal val commonPaymentChannels = listOf("微信", "支付宝", "云闪付", "银行卡", "现金")
@@ -113,7 +114,7 @@ internal fun PaymentChannelDropdownField(
             commonPaymentChannels.forEach { add(it to it) }
             savedChannels.asSequence()
                 .map(String::trim)
-                .filter { it.isNotEmpty() && it !in commonPaymentChannels }
+                .filter { it.isNotEmpty() && it !in commonPaymentChannels && !OrderPlatform.isKnown(it) }
                 .sorted()
                 .forEach { add(it to it) }
             add(otherValue to "其他")
@@ -125,6 +126,46 @@ internal fun PaymentChannelDropdownField(
             } else {
                 onChannelSelected(value)
                 onCustomChannelSelected(false)
+            }
+        },
+        modifier = modifier
+    )
+}
+
+@Composable
+internal fun OrderPlatformDropdownField(
+    selectedPlatform: String,
+    savedPlatforms: Set<String> = emptySet(),
+    customPlatformSelected: Boolean,
+    onPlatformSelected: (String) -> Unit,
+    onCustomPlatformSelected: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val otherValue = "__other_order_platform__"
+    SelectDropdownField(
+        label = "订单平台",
+        selectedLabel = when {
+            customPlatformSelected -> "其他"
+            selectedPlatform.isBlank() -> "未设置"
+            else -> selectedPlatform
+        },
+        options = buildList {
+            add("" to "未设置")
+            commonOrderPlatforms.forEach { add(it to it) }
+            savedPlatforms.asSequence()
+                .map(String::trim)
+                .filter { it.isNotEmpty() && it !in commonOrderPlatforms }
+                .sorted()
+                .forEach { add(it to it) }
+            add(otherValue to "其他")
+        },
+        onSelected = { value ->
+            if (value == otherValue) {
+                if (!customPlatformSelected) onPlatformSelected("")
+                onCustomPlatformSelected(true)
+            } else {
+                onPlatformSelected(value)
+                onCustomPlatformSelected(false)
             }
         },
         modifier = modifier

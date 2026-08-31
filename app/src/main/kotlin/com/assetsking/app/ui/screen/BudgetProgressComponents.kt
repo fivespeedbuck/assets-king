@@ -142,6 +142,8 @@ internal fun BudgetDetailsDialog(
                     BudgetProgressLine(
                         label = if (privacyEnabled) {
                             privacyObfuscatedText(budget.category, 520 + index)
+                        } else if (budget.category == UNCLASSIFIED_RECURRING_BUDGET_CATEGORY) {
+                            "未分类周期计划（必要消费）"
                         } else {
                             categories.firstOrNull { it.id == budget.category }?.name ?: budget.category
                         },

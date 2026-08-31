@@ -151,7 +151,8 @@ class TransactionEditorSuggestionsTest {
             accountId = "card",
             refundAmountCents = 2_200L,
             refundOccurredAt = 50L,
-            merchantName = "older-exact"
+            merchantName = "older-exact",
+            refundChannel = "微信"
         )
 
         assertEquals(listOf("older-exact"), candidates.map { it.transaction.id })
@@ -181,7 +182,15 @@ class TransactionEditorSuggestionsTest {
 
         assertEquals(
             listOf("expense"),
-            refundSourceCandidates(listOf(expense, refund), "card", 3_000L, 20L, refund.id, "原消费")
+            refundSourceCandidates(
+                transactions = listOf(expense, refund),
+                accountId = "card",
+                refundAmountCents = 3_000L,
+                refundOccurredAt = 20L,
+                editingRefundId = refund.id,
+                merchantName = "原消费",
+                refundChannel = "微信"
+            )
                 .map { it.transaction.id }
         )
     }
@@ -268,6 +277,61 @@ class TransactionEditorSuggestionsTest {
                 refundOccurredAt = 20L,
                 merchantName = "美团-美团宁波象鲜科技有限公司",
                 refundChannel = "微信"
+            ).map { it.transaction.id }
+        )
+    }
+
+    @Test
+    fun refundCandidateAllowsExplicitLinkToLegacyExpenseWithMissingChannel() {
+        val expense = TransactionEntity(
+            id = "legacy-meituan-expense",
+            accountId = "cmb",
+            amountCents = 3_621L,
+            type = TransactionType.EXPENSE.name,
+            category = "餐饮",
+            occurredAt = 10L,
+            merchant = "美团-美团宁波象鲜科技有限公司",
+            channel = null
+        )
+
+        assertEquals(
+            listOf("legacy-meituan-expense"),
+            refundSourceCandidates(
+                transactions = listOf(expense),
+                accountId = "cmb",
+                refundAmountCents = 17L,
+                refundOccurredAt = 20L,
+                merchantName = "美团-美团宁波象鲜科技有限公司",
+                refundChannel = "微信"
+            ).map { it.transaction.id }
+        )
+    }
+
+    @Test
+    fun refundCandidateRequiresSameOrderPlatformWhenSourceHasOne() {
+        fun expense(id: String, platform: String?) = TransactionEntity(
+            id = id,
+            accountId = "cmb",
+            amountCents = 3_621L,
+            type = TransactionType.EXPENSE.name,
+            category = "餐饮",
+            occurredAt = 10L,
+            merchant = "象鲜科技有限公司",
+            channel = "微信",
+            orderPlatform = platform
+        )
+
+        val transactions = listOf(expense("meituan", "美团"), expense("taobao", "淘宝"))
+        assertEquals(
+            listOf("meituan"),
+            refundSourceCandidates(
+                transactions = transactions,
+                accountId = "cmb",
+                refundAmountCents = 17L,
+                refundOccurredAt = 20L,
+                merchantName = "象鲜科技有限公司",
+                refundChannel = "微信",
+                refundOrderPlatform = "美团"
             ).map { it.transaction.id }
         )
     }

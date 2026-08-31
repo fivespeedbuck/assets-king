@@ -5,8 +5,8 @@ import kotlin.test.assertEquals
 
 class TransferPairMergeTest {
 
-    private fun leg(id: String, amount: Long, expense: Boolean, at: Long) =
-        TransferPairMerge.Leg(id, amount, expense, at)
+    private fun leg(id: String, amount: Long, expense: Boolean, at: Long, refund: Boolean = false) =
+        TransferPairMerge.Leg(id, amount, expense, at, refund)
 
     private val t0 = 1_700_000_000_000L
 
@@ -56,5 +56,14 @@ class TransferPairMergeTest {
             leg("in2", 8_000L, false, t0 + 120_000)
         ))
         assertEquals(1, pairs.size)
+    }
+
+    @Test
+    fun `payment and same-amount refund are never paired as internal transfer`() {
+        val pairs = TransferPairMerge.findPairs(listOf(
+            leg("payment", 3_870L, true, t0),
+            leg("refund", 3_870L, false, t0 + 30_000, refund = true)
+        ))
+        assertEquals(0, pairs.size)
     }
 }
