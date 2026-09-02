@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.14",
-  "name": "资产大王 v0.1.14",
-  "body": "修复流水月历漏算退款等真实资金流入流出的问题；流水日期标题新增当日净额与必要/非必要占比，并优化必要性颜色和列表列对齐。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.14",
+  "tag_name": "v0.1.15",
+  "name": "资产大王 v0.1.15",
+  "body": "修复待确认编辑器“证据与余额”只显示通知正文、不显示通知标题的问题；每条证据现在分别展示来源时间、标题和正文，并自动省略空白或重复内容。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.15",
   "assets": [
     {
-      "name": "assets-king-v0.1.14.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.14/assets-king-v0.1.14.apk",
+      "name": "assets-king-v0.1.15.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.15/assets-king-v0.1.15.apk",
       "size": 31565070,
-      "digest": "sha256:02deeda18aaefe84684ae2378bee39c3fbe1cb54c69c30395005295490eda066"
+      "digest": "sha256:67161cbfccc6dee43e19d64783024be751e5eb89ee46a9af6a919986cd8c76cc"
     }
   ]
 }

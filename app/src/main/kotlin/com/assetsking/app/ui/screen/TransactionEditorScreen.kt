@@ -2689,8 +2689,25 @@ private fun EvidenceSectionInEditor(
                 ) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("${n.sourceLabel ?: n.packageName} · ${formatTime(n.postedAt)}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(n.content.ifBlank { n.title.orEmpty() }, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                    if (n.id != own.id) {
+                        val message = evidenceMessagePresentation(n.title, n.content)
+                        message.title?.let { title ->
+                            Text(
+                                title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        message.content?.let { content ->
+                            Text(
+                                content,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (n.id != own.id) {
                             OutlinedButton(onClick = { viewModel.splitNotification(n.id) }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                                 Text("拆分为独立待确认")
                             }
