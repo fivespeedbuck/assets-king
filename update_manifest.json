@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.11",
-  "name": "资产大王 v0.1.11",
-  "body": "修复微信零钱自动扣费漏入库、退款关联保存/回显丢失、微信通知槽覆盖证据，以及美团退款金额和多来源退款证据归并问题。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.11",
+  "tag_name": "v0.1.14",
+  "name": "资产大王 v0.1.14",
+  "body": "修复流水月历漏算退款等真实资金流入流出的问题；流水日期标题新增当日净额与必要/非必要占比，并优化必要性颜色和列表列对齐。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.14",
   "assets": [
     {
-      "name": "assets-king-v0.1.11.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.11/assets-king-v0.1.11.apk",
-      "size": 31433998,
-      "digest": "sha256:7def6aef9b82efb258bb748cfd3482184bf6cfccf92938a345d68fea7b300044"
+      "name": "assets-king-v0.1.14.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.14/assets-king-v0.1.14.apk",
+      "size": 31565070,
+      "digest": "sha256:02deeda18aaefe84684ae2378bee39c3fbe1cb54c69c30395005295490eda066"
     }
   ]
 }

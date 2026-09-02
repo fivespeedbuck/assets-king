@@ -2,11 +2,13 @@ package com.assetsking.app.ui.screen
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.FlowRow
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,9 +64,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.assetsking.app.LedgerUiState
@@ -72,6 +81,7 @@ import com.assetsking.app.ui.privacy.privacyFakeAmount
 import com.assetsking.app.ui.privacy.privacyFakeCount
 import com.assetsking.app.ui.privacy.privacyFakeDateTime
 import com.assetsking.app.ui.privacy.privacyFakeIndex
+import com.assetsking.app.ui.privacy.privacyFakePercent
 import com.assetsking.app.ui.privacy.privacyFakeYearMonth
 import com.assetsking.app.ui.privacy.privacyObfuscatedText
 import com.assetsking.database.AccountEntity
@@ -561,12 +571,16 @@ fun TransactionsScreen(
                     if (filteredLedgerItems.isNotEmpty()) filteredLedgerItems.groupBy { Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }.entries.forEachIndexed { dayIndex, (day, dayItems) ->
                         item(key = "day-$day") {
                             Column {
-                                Text(
-                                    if (privacyEnabled) privacyFakeDateTime(630 + dayIndex).substringBefore(' ') else dayLabel(day),
-                                    Modifier.padding(start = 2.dp, bottom = 6.dp),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                val dayTransactions = dayItems.mapNotNull { it.transaction }
+                                val daySummary = transactionsDayPresentation(
+                                    transactions = dayTransactions,
+                                    categories = categories,
+                                    refundTransactions = state.transactions
+                                )
+                                TransactionDayHeader(
+                                    label = if (privacyEnabled) privacyFakeDateTime(630 + dayIndex).substringBefore(' ') else dayLabel(day),
+                                    summary = daySummary,
+                                    privacyIndex = dayIndex
                                 )
                                 GlassCard(
                                     modifier = Modifier.fillMaxWidth(),
@@ -595,7 +609,7 @@ fun TransactionsScreen(
                                                 ledgerItem.transaction?.let { tx ->
                                                     TransactionListRow(
                                                         tx = tx,
-                                                        category = categories.firstOrNull { it.name == tx.category },
+                                                        category = categories.firstOrNull { it.id == tx.category || it.name == tx.category },
                                                         privacyIndex = dayIndex * 20 + index,
                                                         multiSelect = multiSelect,
                                                         checked = tx.id in selected,
@@ -879,6 +893,16 @@ private fun TransactionListRow(
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
     val cashFlowColor = transactionCashFlowColor(tx.type)
+    // 必要消费金额使用正文色，非必要消费恢复原支出红；图标保持原现金流颜色。
+    val spendingNecessity = if (privacyEnabled) null else transactionSpendingNecessity(tx, category)
+    val amountColor = when {
+        privacyEnabled -> cashFlowColor
+        spendingNecessity == true -> MaterialTheme.colorScheme.onSurface
+        spendingNecessity == false -> cashFlowColor
+        tx.type == TransactionType.EXPENSE.name || tx.type == TransactionType.FEE.name ->
+            MaterialTheme.colorScheme.onSurfaceVariant
+        else -> cashFlowColor
+    }
     val reimbursementBadge = reimbursementBadge(tx)
     val recurringDebit = isRecurringDebit(tx)
     val linkBadges = transactionLinkBadges(tx)
@@ -999,7 +1023,7 @@ private fun TransactionListRow(
         Text(
             amountText,
             fontWeight = FontWeight.Bold,
-            color = cashFlowColor,
+            color = amountColor,
             style = MaterialTheme.typography.bodyLarge.copy(
                 // 五/六位金额加小数点时保留固定金额列，不挤压时间列；只缩字号，不截断。
                 fontSize = when {
@@ -1384,6 +1408,119 @@ private fun MerchantCategoryLibrary(
 }
 
 @Composable
+private fun TransactionDayHeader(
+    label: String,
+    summary: TransactionsDayPresentation,
+    privacyIndex: Int
+) {
+    val privacyEnabled = LocalPrivacyEnabled.current
+    val necessaryPercent = if (privacyEnabled) privacyFakePercent(650 + privacyIndex) else summary.necessaryPercent
+    val optionalPercent = necessaryPercent?.let { 100 - it }
+    val fakeNetPositive = privacyFakePercent(640 + privacyIndex) % 2 == 0
+    val netPositive = if (privacyEnabled) fakeNetPositive else summary.netCents >= 0L
+    val net = if (privacyEnabled) {
+        val unsigned = privacyFakeAmount(660 + privacyIndex).trimStart('+', '-', '−')
+        if (netPositive) "+$unsigned" else "−$unsigned"
+    } else {
+        formatDailyNetChange(summary.netCents).ifEmpty { "+0" }
+    }
+    val netColor = if (netPositive) FlowGreen else FlowRed
+    val summaryText = buildAnnotatedString {
+        withStyle(SpanStyle(color = netColor, fontWeight = FontWeight.SemiBold)) { append(net) }
+        if (necessaryPercent != null && optionalPercent != null) {
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) { append(" · ") }
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) { append("$necessaryPercent%") }
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) { append(" · ") }
+            withStyle(SpanStyle(color = FlowRed)) { append("$optionalPercent%") }
+        }
+    }
+    val summaryDescription = buildString {
+        append(if (netPositive) "当日净流入" else "当日净流出")
+        append(net.trimStart('+', '-', '−'))
+        if (necessaryPercent != null && optionalPercent != null) {
+            append("，必要 $necessaryPercent%，非必要 $optionalPercent%")
+        }
+    }
+    val summaryFontSize = when {
+        summaryText.length >= 22 -> 10.sp
+        summaryText.length >= 18 -> 11.sp
+        else -> MaterialTheme.typography.labelMedium.fontSize
+    }
+    val dayLabelFontSize = when {
+        label.length <= 2 -> 16.sp
+        label.length <= 4 -> MaterialTheme.typography.titleSmall.fontSize
+        label.length <= 5 -> 12.sp
+        else -> 10.sp
+    }
+
+    BoxWithConstraints(
+        Modifier.fillMaxWidth().padding(start = UiTokens.CardPadding, bottom = 6.dp)
+    ) {
+        val stacked = maxWidth < 300.dp || LocalDensity.current.fontScale > 1.05f
+
+        if (!stacked) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.width(40.dp).alignByBaseline(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        Modifier.wrapContentSize(unbounded = true),
+                        style = MaterialTheme.typography.titleSmall.copy(fontSize = dayLabelFontSize),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    summaryText,
+                    Modifier
+                        .alignByBaseline()
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                        .semantics { contentDescription = summaryDescription },
+                    maxLines = 1,
+                    softWrap = false,
+                    style = MaterialTheme.typography.labelMedium.copy(fontSize = summaryFontSize)
+                )
+            }
+        } else {
+            Column {
+                Box(
+                    modifier = Modifier.width(40.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.titleSmall.copy(fontSize = dayLabelFontSize),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        softWrap = true
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.width(50.dp))
+                    Text(
+                        summaryText,
+                        Modifier
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .semantics { contentDescription = summaryDescription },
+                        softWrap = true,
+                        style = MaterialTheme.typography.labelMedium.copy(fontSize = summaryFontSize)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun LibraryCategoryCard(
     title: String,
     subtitle: String,
@@ -1409,20 +1546,17 @@ private fun LibraryCategoryCard(
     }
 }
 
-/** 月历：每日「收入−支出」净变化（REQ 流水§18）；点当日进当日流水。 */
+/** 月历：每日真实资金流入减流出（REQ 流水§18）；点当日进当日流水。 */
 @Composable
 private fun CalendarView(month: YearMonth, monthTxs: List<TransactionEntity>, onDayClick: (Int) -> Unit) {
     val privacyEnabled = LocalPrivacyEnabled.current
     val zone = ZoneId.systemDefault()
-    fun at(day: Int): Long = month.atDay(day).atStartOfDay(zone).toInstant().toEpochMilli()
     val daysInMonth = month.lengthOfMonth()
     val firstDay = calendarCellIndex(month, 1)
     val netByDay = monthTxs.groupBy {
         Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate().dayOfMonth
     }.mapValues { (_, txs) ->
-        val income = txs.filter { it.type == "INCOME" }.sumOf { it.amountCents }
-        val expense = txs.filter { it.type == "EXPENSE" || it.type == "FEE" }.sumOf { it.amountCents }
-        income - expense
+        transactionsDayPresentation(txs, emptyList()).netCents
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
