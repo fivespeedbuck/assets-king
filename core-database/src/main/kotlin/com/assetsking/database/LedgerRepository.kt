@@ -68,6 +68,8 @@ private const val TRANSACTION_TRASH_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 private const val CATEGORY_SEED_VERSION_KEY = "category_seed_version"
 private const val CATEGORY_SEED_VERSION_EXTERNAL_CASHFLOW = 2
 private const val RECURRING_AMOUNT_TOLERANCE_PERCENT = 20L
+private const val PREFILL_BASELINE_EVENT_ID_PREFIX = "prefill-baseline:"
+private const val EDITOR_SUBMISSION_EVENT_ID_PREFIX = "editor-submission:"
 
 private val notificationCardTailPatterns = listOf(
     Regex("""尾号[为是]?\s*(\d{4})"""),
@@ -631,6 +633,59 @@ class LedgerRepository(
 
     fun observeNewNotifications(): Flow<List<RawNotificationEntity>> =
         database.rawNotificationDao().observeByStatus("NEW")
+
+    /**
+     * 记录待确认编辑器刚进入时的解析/推断基线。
+     *
+     * 事件使用通知 id 派生的稳定主键，并通过 INSERT OR IGNORE 保证幂等。同一条通知
+     * 即使因页面重组、旋转或重复进入而再次调用，也只保留第一份入口证据。payload 必须
+     * 明确区分解析器输出、入口推断和恢复草稿，不能把用户后续修改称为“原始预填”。
+     * 这只是分析证据，不会改变通知状态，也不会创建正式流水。
+     */
+    suspend fun recordPendingPrefillBaseline(
+        notificationId: String,
+        payload: JSONObject
+    ): Boolean = database.withTransaction {
+        require(notificationId.isNotBlank()) { "通知 ID 不能为空" }
+        val notification = database.rawNotificationDao().findById(notificationId)
+            ?: return@withTransaction false
+        if (notification.status != "PENDING_CONFIRMATION") return@withTransaction false
+
+        database.ledgerLifecycleEventDao().insertIgnore(
+            LedgerLifecycleEventEntity(
+                id = "$PREFILL_BASELINE_EVENT_ID_PREFIX$notificationId",
+                subjectType = EvidenceSubjectType.RAW_NOTIFICATION,
+                subjectId = notificationId,
+                action = EvidenceAction.PREFILL_BASELINE,
+                occurredAt = System.currentTimeMillis(),
+                payloadJson = payload.toString()
+            )
+        ) != -1L
+    }
+
+    /**
+     * 将一次编辑器提交与稳定 submissionId 绑定，并和实际账务写入放在同一个 Room 事务中。
+     * 进程若在数据库提交后、UI 成功回调前被杀，恢复草稿再次提交只会命中既有事件，
+     * 不会重复执行账务 block；若 block 失败，事件与账务修改一起回滚，之后仍可安全重试。
+     */
+    suspend fun runEditorSubmissionOnce(
+        submissionId: String,
+        block: suspend () -> Unit
+    ): Boolean = database.withTransaction {
+        require(submissionId.isNotBlank()) { "提交 ID 不能为空" }
+        val inserted = database.ledgerLifecycleEventDao().insertIgnore(
+            LedgerLifecycleEventEntity(
+                id = "$EDITOR_SUBMISSION_EVENT_ID_PREFIX$submissionId",
+                subjectType = EvidenceSubjectType.EDITOR_SUBMISSION,
+                subjectId = submissionId,
+                action = EvidenceAction.CREATED,
+                occurredAt = System.currentTimeMillis(),
+                payloadJson = JSONObject().put("schemaVersion", 1).toString()
+            )
+        ) != -1L
+        if (inserted) block()
+        inserted
+    }
 
     suspend fun updateNotificationStatus(id: String, status: String) {
         database.rawNotificationDao().updateStatus(id, status)
@@ -2260,58 +2315,170 @@ class LedgerRepository(
     ) {
         require(amountCents > 0)
         database.withTransaction {
-            val expenses = expenseIds.distinct()
-                .map { requireNotNull(database.transactionDao().findById(it)) }
+            addReimbursementInTransaction(
+                accountId = accountId,
+                amountCents = amountCents,
+                note = note,
+                occurredAt = occurredAt,
+                expenseIds = expenseIds,
+                source = source,
+                notificationId = notificationId
+            )
+        }
+    }
+
+    /** 待确认“报销到账”：通知认领、到账流水、垫付关联和 LINKED 状态必须同一事务。 */
+    suspend fun confirmReimbursementNotification(
+        notificationId: String,
+        accountId: String,
+        amountCents: Long,
+        source: String?,
+        note: String?,
+        expenseIds: List<String>,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null
+    ) {
+        require(amountCents > 0)
+        database.withTransaction {
+            val notification = database.rawNotificationDao().findById(notificationId)
+                ?: return@withTransaction
+            // 与通用通知确认保持同一镜像去重边界：两条内容相同的短信/系统通知即使
+            // 未提前归并，也只能生成一笔报销到账。
+            val linkedMirrorIds = database.rawNotificationDao().all()
+                .filter { it.id != notificationId && it.status == "LINKED" }
                 .filter {
-                    it.type == TransactionType.EXPENSE.name &&
-                        it.isReimbursable &&
-                        it.reimbursedCents < it.amountCents
+                    ContentFingerprint.isSameSmsMirrorContent(
+                        notification.packageName,
+                        notification.content,
+                        notification.postedAt,
+                        it.packageName,
+                        it.content,
+                        it.postedAt
+                    )
                 }
-            // 只能覆盖每笔垫付尚未报销的余额；重复报销不得让 reimbursedCents 超过原消费。
-            val covers = ReimbursementSplit.cover(
-                expenses.map { (it.amountCents - it.reimbursedCents).coerceAtLeast(0L) },
-                amountCents
-            )
-            val txId = UUID.randomUUID().toString()
-            database.transactionDao().insert(
-                TransactionEntity(
-                    id = txId,
-                    accountId = accountId,
-                    amountCents = amountCents,
-                    type = TransactionType.REIMBURSEMENT.name,
-                    category = TransactionCategory.UNCATEGORIZED.name,
-                    occurredAt = occurredAt,
-                    merchant = source?.trim()?.takeIf { it.isNotEmpty() },
-                    note = note?.trim()?.takeIf { it.isNotEmpty() },
-                    notificationId = notificationId
+                .map { it.id }
+            if (
+                linkedMirrorIds.isNotEmpty() &&
+                database.transactionDao().findActiveByNotificationIds(linkedMirrorIds).isNotEmpty()
+            ) {
+                database.rawNotificationDao().updateProcessingNote(
+                    notificationId,
+                    "与已确认的短信镜像证据重复，未生成第二笔报销到账"
                 )
+                database.rawNotificationDao().updateStatus(notificationId, "IGNORED")
+                return@withTransaction
+            }
+            requireEarliestNotificationFirst(notification, accountId, bankBalanceCents, bankCardTail)
+            if (database.rawNotificationDao().claimForConfirmation(notificationId) != 1) {
+                return@withTransaction
+            }
+
+            val mergedEvidenceIds = database.rawNotificationDao().all()
+                .asSequence()
+                .filter { it.id != notificationId && it.status == "IGNORED" }
+                .filter { evidence ->
+                    evidence.processingNote?.let { processingNote ->
+                        "kept=" in processingNote && processingNote.substringAfterLast("kept=") == notificationId
+                    } == true
+                }
+                .map { it.id }
+                .toList()
+            val sourceIds = (mergedEvidenceIds + notificationId).distinct().sorted()
+            addReimbursementInTransaction(
+                accountId = accountId,
+                amountCents = amountCents,
+                note = note,
+                occurredAt = notification.postedAt,
+                expenseIds = expenseIds,
+                source = source,
+                notificationId = notificationId,
+                evidenceSources = sourceIds.map {
+                    EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, it)
+                },
+                evidenceGroupId = "notifications:${sourceIds.joinToString("|")}"
             )
-            val evidenceSource = notificationId?.let {
+            database.rawNotificationDao().updateStatus(notificationId, "LINKED")
+            mergedEvidenceIds.forEach { id ->
+                database.rawNotificationDao().updateStatus(id, "LINKED")
+                database.rawNotificationDao().updateProcessingNote(id, "作为合并证据关联至 $notificationId")
+            }
+            if (bankBalanceCents != null && bankCardTail != null) {
+                applyBankBalance(accountId, bankCardTail, bankBalanceCents, notification.postedAt)
+            }
+        }
+    }
+
+    /** 调用方必须已经位于 Room 事务中。 */
+    private suspend fun addReimbursementInTransaction(
+        accountId: String,
+        amountCents: Long,
+        note: String?,
+        occurredAt: Long,
+        expenseIds: List<String>,
+        source: String?,
+        notificationId: String?,
+        evidenceSources: List<EvidenceSourceRef>? = null,
+        evidenceGroupId: String? = null
+    ) {
+        val requestedExpenses = expenseIds.distinct()
+            .map { requireNotNull(database.transactionDao().findById(it)) { "垫付记录已不存在，请重新选择" } }
+        val ineligibleExpenses = requestedExpenses.filterNot {
+            it.type == TransactionType.EXPENSE.name &&
+                it.isReimbursable &&
+                it.reimbursedCents < it.amountCents
+        }
+        require(ineligibleExpenses.isEmpty()) {
+            "选中的垫付记录已结清或不再可报销，请重新选择"
+        }
+        val expenses = requestedExpenses
+        // 只能覆盖每笔垫付尚未报销的余额；重复报销不得让 reimbursedCents 超过原消费。
+        val covers = ReimbursementSplit.cover(
+            expenses.map { (it.amountCents - it.reimbursedCents).coerceAtLeast(0L) },
+            amountCents
+        )
+        val txId = UUID.randomUUID().toString()
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = txId,
+                accountId = accountId,
+                amountCents = amountCents,
+                type = TransactionType.REIMBURSEMENT.name,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                occurredAt = occurredAt,
+                merchant = source?.trim()?.takeIf { it.isNotEmpty() },
+                note = note?.trim()?.takeIf { it.isNotEmpty() },
+                notificationId = notificationId
+            )
+        )
+        val sources = evidenceSources ?: listOf(
+            notificationId?.let {
                 EvidenceSourceRef(EvidenceSourceType.RAW_NOTIFICATION, it)
             } ?: EvidenceSourceRef(EvidenceSourceType.MANUAL_ENTRY, "manual:transaction:$txId")
-            evidenceRecorder.link(
-                groupId = notificationId?.let { "notification:$it" } ?: "manual:transaction:$txId",
-                subjectType = EvidenceSubjectType.TRANSACTION,
-                subjectId = txId,
-                subjectRole = "REIMBURSEMENT_RECEIPT",
-                sources = listOf(evidenceSource),
-                linkedAt = occurredAt
-            )
-            evidenceRecorder.lifecycle(
-                subjectType = EvidenceSubjectType.TRANSACTION,
-                subjectId = txId,
-                action = EvidenceAction.CREATED,
-                occurredAt = occurredAt,
-                payload = JSONObject().put("type", TransactionType.REIMBURSEMENT.name).put("amountCents", amountCents)
-            )
-            expenses.zip(covers).forEach { (expense, cover) ->
-                if (cover > 0) {
-                    database.reimbursementLinkDao().insert(ReimbursementLinkEntity(txId, expense.id, cover))
-                    database.transactionDao().updateReimbursed(expense.id, expense.reimbursedCents + cover)
-                }
+        )
+        evidenceRecorder.link(
+            groupId = evidenceGroupId
+                ?: notificationId?.let { "notification:$it" }
+                ?: "manual:transaction:$txId",
+            subjectType = EvidenceSubjectType.TRANSACTION,
+            subjectId = txId,
+            subjectRole = "REIMBURSEMENT_RECEIPT",
+            sources = sources,
+            linkedAt = occurredAt
+        )
+        evidenceRecorder.lifecycle(
+            subjectType = EvidenceSubjectType.TRANSACTION,
+            subjectId = txId,
+            action = EvidenceAction.CREATED,
+            occurredAt = occurredAt,
+            payload = JSONObject().put("type", TransactionType.REIMBURSEMENT.name).put("amountCents", amountCents)
+        )
+        expenses.zip(covers).forEach { (expense, cover) ->
+            if (cover > 0) {
+                database.reimbursementLinkDao().insert(ReimbursementLinkEntity(txId, expense.id, cover))
+                database.transactionDao().updateReimbursed(expense.id, expense.reimbursedCents + cover)
             }
-            recomputeBalance(accountId)
         }
+        recomputeBalance(accountId)
     }
 
     suspend fun reimbursementLinks(reimbursementId: String): List<ReimbursementLinkEntity> =

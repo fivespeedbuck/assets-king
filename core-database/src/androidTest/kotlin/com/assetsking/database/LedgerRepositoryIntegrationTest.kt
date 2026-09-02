@@ -153,6 +153,73 @@ class LedgerRepositoryIntegrationTest {
     }
 
     @Test
+    fun editorSubmissionIsAtomicAndIdempotent() = runBlocking {
+        seedCash(10_000L)
+        val submissionId = "editor-submission-test"
+
+        repeat(2) {
+            repository.runEditorSubmissionOnce(submissionId) {
+                repository.addTransaction(
+                    accountId = "cash",
+                    amountCents = 1_000L,
+                    type = TransactionType.EXPENSE,
+                    category = TransactionCategory.UNCATEGORIZED.name,
+                    merchant = "测试商户",
+                    note = null
+                )
+            }
+        }
+
+        assertEquals(1, database.transactionDao().all().size)
+        assertEquals(
+            1,
+            database.ledgerLifecycleEventDao()
+                .findBySubject(EvidenceSubjectType.EDITOR_SUBMISSION, submissionId)
+                .size
+        )
+    }
+
+    @Test
+    fun failedEditorSubmissionRollsBackClaimAndCanRetry() = runBlocking {
+        seedCash(10_000L)
+        val submissionId = "editor-submission-retry"
+
+        runCatching {
+            repository.runEditorSubmissionOnce(submissionId) {
+                repository.addTransaction(
+                    accountId = "cash",
+                    amountCents = 1_000L,
+                    type = TransactionType.EXPENSE,
+                    category = TransactionCategory.UNCATEGORIZED.name,
+                    merchant = "测试商户",
+                    note = null
+                )
+                error("模拟提交中断")
+            }
+        }
+
+        assertTrue(database.transactionDao().all().isEmpty())
+        assertTrue(
+            database.ledgerLifecycleEventDao()
+                .findBySubject(EvidenceSubjectType.EDITOR_SUBMISSION, submissionId)
+                .isEmpty()
+        )
+
+        repository.runEditorSubmissionOnce(submissionId) {
+            repository.addTransaction(
+                accountId = "cash",
+                amountCents = 1_000L,
+                type = TransactionType.EXPENSE,
+                category = TransactionCategory.UNCATEGORIZED.name,
+                merchant = "测试商户",
+                note = null
+            )
+        }
+
+        assertEquals(1, database.transactionDao().all().size)
+    }
+
+    @Test
     fun notificationConfirmationPersistsTheSelectedReimbursableFlag() = runBlocking {
         val notification = pendingNotification("reimbursable-expense")
         database.rawNotificationDao().insert(notification)
@@ -1163,6 +1230,139 @@ class LedgerRepositoryIntegrationTest {
             3_000L,
             database.reimbursementLinkDao().findByReimbursement(reimbursement.id).single().coveredCents
         )
+    }
+
+    @Test
+    fun reimbursementNotificationIsAtomicLinkedAndIdempotent() = runBlocking {
+        val notification = pendingNotification("reimbursement-arrival")
+        database.rawNotificationDao().insert(notification)
+        database.transactionDao().insert(
+            sampleExpense("reimbursable-expense").copy(
+                amountCents = 8_000L,
+                isReimbursable = true
+            )
+        )
+
+        repeat(2) {
+            repository.confirmReimbursementNotification(
+                notificationId = notification.id,
+                accountId = "cash",
+                amountCents = 5_000L,
+                source = "测试公司",
+                note = "差旅报销",
+                expenseIds = listOf("reimbursable-expense")
+            )
+        }
+
+        val reimbursement = database.transactionDao().all().single {
+            it.type == TransactionType.REIMBURSEMENT.name
+        }
+        assertEquals(notification.id, reimbursement.notificationId)
+        assertEquals("LINKED", database.rawNotificationDao().findById(notification.id)?.status)
+        assertEquals(5_000L, database.transactionDao().findById("reimbursable-expense")?.reimbursedCents)
+        assertEquals(
+            5_000L,
+            database.reimbursementLinkDao().findByReimbursement(reimbursement.id).single().coveredCents
+        )
+        assertEquals(
+            notification.id,
+            database.ledgerEvidenceLinkDao()
+                .findBySubject(EvidenceSubjectType.TRANSACTION, reimbursement.id)
+                .single()
+                .sourceId
+        )
+    }
+
+    @Test
+    fun reimbursementNotificationFailureRollsBackClaim() = runBlocking {
+        val notification = pendingNotification("reimbursement-failure")
+        database.rawNotificationDao().insert(notification)
+
+        val result = runCatching {
+            repository.confirmReimbursementNotification(
+                notificationId = notification.id,
+                accountId = "cash",
+                amountCents = 5_000L,
+                source = null,
+                note = null,
+                expenseIds = listOf("missing-expense")
+            )
+        }
+
+        assertTrue(result.isFailure)
+        assertEquals("PENDING_CONFIRMATION", database.rawNotificationDao().findById(notification.id)?.status)
+        assertTrue(database.transactionDao().all().none { it.type == TransactionType.REIMBURSEMENT.name })
+    }
+
+    @Test
+    fun reimbursementNotificationRollsBackWhenSelectedExpenseWasAlreadySettled() = runBlocking {
+        val notification = pendingNotification("reimbursement-stale-selection")
+        database.rawNotificationDao().insert(notification)
+        database.transactionDao().insert(
+            sampleExpense("settled-reimbursable-expense").copy(
+                amountCents = 5_000L,
+                isReimbursable = true,
+                reimbursedCents = 5_000L
+            )
+        )
+
+        val result = runCatching {
+            repository.confirmReimbursementNotification(
+                notificationId = notification.id,
+                accountId = "cash",
+                amountCents = 5_000L,
+                source = null,
+                note = null,
+                expenseIds = listOf("settled-reimbursable-expense")
+            )
+        }
+
+        assertTrue(result.isFailure)
+        assertEquals("PENDING_CONFIRMATION", database.rawNotificationDao().findById(notification.id)?.status)
+        assertTrue(database.transactionDao().all().none { it.type == TransactionType.REIMBURSEMENT.name })
+    }
+
+    @Test
+    fun reimbursementNotificationSmsMirrorDoesNotCreateSecondArrival() = runBlocking {
+        val first = pendingNotification("reimbursement-mirror-first")
+        val mirror = pendingNotification("reimbursement-mirror-second").copy(
+            packageName = first.packageName,
+            content = first.content,
+            postedAt = first.postedAt
+        )
+        database.rawNotificationDao().insert(first)
+        database.rawNotificationDao().insert(mirror)
+        database.transactionDao().insert(
+            sampleExpense("mirror-reimbursable-expense").copy(
+                amountCents = 10_000L,
+                isReimbursable = true
+            )
+        )
+
+        repository.confirmReimbursementNotification(
+            notificationId = first.id,
+            accountId = "cash",
+            amountCents = 5_000L,
+            source = "测试公司",
+            note = null,
+            expenseIds = listOf("mirror-reimbursable-expense")
+        )
+        repository.confirmReimbursementNotification(
+            notificationId = mirror.id,
+            accountId = "cash",
+            amountCents = 5_000L,
+            source = "测试公司",
+            note = null,
+            expenseIds = listOf("mirror-reimbursable-expense")
+        )
+
+        assertEquals(
+            1,
+            database.transactionDao().all().count { it.type == TransactionType.REIMBURSEMENT.name }
+        )
+        assertEquals("LINKED", database.rawNotificationDao().findById(first.id)?.status)
+        assertEquals("IGNORED", database.rawNotificationDao().findById(mirror.id)?.status)
+        assertEquals(5_000L, database.transactionDao().findById("mirror-reimbursable-expense")?.reimbursedCents)
     }
 
     @Test

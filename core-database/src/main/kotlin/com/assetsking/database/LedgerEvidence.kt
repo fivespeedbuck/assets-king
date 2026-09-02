@@ -4,6 +4,9 @@ import org.json.JSONObject
 import java.util.UUID
 
 object EvidenceSubjectType {
+    const val EDITOR_SUBMISSION = "EDITOR_SUBMISSION"
+    /** 原始通知本身也是可追溯的证据对象（例如待确认页展示的预填快照）。 */
+    const val RAW_NOTIFICATION = "RAW_NOTIFICATION"
     const val TRANSACTION = "TRANSACTION"
     const val TRANSFER = "TRANSFER"
     const val LOAN_PLAN = "LOAN_PLAN"
@@ -26,6 +29,8 @@ object EvidenceAction {
     const val CREATED = "CREATED"
     const val EDITED = "EDITED"
     const val LINKED = "LINKED"
+    /** 待确认编辑器刚进入时的解析/推断基线；只记录，不代表已经入账或用户最终选择。 */
+    const val PREFILL_BASELINE = "PREFILL_BASELINE"
     const val EFFECT_REVERSED = "EFFECT_REVERSED"
     const val EFFECT_RESTORED = "EFFECT_RESTORED"
     const val TRASHED = "TRASHED"

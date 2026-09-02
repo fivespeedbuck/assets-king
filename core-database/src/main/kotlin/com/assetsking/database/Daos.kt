@@ -648,4 +648,11 @@ interface LedgerLifecycleEventDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(event: LedgerLifecycleEventEntity)
+
+    /**
+     * 追加一个可重复调用的生命周期事件。返回 -1 表示相同主键已经存在。
+     * 预填快照使用稳定事件 id，因此重组、旋转或重复进入不会覆盖第一次展示的值。
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(event: LedgerLifecycleEventEntity): Long
 }

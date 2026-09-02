@@ -109,6 +109,21 @@ class LedgerViewModel(
         viewModelScope.coroutineLaunch { onResult(runCatching { block() }) }
     }
 
+    private fun launchEditorWrite(
+        submissionId: String?,
+        onResult: (Result<Unit>) -> Unit,
+        block: suspend () -> Unit
+    ) {
+        launchWrite(onResult) {
+            if (submissionId == null) {
+                block()
+            } else {
+                repository.runEditorSubmissionOnce(submissionId, block)
+            }
+            Unit
+        }
+    }
+
     // V5 指标在 ViewModel 里算（一个 Flow 发射 → 一套新数字），严禁在 Composable 内现算
     val state = combine(
         repository.accounts,
@@ -473,9 +488,22 @@ class LedgerViewModel(
         amountCents: Long,
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
+        submissionId: String? = null,
         onResult: (Result<String>) -> Unit = {}
     ) {
-        launchWrite(onResult) { repository.addLendingDisbursement(cashAccountId, planId, amountCents, note, occurredAt) }
+        launchWrite(onResult) {
+            if (submissionId == null) {
+                repository.addLendingDisbursement(cashAccountId, planId, amountCents, note, occurredAt)
+            } else {
+                var transactionId = submissionId
+                repository.runEditorSubmissionOnce(submissionId) {
+                    transactionId = repository.addLendingDisbursement(
+                        cashAccountId, planId, amountCents, note, occurredAt
+                    )
+                }
+                transactionId
+            }
+        }
     }
 
     fun addLendingRepayment(
@@ -485,9 +513,10 @@ class LedgerViewModel(
         interestCents: Long,
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
+        submissionId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
-        launchWrite(onResult) {
+        launchEditorWrite(submissionId, onResult) {
             repository.addLendingRepayment(cashAccountId, planId, principalCents, interestCents, note, occurredAt)
         }
     }
@@ -567,9 +596,17 @@ class LedgerViewModel(
     // ── V5 借款与还款 ──
 
     /** 借款到账：现金+、关联计划剩余本金+；不是收入（铁律 1） */
-    fun addLoanDisbursement(accountId: String, amount: String, planId: String?, note: String?, occurredAt: Long = System.currentTimeMillis(), onResult: (Result<Unit>) -> Unit = {}) {
+    fun addLoanDisbursement(
+        accountId: String,
+        amount: String,
+        planId: String?,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        submissionId: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         val cents = amount.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("金额格式不正确")))
-        launchWrite(onResult) {
+        launchEditorWrite(submissionId, onResult) {
             repository.addLoanDisbursement(accountId, cents, planId?.takeIf { it.isNotBlank() }, note, occurredAt)
         }
     }
@@ -603,13 +640,14 @@ class LedgerViewModel(
         accountId: String, planId: String,
         total: String, principal: String, interest: String, fee: String,
         note: String?, occurredAt: Long = System.currentTimeMillis(),
+        submissionId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
         val t = total.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("总金额格式不正确")))
         val p = principal.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("本金格式不正确")))
         val i = interest.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("利息格式不正确")))
         val f = fee.toCentsOrNull(allowZero = true) ?: return onResult(Result.failure(IllegalArgumentException("费用格式不正确")))
-        launchWrite(onResult) {
+        launchEditorWrite(submissionId, onResult) {
             repository.addLoanPayment(accountId, planId, t, p, i, f, note, occurredAt)
         }
     }
@@ -753,9 +791,10 @@ class LedgerViewModel(
         channel: String? = null,
         orderPlatform: String? = null,
         refundOfId: String? = null,
+        submissionId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
-        launchWrite(onResult) {
+        launchEditorWrite(submissionId, onResult) {
             repository.addTransaction(
                 accountId, amountCents, type, category, merchant, note,
                 occurredAt = occurredAt, isReimbursable = isReimbursable,
@@ -772,9 +811,37 @@ class LedgerViewModel(
         note: String?,
         occurredAt: Long = System.currentTimeMillis(),
         expenseIds: List<String>,
+        submissionId: String? = null,
         onResult: (Result<Unit>) -> Unit = {}
     ) {
-        launchWrite(onResult) { repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds, source) }
+        launchEditorWrite(submissionId, onResult) {
+            repository.addReimbursement(accountId, amountCents, note, occurredAt, expenseIds, source)
+        }
+    }
+
+    fun confirmReimbursementNotification(
+        notificationId: String,
+        accountId: String,
+        amountCents: Long,
+        source: String?,
+        note: String?,
+        expenseIds: List<String>,
+        bankBalanceCents: Long? = null,
+        bankCardTail: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        launchWrite(onResult) {
+            repository.confirmReimbursementNotification(
+                notificationId = notificationId,
+                accountId = accountId,
+                amountCents = amountCents,
+                source = source,
+                note = note,
+                expenseIds = expenseIds,
+                bankBalanceCents = bankBalanceCents,
+                bankCardTail = bankCardTail
+            )
+        }
     }
 
     fun updateReimbursement(
@@ -850,9 +917,19 @@ class LedgerViewModel(
 
     suspend fun adjustmentsFor(accountId: String) = repository.adjustmentsFor(accountId)
 
-    fun addTransfer(fromAccountId: String, toAccountId: String, amount: String, note: String?, occurredAt: Long = System.currentTimeMillis(), onResult: (Result<Unit>) -> Unit = {}) {
+    fun addTransfer(
+        fromAccountId: String,
+        toAccountId: String,
+        amount: String,
+        note: String?,
+        occurredAt: Long = System.currentTimeMillis(),
+        submissionId: String? = null,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         val cents = amount.toCentsOrNull() ?: return onResult(Result.failure(IllegalArgumentException("金额格式不正确")))
-        launchWrite(onResult) { recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt) }
+        launchEditorWrite(submissionId, onResult) {
+            recordTransfer(fromAccountId, toAccountId, cents, note, occurredAt)
+        }
     }
 
     fun deleteTransfer(id: String, onResult: (Result<Unit>) -> Unit = {}) {

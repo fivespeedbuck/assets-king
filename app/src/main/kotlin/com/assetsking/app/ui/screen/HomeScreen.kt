@@ -1,5 +1,6 @@
 package com.assetsking.app.ui.screen
 
+import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +40,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.assetsking.app.ui.privacy.PrivacyEntryController
 import com.assetsking.app.ui.privacy.privacyToggleGesture
+import com.assetsking.app.ui.session.HomeSessionSnapshot
+import com.assetsking.app.ui.session.HomeSessionStore
+import com.assetsking.app.ui.session.PersistHomeSessionEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.assetsking.app.LedgerViewModel
 import com.assetsking.app.PendingItem
@@ -103,28 +108,128 @@ fun HomeScreen(
         effectiveBudgets(budgets, recurringRules, effectiveBudgetMonths, categories)
     }
     val context = LocalContext.current
-    var showPendingBox by remember { mutableStateOf(false) }
-    var showEditor by remember { mutableStateOf(false) }
+    val sessionStore = remember {
+        HomeSessionStore(context.getSharedPreferences("ui_session", Context.MODE_PRIVATE))
+    }
+    val editorDraftStore = remember { TransactionEditorDraftStore(context) }
+    val restoredSession = remember { sessionStore.load() }
+    var showPendingBox by remember { mutableStateOf(restoredSession.showPendingBox) }
+    var showEditor by remember { mutableStateOf(restoredSession.showEditor) }
     var editorPendingItem by remember { mutableStateOf<PendingItem?>(null) }
-    var editorInitialLoanPlanId by remember { mutableStateOf<String?>(null) }
-    var showBills by remember { mutableStateOf(false) }
-    var showReimbursement by remember { mutableStateOf(false) }
-    var addingAccountType by remember { mutableStateOf<AccountType?>(null) }
+    var restoredPendingNotificationId by remember {
+        mutableStateOf(restoredSession.editorPendingNotificationId)
+    }
+    var restoredTransactionId by remember { mutableStateOf(restoredSession.editorTransactionId) }
+    var editorInitialLoanPlanId by remember {
+        mutableStateOf(restoredSession.editorInitialLoanPlanId)
+    }
+    var showBills by remember { mutableStateOf(restoredSession.showBills) }
+    var showReimbursement by remember { mutableStateOf(restoredSession.showReimbursement) }
+    var addingAccountType by remember {
+        mutableStateOf(
+            restoredSession.addingAccountType?.let { raw ->
+                runCatching { AccountType.valueOf(raw) }.getOrNull()
+            }
+        )
+    }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
+    var restoredEditingAccountId by remember { mutableStateOf(restoredSession.editingAccountId) }
     var accountDetail by remember { mutableStateOf<AccountEntity?>(null) }
+    var restoredAccountDetailId by remember { mutableStateOf(restoredSession.accountDetailId) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
+    var restoredDetailTransactionId by remember { mutableStateOf(restoredSession.detailTransactionId) }
     var detailTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
-    var selectedTab by remember { mutableStateOf(0) }
+    var selectedTab by remember { mutableStateOf(restoredSession.selectedTab) }
     var settingsAtRoot by remember { mutableStateOf(true) }
     // 只有“从页面内容进入另一个主区”的动作记录来源；用户直接点底部导航仍视为切换一级页面。
     // 这样统计下钻→查看流水、首页卡片→统计/贷款都能按返回手势回到来源页。
-    var previousTab by remember { mutableStateOf<Int?>(null) }
-    var showReconciliation by remember { mutableStateOf(false) }
+    var previousTab by remember { mutableStateOf(restoredSession.previousTab) }
+    var showReconciliation by remember { mutableStateOf(restoredSession.showReconciliation) }
     // 统计页下钻流水（REQ 统计§3/§7/§20）：月份+分类带进流水页筛选，消费一次后清空
     var txDrillMonth by remember { mutableStateOf<java.time.YearMonth?>(null) }
     var txDrillCategory by remember { mutableStateOf<String?>(null) }
     var txDrillStart by remember { mutableStateOf<java.time.LocalDate?>(null) }
     var txDrillEnd by remember { mutableStateOf<java.time.LocalDate?>(null) }
+
+    // 恢复对象尚未从 Room 发出前不渲染“空编辑器”，避免重建窗口把待确认流水误当成手动新建。
+    val editorRestorationPending = showEditor && (
+        (restoredPendingNotificationId != null && editorPendingItem == null) ||
+            (restoredTransactionId != null && editingTransaction == null)
+        )
+
+    // Activity/任务被系统重建后，先用持久化 ID 找回对象；对象本身仍从 Room/StateFlow 读取。
+    LaunchedEffect(restoredPendingNotificationId, state.pendingItems, state.v5, showEditor) {
+        if (showEditor && editorPendingItem == null) {
+            restoredPendingNotificationId?.let { id ->
+                val item = state.pendingItems.firstOrNull { it.notification.id == id }
+                if (item != null) {
+                    editorPendingItem = item
+                } else if (state.v5 != null) {
+                    // v5 非空表示 LedgerUiState 已完成第一份数据库快照；此前的空列表只是加载态。
+                    editorDraftStore.clear(transactionEditorDraftKey(id, null, null))
+                    restoredPendingNotificationId = null
+                    if (restoredTransactionId == null && editorInitialLoanPlanId == null) {
+                        showEditor = false
+                    }
+                }
+            }
+        }
+    }
+    LaunchedEffect(restoredTransactionId, state.transactions, state.v5, showEditor) {
+        if (showEditor && editingTransaction == null) {
+            restoredTransactionId?.let { id ->
+                val transaction = state.transactions.firstOrNull { it.id == id }
+                if (transaction != null) {
+                    editingTransaction = transaction
+                } else if (state.v5 != null) {
+                    editorDraftStore.clear(transactionEditorDraftKey(null, id, null))
+                    restoredTransactionId = null
+                    if (restoredPendingNotificationId == null && editorInitialLoanPlanId == null) {
+                        showEditor = false
+                    }
+                }
+            }
+        }
+    }
+    LaunchedEffect(restoredEditingAccountId, state.accounts) {
+        if (editingAccount == null) {
+            restoredEditingAccountId?.let { id ->
+                editingAccount = state.accounts.firstOrNull { it.id == id }
+            }
+        }
+    }
+    LaunchedEffect(restoredAccountDetailId, state.accounts) {
+        if (accountDetail == null) {
+            restoredAccountDetailId?.let { id ->
+                accountDetail = state.accounts.firstOrNull { it.id == id }
+            }
+        }
+    }
+    LaunchedEffect(restoredDetailTransactionId, state.transactions) {
+        if (detailTransaction == null) {
+            restoredDetailTransactionId?.let { id ->
+                detailTransaction = state.transactions.firstOrNull { it.id == id }
+            }
+        }
+    }
+    val homeSessionSnapshot = HomeSessionSnapshot(
+        selectedTab = selectedTab,
+        previousTab = previousTab,
+        showPendingBox = showPendingBox,
+        showEditor = showEditor,
+        showBills = showBills,
+        showReimbursement = showReimbursement,
+        showReconciliation = showReconciliation,
+        editorPendingNotificationId = editorPendingItem?.notification?.id
+            ?: restoredPendingNotificationId,
+        editorTransactionId = editingTransaction?.id ?: restoredTransactionId,
+        editorInitialLoanPlanId = editorInitialLoanPlanId,
+        editingAccountId = editingAccount?.id ?: restoredEditingAccountId,
+        accountDetailId = accountDetail?.id ?: restoredAccountDetailId,
+        detailTransactionId = detailTransaction?.id ?: restoredDetailTransactionId,
+        addingAccountType = addingAccountType?.name
+    )
+    PersistHomeSessionEffect(sessionStore, homeSessionSnapshot)
     val listenerStatus = rememberListenerStatus()
     val navSurface = MaterialTheme.colorScheme.surfaceContainer
     val navOutline = MaterialTheme.colorScheme.outlineVariant
@@ -143,11 +248,19 @@ fun HomeScreen(
             showEditor -> {
                 showEditor = false
                 editorPendingItem = null
+                restoredPendingNotificationId = null
                 editingTransaction = null
+                restoredTransactionId = null
                 editorInitialLoanPlanId = null
             }
-            detailTransaction != null -> detailTransaction = null
-            accountDetail != null -> accountDetail = null
+            detailTransaction != null -> {
+                detailTransaction = null
+                restoredDetailTransactionId = null
+            }
+            accountDetail != null -> {
+                accountDetail = null
+                restoredAccountDetailId = null
+            }
             showPendingBox -> showPendingBox = false
             showReimbursement -> showReimbursement = false
             showBills -> showBills = false
@@ -234,7 +347,9 @@ fun HomeScreen(
                 FloatingActionButton(
                     onClick = {
                         editorPendingItem = null
+                        restoredPendingNotificationId = null
                         editingTransaction = null
+                        restoredTransactionId = null
                         editorInitialLoanPlanId = null
                         showEditor = true
                     },
@@ -269,7 +384,10 @@ fun HomeScreen(
                 onGotoLoans = { openTabFromContent(3) },
                 onGotoBills = { showBills = true },
                 onGotoReimbursement = { showReimbursement = true },
-                onEditAccount = { accountDetail = it },
+                onEditAccount = {
+                    accountDetail = it
+                    restoredAccountDetailId = it?.id
+                },
                 onAddAccount = { if (!privacyEnabled) addingAccountType = it }
             )
             1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {
@@ -296,7 +414,9 @@ fun HomeScreen(
                     onOpenEditor = {
                         if (!privacyEnabled) {
                             editorPendingItem = null
+                            restoredPendingNotificationId = null
                             editingTransaction = null
+                            restoredTransactionId = null
                             editorInitialLoanPlanId = null
                             showEditor = true
                         }
@@ -306,11 +426,14 @@ fun HomeScreen(
                             val type = runCatching { com.assetsking.model.TransactionType.valueOf(transaction.type) }.getOrNull()
                             if (type != null && isOrdinaryEditableTransaction(type)) {
                                 editorPendingItem = null
+                                restoredPendingNotificationId = null
                                 editingTransaction = transaction
+                                restoredTransactionId = transaction.id
                                 editorInitialLoanPlanId = null
                                 showEditor = true
                             } else {
                                 detailTransaction = transaction
+                                restoredDetailTransactionId = transaction.id
                             }
                         }
                     },
@@ -345,12 +468,19 @@ fun HomeScreen(
                     onConfirmInstallmentPayment = { transferId, scheduleId, principalCents, callback ->
                         model.confirmCardInstallmentPaymentMatch(transferId, scheduleId, principalCents, callback)
                     },
-                    onOpenCreditAccount = { account -> if (!privacyEnabled) accountDetail = account },
+                    onOpenCreditAccount = { account ->
+                        if (!privacyEnabled) {
+                            accountDetail = account
+                            restoredAccountDetailId = account.id
+                        }
+                    },
                     transactions = state.transactions,
                     onRecordPayment = { plan ->
                         if (!privacyEnabled) {
                             editorPendingItem = null
+                            restoredPendingNotificationId = null
                             editingTransaction = null
+                            restoredTransactionId = null
                             editorInitialLoanPlanId = plan.id
                             showEditor = true
                         }
@@ -428,13 +558,15 @@ fun HomeScreen(
         }
     }
 
-    addingAccountType?.let { initialType ->
+    if (!privacyEnabled) addingAccountType?.let { initialType ->
         AddAccountSheet(
             initialType = initialType,
             onAddAccount = { name, type, balance, card, stmtDay, dueDay, limit, callback ->
                 model.addAccount(name, type, balance, card, stmtDay, dueDay, limit, callback)
             },
-            onDismiss = { addingAccountType = null }
+            onDismiss = {
+                addingAccountType = null
+            }
         )
     }
 
@@ -451,7 +583,9 @@ fun HomeScreen(
             onOpenTransaction = { transaction ->
                 if (!privacyEnabled) {
                     editorPendingItem = null
+                    restoredPendingNotificationId = null
                     editingTransaction = transaction
+                    restoredTransactionId = transaction.id
                     editorInitialLoanPlanId = null
                     showEditor = true
                 }
@@ -467,7 +601,9 @@ fun HomeScreen(
             onOpenTransaction = { transaction ->
                 if (!privacyEnabled) {
                     editorPendingItem = null
+                    restoredPendingNotificationId = null
                     editingTransaction = transaction
+                    restoredTransactionId = transaction.id
                     editorInitialLoanPlanId = null
                     showEditor = true
                 }
@@ -487,7 +623,9 @@ fun HomeScreen(
             onOpenEditor = { item ->
                 if (!privacyEnabled) {
                     editorPendingItem = item
+                    restoredPendingNotificationId = item.notification.id
                     editingTransaction = null
+                    restoredTransactionId = null
                     editorInitialLoanPlanId = null
                     showEditor = true
                 }
@@ -497,7 +635,7 @@ fun HomeScreen(
     }
 
     // 统一编辑器（M4）：手动记账与待确认复用，覆盖在最上层
-    if (showEditor && !privacyEnabled) {
+    if (showEditor && !privacyEnabled && !editorRestorationPending) {
         TransactionEditorScreen(
             pendingItem = editorPendingItem,
             editingTransaction = editingTransaction,
@@ -518,13 +656,17 @@ fun HomeScreen(
             onDone = {
                 showEditor = false
                 editorPendingItem = null
+                restoredPendingNotificationId = null
                 editingTransaction = null
+                restoredTransactionId = null
                 editorInitialLoanPlanId = null
             },
             onBack = {
                 showEditor = false
                 editorPendingItem = null
+                restoredPendingNotificationId = null
                 editingTransaction = null
+                restoredTransactionId = null
                 editorInitialLoanPlanId = null
             }
         )
@@ -536,14 +678,21 @@ fun HomeScreen(
             onSave = {
                 model.updateAccount(it)
                 accountDetail = it
+                restoredAccountDetailId = it.id
                 editingAccount = null
+                restoredEditingAccountId = null
             },
             onArchive = {
                 model.archiveAccount(it)
                 editingAccount = null
+                restoredEditingAccountId = null
                 accountDetail = null
+                restoredAccountDetailId = null
             },
-            onDismiss = { editingAccount = null }
+            onDismiss = {
+                editingAccount = null
+                restoredEditingAccountId = null
+            }
         )
     }
 
@@ -556,10 +705,23 @@ fun HomeScreen(
             statementRemainingCents = state.v5?.cardRemainingDueByCard?.get(account.id)
                 ?: account.statementOriginalDueCents,
             isLendingReceivable = lendingPlans.any { it.receivableAccountId == account.id },
-            onOpenTransaction = { transaction -> if (!privacyEnabled) detailTransaction = transaction },
-            onEdit = { if (!privacyEnabled) editingAccount = account },
+            onOpenTransaction = { transaction ->
+                if (!privacyEnabled) {
+                    detailTransaction = transaction
+                    restoredDetailTransactionId = transaction.id
+                }
+            },
+            onEdit = {
+                if (!privacyEnabled) {
+                    editingAccount = account
+                    restoredEditingAccountId = account.id
+                }
+            },
             onReconcile = { if (!privacyEnabled) showReconciliation = true },
-            onBack = { accountDetail = null }
+            onBack = {
+                accountDetail = null
+                restoredAccountDetailId = null
+            }
         )
     }
 
@@ -567,7 +729,10 @@ fun HomeScreen(
         ManagedTransactionDetailSheet(
             transaction = tx,
             accountName = state.accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty(),
-            onDismiss = { detailTransaction = null }
+            onDismiss = {
+                detailTransaction = null
+                restoredDetailTransactionId = null
+            }
         )
     }
 
