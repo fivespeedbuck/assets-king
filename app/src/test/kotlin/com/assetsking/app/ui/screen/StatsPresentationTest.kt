@@ -5,7 +5,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import java.time.YearMonth
-import kotlin.math.abs
 
 class StatsPresentationTest {
     @Test
@@ -201,24 +200,6 @@ class StatsPresentationTest {
             deficitAxis.tickValues()
         )
 
-    }
-
-    @Test
-    fun trendSelectedAxisLabelsStayReadable() {
-        assertEquals("6.9K", formatTrendAxisValue(698_983L))
-        assertEquals("3.2K", formatTrendAxisValue(320_350L))
-        assertEquals("3.7K", formatTrendAxisValue(378_633L))
-        assertEquals("−2.2K", formatTrendAxisValue(-225_000L))
-
-        val ys = layoutTrendAnnotationYs(
-            rawYs = listOf(60f, 100f, 108f),
-            top = 20f,
-            bottom = 200f,
-            minGap = 30f
-        )
-
-        assertTrue(ys.zipWithNext().all { (a, b) -> abs(a - b) >= 30f })
-        assertTrue(ys.all { it in 20f..200f })
     }
 
     @Test

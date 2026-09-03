@@ -83,8 +83,6 @@ import com.assetsking.ui.component.IconLibrary
 import com.assetsking.ui.format.formatMoney
 import com.assetsking.ui.format.formatMoneyCompact
 import com.assetsking.ui.privacy.LocalPrivacyEnabled
-import com.assetsking.ui.privacy.PRIVACY_MASK
-import com.assetsking.ui.privacy.PrivacyMode
 import com.assetsking.ui.theme.ExpenseRed
 import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.ui.theme.ReimbursementYellow
@@ -103,7 +101,7 @@ import java.time.ZoneId
 private val StatsGreen = IncomeGreen
 private val StatsRed = ExpenseRed
 internal const val DEFAULT_TREND_MONTHS = 6
-private const val TREND_PLOT_LEFT_DP = 44
+private const val TREND_PLOT_LEFT_DP = 8
 
 private val categoryPalette = listOf(
     Color(0xFF49BE98), // 薄荷糖
@@ -274,8 +272,9 @@ fun StatsScreen(
                         Column(Modifier.fillMaxWidth(0.84f).align(Alignment.CenterHorizontally)) {
                             children.forEachIndexed { childIndex, child ->
                                 val childExpenses = expenses.filter { it.category == child.name }
-                                val childNecessary = childExpenses.filter { it.necessity == true }.sumOf { netOf(it) }
-                                val childOptional = childExpenses.filter { it.necessity != true }.sumOf { netOf(it) }
+                                val childAmounts = statsNecessityAmounts(childExpenses, categories) { netOf(it) }
+                                val childNecessary = childAmounts.necessaryCents
+                                val childOptional = childAmounts.nonNecessaryCents
                                 val childTotal = childNecessary + childOptional
                                 if (childTotal > 0) {
                                     val childTextColor = when {
@@ -414,9 +413,10 @@ fun StatsScreen(
                             val top = slices.first()
                             val topCategory = categories.firstOrNull { it.name == top.first }
                             val topNonNecessary = topCategory?.let { category ->
-                                expenses.filter {
-                                    categories.firstOrNull { c -> c.name == it.category }?.parentId == category.id && it.necessity == false
-                                }.sumOf { netOf(it) }
+                                val categoryExpenses = expenses.filter {
+                                    categories.firstOrNull { c -> c.name == it.category }?.parentId == category.id
+                                }
+                                statsNecessityAmounts(categoryExpenses, categories) { netOf(it) }.nonNecessaryCents
                             } ?: 0L
                             InsightCard(
                                 text = if (privacyEnabled) {
@@ -1140,24 +1140,6 @@ internal fun trendComposition(
     )
 }
 
-/** 纵轴选中值只靠颜色区分语义，使用短金额把绘图区尽量还给柱图。 */
-internal fun formatTrendAxisValue(cents: Long): String {
-    if (PrivacyMode.enabled) return PRIVACY_MASK
-    val sign = if (cents < 0L) "−" else ""
-    val absolute = kotlin.math.abs(cents)
-    val amount = if (absolute >= 100_000L) {
-        val truncatedTenths = absolute / 10_000L
-        java.lang.String.format(java.util.Locale.US, "%.1fK", truncatedTenths / 10.0)
-            .replace(".0K", "K")
-    } else if (absolute % 100L == 0L) {
-        (absolute / 100L).toString()
-    } else {
-        java.lang.String.format(java.util.Locale.US, "%.1f", absolute / 100.0)
-            .removeSuffix(".0")
-    }
-    return sign + amount
-}
-
 /** 隐私模式下月份布局保留，但柱高只由独立假值决定；关闭后立即恢复原始序列。 */
 internal fun privacySafeMonthlyBars(
     bars: List<com.assetsking.usecase.MonthlyBar>,
@@ -1174,33 +1156,6 @@ internal fun privacySafeMonthlyBars(
         )
     }
 
-/** 同轴标注碰撞处理：保持输入顺序，同时给相邻金额标签统一最小留白。 */
-internal fun layoutTrendAnnotationYs(
-    rawYs: List<Float>,
-    top: Float,
-    bottom: Float,
-    minGap: Float
-): List<Float> {
-    if (rawYs.isEmpty()) return emptyList()
-    val sorted = rawYs.withIndex().sortedBy { it.value }
-    val ys = MutableList(sorted.size) { 0f }
-    sorted.forEachIndexed { index, item ->
-        ys[index] = maxOf(item.value, top, if (index == 0) top else ys[index - 1] + minGap)
-    }
-    val overflow = (ys.last() - bottom).coerceAtLeast(0f)
-    if (overflow > 0f) ys.indices.forEach { ys[it] -= overflow }
-    for (index in ys.lastIndex - 1 downTo 0) {
-        ys[index] = minOf(ys[index], ys[index + 1] - minGap)
-    }
-    val underflow = (top - ys.first()).coerceAtLeast(0f)
-    if (underflow > 0f) ys.indices.forEach { ys[it] += underflow }
-    val byOriginalIndex = MutableList(rawYs.size) { 0f }
-    sorted.forEachIndexed { sortedIndex, indexedValue ->
-        byOriginalIndex[indexedValue.index] = ys[sortedIndex]
-    }
-    return byOriginalIndex
-}
-
 internal fun effectiveTrendMonth(availableMonths: List<String>, selectedMonth: YearMonth): YearMonth =
     if (selectedMonth.toString() in availableMonths) selectedMonth
     else availableMonths.lastOrNull()?.let(YearMonth::parse) ?: selectedMonth
@@ -1216,12 +1171,6 @@ private fun TrendChart(
     onBarClick: (YearMonth) -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
-    val privacyAxisLabels = listOf(
-        privacyFakeAmount(740),
-        privacyFakeAmount(741),
-        privacyFakeAmount(742),
-        privacyFakeAmount(743)
-    )
     val compositions = bars.map { trendComposition(it.incomeCents, it.expenseCents, it.repaymentCents) }
     val axis = if (privacyEnabled) {
         // 隐秘假值跨帧时纵轴保持不变，避免“最大值换档”把整组柱子瞬间拉高。
@@ -1233,9 +1182,7 @@ private fun TrendChart(
     val zeroLineColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
     val highlightColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
     val months = bars.map { bar -> YearMonth.of(bar.month.substring(0, 4).toInt(), bar.month.substring(5).toInt()) }
-    val textMeasurer = rememberTextMeasurer()
-    val axisTextStyle = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
-    val plotLeftDp = if (privacyEnabled) 72 else TREND_PLOT_LEFT_DP
+    val plotLeftDp = TREND_PLOT_LEFT_DP
     val chartDescription = if (privacyEnabled) {
         "隐秘模式动态趋势图，数值与月份均为持续变化的虚构数据"
     } else {
@@ -1280,34 +1227,6 @@ private fun TrendChart(
             val groupW = plotWidth / n
             val barW = (groupW * 0.28f).coerceIn(2f, 18.dp.toPx())
             val zeroY = axis.yFor(0L, plotTop, plotBottom)
-            val selectedIndex = months.indexOf(selectedMonth).coerceAtLeast(0)
-            val selectedBar = bars[selectedIndex]
-            val selectedFlow = compositions[selectedIndex]
-            // 固定顺序的四行彩色数值轨道，与顶部摘要一致；不再按柱段锚点上下跳动。
-            val selectedAnnotations = listOf(
-                selectedBar.incomeCents to StatsGreen,
-                selectedBar.expenseCents to StatsRed,
-                selectedBar.repaymentCents to RepaymentPurple,
-                selectedFlow.balanceCents to
-                    cashBalanceColor(selectedFlow.balanceCents)
-            )
-            val selectedLabelYs = selectedAnnotations.indices.map { index ->
-                plotTop + (12 + index * 20).dp.toPx()
-            }
-
-            fun drawAxisText(text: String, centerY: Float, style: TextStyle) {
-                val layout = textMeasurer.measure(text, style = style)
-                drawText(
-                    textMeasurer = textMeasurer,
-                    text = text,
-                    topLeft = Offset(
-                        (plotLeft - 5.dp.toPx() - layout.size.width).coerceAtLeast(0f),
-                        (centerY - layout.size.height / 2f).coerceIn(0f, size.height - layout.size.height)
-                    ),
-                    style = style
-                )
-            }
-
             axis.tickValues().forEach { tick ->
                 val y = axis.yFor(tick, plotTop, plotBottom)
                 drawLine(
@@ -1351,16 +1270,6 @@ private fun TrendChart(
                 drawSegment(outflowX, 0L, bar.expenseCents, StatsRed)
                 drawSegment(outflowX, bar.expenseCents, flow.outflowCents, RepaymentPurple)
             }
-
-            // 选中月份四项金额贴近左轴；仅以颜色和纵向位置表达，避免短连接线制造视觉噪声。
-            selectedAnnotations.forEachIndexed { index, (value, color) ->
-                val labelY = selectedLabelYs[index]
-                drawAxisText(
-                    if (privacyEnabled) privacyAxisLabels[index] else formatTrendAxisValue(value),
-                    labelY,
-                    axisTextStyle.copy(color = color, fontWeight = FontWeight.Bold)
-                )
-            }
         }
         Row(Modifier.fillMaxWidth().padding(start = plotLeftDp.dp, end = 8.dp)) {
             months.forEachIndexed { i, ym ->
@@ -1391,10 +1300,10 @@ private fun TrendLegendItem(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier
-                .size(9.dp)
+                .size(12.dp)
                 .background(color, CircleShape)
         )
-        Spacer(Modifier.width(5.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(7.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

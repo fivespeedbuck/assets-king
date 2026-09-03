@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.15",
-  "name": "资产大王 v0.1.15",
-  "body": "修复待确认编辑器“证据与余额”只显示通知正文、不显示通知标题的问题；每条证据现在分别展示来源时间、标题和正文，并自动省略空白或重复内容。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.15",
+  "tag_name": "v0.1.16",
+  "name": "资产大王 v0.1.16",
+  "body": "修复统计页二级分类必要性与汇总口径不一致的问题，必要消费显示为绿色、非必要消费显示为红色；趋势图移除左侧重复数值，并放大图例、扩展绘图区。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.16",
   "assets": [
     {
-      "name": "assets-king-v0.1.15.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.15/assets-king-v0.1.15.apk",
+      "name": "assets-king-v0.1.16.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.16/assets-king-v0.1.16.apk",
       "size": 31565070,
-      "digest": "sha256:67161cbfccc6dee43e19d64783024be751e5eb89ee46a9af6a919986cd8c76cc"
+      "digest": "sha256:406ed7f0cc9baffc0ab8c06096a9d137d48f1c5920eb64c00570d23641eaebfe"
     }
   ]
 }
