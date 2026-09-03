@@ -1160,8 +1160,17 @@ internal fun effectiveTrendMonth(availableMonths: List<String>, selectedMonth: Y
     if (selectedMonth.toString() in availableMonths) selectedMonth
     else availableMonths.lastOrNull()?.let(YearMonth::parse) ?: selectedMonth
 
-internal fun trendMonthTickVisible(index: Int, totalMonths: Int, month: YearMonth): Boolean =
-    totalMonths <= 6 || index == 0 || month.monthValue == 1 || index % 4 == 0 || index == totalMonths - 1
+internal fun trendMonthTickVisible(index: Int, totalMonths: Int): Boolean {
+    if (index !in 0 until totalMonths) return false
+    val tickCount = minOf(4, totalMonths)
+    if (tickCount == 1) return true
+    return (0 until tickCount).any { tickIndex ->
+        val evenlySpacedIndex = kotlin.math.round(
+            tickIndex.toDouble() * (totalMonths - 1) / (tickCount - 1)
+        ).toInt()
+        index == evenlySpacedIndex
+    }
+}
 
 /** 单图组成柱：左侧收入中超出总流出的部分标蓝，右侧为普通支出 + 实际还款；赤字时右柱自然更高。 */
 @Composable
@@ -1273,7 +1282,7 @@ private fun TrendChart(
         }
         Row(Modifier.fillMaxWidth().padding(start = plotLeftDp.dp, end = 8.dp)) {
             months.forEachIndexed { i, ym ->
-                val tickVisible = trendMonthTickVisible(i, months.size, ym) || ym == selectedMonth
+                val tickVisible = trendMonthTickVisible(i, months.size)
                 Text(
                     if (privacyEnabled) privacyFakeYearMonth(760 + i).substringAfter("年") else "${ym.monthValue}月",
                     style = MaterialTheme.typography.labelSmall,

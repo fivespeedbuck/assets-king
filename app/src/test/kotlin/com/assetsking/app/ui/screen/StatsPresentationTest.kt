@@ -218,11 +218,14 @@ class StatsPresentationTest {
     fun trendMonthTicksStayReadableAtThreeSixAndTwelveMonths() {
         val twelveMonths = (0..11).map { YearMonth.of(2025, 9).plusMonths(it.toLong()) }
 
-        assertTrue((0..2).all { trendMonthTickVisible(it, 3, YearMonth.of(2026, 6 + it)) })
-        assertTrue((0..5).all { trendMonthTickVisible(it, 6, YearMonth.of(2026, 3 + it)) })
+        assertTrue((0..2).all { trendMonthTickVisible(it, 3) })
         assertEquals(
-            listOf(0, 4, 8, 11),
-            twelveMonths.indices.filter { trendMonthTickVisible(it, 12, twelveMonths[it]) }
+            listOf(0, 2, 3, 5),
+            (0 until 6).filter { trendMonthTickVisible(it, 6) }
+        )
+        assertEquals(
+            listOf(0, 4, 7, 11),
+            twelveMonths.indices.filter { trendMonthTickVisible(it, 12) }
         )
     }
 }

@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.17",
-  "name": "资产大王 v0.1.17",
-  "body": "流水新增退款与已退款标记；筛选支持交易类型、一级/二级分类、必要性、报销状态、支付渠道、资金账户和商户/来源多选，修复非必要筛选漏掉分类默认值以及转账混入的问题，并增强隐私模式与历史分类兼容。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.17",
+  "tag_name": "v0.1.18",
+  "name": "资产大王 v0.1.18",
+  "body": "统计页收支与还款趋势的月份横轴改为按数据位置均匀采样：3 个月显示 3 个刻度，6 个月和 12 个月最多显示 4 个刻度，并固定包含首月和末月。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.18",
   "assets": [
     {
-      "name": "assets-king-v0.1.17.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.17/assets-king-v0.1.17.apk",
+      "name": "assets-king-v0.1.18.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.18/assets-king-v0.1.18.apk",
       "size": 31565070,
-      "digest": "sha256:ce17050560e7e3ab6a910957535dc9cb17dce985e35d40ae1c91e0484333694d"
+      "digest": "sha256:daf04c734fdd21dd38c653f9e21a9bc600640e745040fd8699a28bf710428ccd"
     }
   ]
 }
