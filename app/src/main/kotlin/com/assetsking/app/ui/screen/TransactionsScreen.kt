@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -201,11 +202,17 @@ internal fun matchesCategoryFilter(
     filterCategory: String?,
     categories: List<CategoryEntity>
 ): Boolean {
-    if (filterCategory == null || transactionCategory == filterCategory) return true
-    val parent = categories.firstOrNull {
-        it.name == filterCategory && it.parentId == null && !it.isArchived
-    } ?: return false
-    return categories.firstOrNull { it.name == transactionCategory && !it.isArchived }?.parentId == parent.id
+    if (filterCategory == null) return true
+    val transaction = categories.firstOrNull {
+        it.id == transactionCategory || it.name == transactionCategory
+    }
+    val filter = categories.firstOrNull {
+        it.id == filterCategory || it.name == filterCategory
+    }
+    if (transaction != null && filter != null) {
+        return transaction.id == filter.id || (filter.parentId == null && transaction.parentId == filter.id)
+    }
+    return transactionCategory == filterCategory
 }
 
 /**
@@ -264,13 +271,13 @@ fun TransactionsScreen(
 
     // 筛选条件（REQ 流水§11 多条件组合）
     var fTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var fCategory by remember { mutableStateOf<String?>(null) }
-    var fNecessity by remember { mutableStateOf<Boolean?>(null) }
-    var fReimbursement by remember { mutableStateOf<ReimbursementBadge?>(null) }
+    var fCategories by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var fNecessities by remember { mutableStateOf<Set<Boolean>>(emptySet()) }
+    var fReimbursements by remember { mutableStateOf<Set<ReimbursementBadge>>(emptySet()) }
     var fRecurringDebit by remember { mutableStateOf(false) }
-    var fChannel by remember { mutableStateOf<String?>(null) }
-    var fAccountId by remember { mutableStateOf<String?>(null) }
-    var fMerchant by remember { mutableStateOf("") }
+    var fChannels by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var fAccountIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var fMerchants by remember { mutableStateOf<Set<String>>(emptySet()) }
     var fMinCents by remember { mutableStateOf("") }
     var fMaxCents by remember { mutableStateOf("") }
 
@@ -287,12 +294,16 @@ fun TransactionsScreen(
             customStart = initialFilterStart
             customEnd = initialFilterEnd
             dayFilter = null
-            fCategory = initialFilterCategory
+            fCategories = setOfNotNull(initialFilterCategory?.let { initial ->
+                categories.firstOrNull { it.id == initial || it.name == initial }?.id ?: initial
+            })
         } else if (initialFilterMonth != null) {
             month = initialFilterMonth
             rangeMode = "MONTH"
             dayFilter = null
-            fCategory = initialFilterCategory
+            fCategories = setOfNotNull(initialFilterCategory?.let { initial ->
+                categories.firstOrNull { it.id == initial || it.name == initial }?.id ?: initial
+            })
         }
         onDrillConsumed()
     }
@@ -328,14 +339,15 @@ fun TransactionsScreen(
     val minCents = fMinCents.toDoubleOrNull()?.times(100)?.toLong()
     val maxCents = fMaxCents.toDoubleOrNull()?.times(100)?.toLong()
     val filtered = rangeTxs.filter { tx ->
+        val category = categories.firstOrNull { it.id == tx.category || it.name == tx.category }
         (fTypes.isEmpty() || tx.type in fTypes) &&
-            matchesCategoryFilter(tx.category, fCategory, categories) &&
-            (fNecessity == null || tx.necessity == fNecessity) &&
-            matchesReimbursementFilter(tx, fReimbursement) &&
+            matchesCategoryFilters(tx.category, fCategories, categories) &&
+            matchesNecessityFilters(tx, fNecessities, category) &&
+            matchesReimbursementFilters(tx, fReimbursements) &&
             (!fRecurringDebit || isRecurringDebit(tx)) &&
-            (fChannel == null || tx.channel == fChannel) &&
-            (fAccountId == null || tx.accountId == fAccountId) &&
-            (fMerchant.isBlank() || tx.merchant?.contains(fMerchant, ignoreCase = true) == true) &&
+            matchesNamedFilters(tx.channel, fChannels) &&
+            matchesAccountFilters(fAccountIds, tx.accountId) &&
+            matchesNamedFilters(tx.merchant, fMerchants) &&
             (minCents == null || tx.amountCents >= minCents) &&
             (maxCents == null || tx.amountCents <= maxCents) &&
             (dayFilter == null || Instant.ofEpochMilli(tx.occurredAt).atZone(zone).toLocalDate() == dayFilter) &&
@@ -345,9 +357,19 @@ fun TransactionsScreen(
                 accountNameOf(tx.accountId).contains(searchQuery) ||
                 formatMoney(tx.amountCents).contains(searchQuery))
     }.sortedByDescending { it.occurredAt }
+    val transactionOnlyFiltersAllowTransfers = transferMatchesTransactionOnlyFilters(
+        selectedTypes = fTypes,
+        selectedCategories = fCategories,
+        selectedNecessities = fNecessities,
+        selectedReimbursements = fReimbursements,
+        recurringDebitOnly = fRecurringDebit,
+        selectedChannels = fChannels,
+        selectedMerchants = fMerchants
+    )
     val filteredTransfers = state.transfers.filter { transfer ->
+        transactionOnlyFiltersAllowTransfers &&
         (rangeMode == "ALL" || transfer.occurredAt in rangeStart..rangeEnd) &&
-            (fAccountId == null || transfer.fromAccountId == fAccountId || transfer.toAccountId == fAccountId) &&
+            matchesAccountFilters(fAccountIds, transfer.fromAccountId, transfer.toAccountId) &&
             (minCents == null || transfer.amountCents >= minCents) &&
             (maxCents == null || transfer.amountCents <= maxCents) &&
             (dayFilter == null || Instant.ofEpochMilli(transfer.occurredAt).atZone(zone).toLocalDate() == dayFilter) &&
@@ -357,6 +379,9 @@ fun TransactionsScreen(
                 transfer.note?.contains(searchQuery) == true ||
                 formatMoney(transfer.amountCents).contains(searchQuery))
     }.sortedByDescending { it.occurredAt }
+    val refundBadgesByTransactionId = remember(state.transactions) {
+        transactionRefundBadges(state.transactions)
+    }
     val filteredLedgerItems = (filtered.map { LedgerListItem(it.occurredAt, transaction = it) } +
         filteredTransfers.map { LedgerListItem(it.occurredAt, transfer = it) })
         .sortedByDescending { it.occurredAt }
@@ -464,7 +489,7 @@ fun TransactionsScreen(
                 Icon(
                     Icons.Filled.List,
                     contentDescription = "筛选",
-                    tint = if (fTypes.isNotEmpty() || fCategory != null || fNecessity != null || fReimbursement != null || fRecurringDebit || fChannel != null || fAccountId != null || fMerchant.isNotBlank() || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = if (fTypes.isNotEmpty() || fCategories.isNotEmpty() || fNecessities.isNotEmpty() || fReimbursements.isNotEmpty() || fRecurringDebit || fChannels.isNotEmpty() || fAccountIds.isNotEmpty() || fMerchants.isNotEmpty() || fMinCents.isNotBlank() || fMaxCents.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -610,6 +635,7 @@ fun TransactionsScreen(
                                                     TransactionListRow(
                                                         tx = tx,
                                                         category = categories.firstOrNull { it.id == tx.category || it.name == tx.category },
+                                                        refundBadge = refundBadgesByTransactionId[tx.id],
                                                         privacyIndex = dayIndex * 20 + index,
                                                         multiSelect = multiSelect,
                                                         checked = tx.id in selected,
@@ -691,7 +717,8 @@ fun TransactionsScreen(
         FilterDialog(
             categories = categories,
             accounts = state.accounts,
-            channels = state.transactions.mapNotNull { it.channel?.takeIf(String::isNotBlank) }.distinct(),
+            channels = state.transactions.mapNotNull { it.channel?.takeIf(String::isNotBlank) }.distinct().sorted(),
+            merchants = (merchants.map { it.id } + state.transactions.mapNotNull { it.merchant?.takeIf(String::isNotBlank) }).distinct().sorted(),
             defaultMonth = month,
             customStart = customStart,
             customEnd = customEnd,
@@ -702,11 +729,11 @@ fun TransactionsScreen(
                 month == YearMonth.now().minusMonths(1) -> "LAST_MONTH"
                 else -> "THIS_MONTH"
             },
-            fTypes = fTypes, fCategory = fCategory, fNecessity = fNecessity,
-            fReimbursement = fReimbursement, fRecurringDebit = fRecurringDebit, fChannel = fChannel,
-            fAccountId = fAccountId, fMerchant = fMerchant,
+            fTypes = fTypes, fCategories = fCategories, fNecessities = fNecessities,
+            fReimbursements = fReimbursements, fRecurringDebit = fRecurringDebit, fChannels = fChannels,
+            fAccountIds = fAccountIds, fMerchants = fMerchants,
             fMinCents = fMinCents, fMaxCents = fMaxCents,
-            onApply = { pickedRange, t, c, n, reimbursement, recurringDebit, ch, accountId, merchant, min, max, pickedStart, pickedEnd ->
+            onApply = { pickedRange, t, selectedCategories, selectedNecessities, selectedReimbursements, recurringDebit, selectedChannels, selectedAccountIds, selectedMerchants, min, max, pickedStart, pickedEnd ->
                 when (pickedRange) {
                     "ALL" -> rangeMode = "ALL"
                     "THIS_MONTH" -> { rangeMode = "MONTH"; month = YearMonth.now() }
@@ -717,7 +744,7 @@ fun TransactionsScreen(
                 customStart = pickedStart
                 customEnd = pickedEnd
                 dayFilter = null
-                fTypes = t; fCategory = c; fNecessity = n; fReimbursement = reimbursement; fRecurringDebit = recurringDebit; fChannel = ch; fAccountId = accountId; fMerchant = merchant; fMinCents = min; fMaxCents = max
+                fTypes = t; fCategories = selectedCategories; fNecessities = selectedNecessities; fReimbursements = selectedReimbursements; fRecurringDebit = recurringDebit; fChannels = selectedChannels; fAccountIds = selectedAccountIds; fMerchants = selectedMerchants; fMinCents = min; fMaxCents = max
                 showFilter = false
             },
             onClear = {
@@ -726,8 +753,8 @@ fun TransactionsScreen(
                 customStart = null
                 customEnd = null
                 dayFilter = null
-                fTypes = emptySet(); fCategory = null; fNecessity = null; fReimbursement = null; fRecurringDebit = false
-                fChannel = null; fAccountId = null; fMerchant = ""; fMinCents = ""; fMaxCents = ""
+                fTypes = emptySet(); fCategories = emptySet(); fNecessities = emptySet(); fReimbursements = emptySet(); fRecurringDebit = false
+                fChannels = emptySet(); fAccountIds = emptySet(); fMerchants = emptySet(); fMinCents = ""; fMaxCents = ""
                 showFilter = false
             },
             onDismiss = { showFilter = false }
@@ -878,11 +905,12 @@ fun TransactionsScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun TransactionListRow(
     tx: TransactionEntity,
     category: CategoryEntity?,
+    refundBadge: TransactionRefundBadge?,
     privacyIndex: Int,
     multiSelect: Boolean,
     checked: Boolean,
@@ -959,7 +987,22 @@ private fun TransactionListRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                refundBadge?.takeUnless { privacyEnabled }?.let { badge ->
+                    Text(
+                        badge.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = IncomeGreen,
+                        modifier = Modifier
+                            .background(IncomeGreen.copy(alpha = 0.12f), RoundedCornerShape(50))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
                 reimbursementBadge?.let { badge ->
                     Text(
                         badge.label,
@@ -970,7 +1013,6 @@ private fun TransactionListRow(
                             .background(ReimbursementYellow.copy(alpha = 0.12f), RoundedCornerShape(50))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
-                    Spacer(Modifier.width(6.dp))
                 }
                 if (recurringDebit) {
                     Text(
@@ -982,7 +1024,6 @@ private fun TransactionListRow(
                             .background(RecurringDebitOrange.copy(alpha = 0.12f), RoundedCornerShape(50))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
-                    Spacer(Modifier.width(6.dp))
                 }
                 linkBadges.forEach { badge ->
                     val badgeColor = when (badge.colorKey) {
@@ -999,11 +1040,9 @@ private fun TransactionListRow(
                             .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(50))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
-                    Spacer(Modifier.width(6.dp))
                 }
                 Text(
                     if (privacyEnabled) privacyObfuscatedText(metadataWithTime.ifBlank { "流水信息" }, 740 + privacyIndex) else metadataWithTime,
-                    Modifier.weight(1f),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1651,33 +1690,152 @@ internal fun MonthPickerDialog(initial: YearMonth, onPick: (YearMonth) -> Unit, 
     )
 }
 
+@Composable
+private fun strongTransactionsFilterChipColors() = FilterChipDefaults.filterChipColors(
+    selectedContainerColor = MaterialTheme.colorScheme.primary,
+    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
+    selectedTrailingIconColor = MaterialTheme.colorScheme.onPrimary
+)
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun MultiSelectFilterField(
+    label: String,
+    selectedValues: Set<String>,
+    options: List<TransactionFilterOption>,
+    onSelectedValuesChange: (Set<String>) -> Unit
+) {
+    var pickerOpen by remember { mutableStateOf(false) }
+    val labelByValue = options.associate { it.value to it.label }
+    val orderedSelectedValues = options.map { it.value }.filter(selectedValues::contains) +
+        selectedValues.filterNot(labelByValue::containsKey).sorted()
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = { pickerOpen = true }) {
+                Text(if (selectedValues.isEmpty()) "＋ 添加" else "＋ 继续添加")
+            }
+        }
+        if (selectedValues.isEmpty()) {
+            Text("不限$label", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            Text("已选$label", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+            ) {
+                orderedSelectedValues.forEach { value ->
+                    FilterChip(
+                        selected = true,
+                        onClick = { onSelectedValuesChange(selectedValues - value) },
+                        label = { Text("${labelByValue[value] ?: value} ×") },
+                        colors = strongTransactionsFilterChipColors()
+                    )
+                }
+            }
+        }
+    }
+    if (pickerOpen) {
+        MultiSelectFilterDialog(
+            title = "选择$label",
+            selectedValues = selectedValues,
+            options = options,
+            onConfirm = {
+                onSelectedValuesChange(it)
+                pickerOpen = false
+            },
+            onDismiss = { pickerOpen = false }
+        )
+    }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun MultiSelectFilterDialog(
+    title: String,
+    selectedValues: Set<String>,
+    options: List<TransactionFilterOption>,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    var draft by remember(selectedValues) { mutableStateOf(selectedValues) }
+    val visibleOptions = options.filter { option ->
+        query.isBlank() || option.label.contains(query, ignoreCase = true)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("搜索") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(UiTokens.ItemGap))
+                Column(
+                    Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                ) {
+                    if (visibleOptions.isEmpty()) {
+                        Text("没有匹配项", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                            verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                        ) {
+                            visibleOptions.forEach { option ->
+                                FilterChip(
+                                    selected = option.value in draft,
+                                    onClick = {
+                                        draft = if (option.value in draft) draft - option.value else draft + option.value
+                                    },
+                                    label = { Text(option.label) },
+                                    colors = strongTransactionsFilterChipColors()
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(draft) }) { Text("完成") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun FilterDialog(
     categories: List<CategoryEntity>,
     accounts: List<AccountEntity>,
     channels: List<String>,
+    merchants: List<String>,
     defaultMonth: YearMonth,
     customStart: LocalDate?,
     customEnd: LocalDate?,
     range: String,
-    fTypes: Set<String>, fCategory: String?, fNecessity: Boolean?, fReimbursement: ReimbursementBadge?, fRecurringDebit: Boolean, fChannel: String?,
-    fAccountId: String?, fMerchant: String,
+    fTypes: Set<String>, fCategories: Set<String>, fNecessities: Set<Boolean>, fReimbursements: Set<ReimbursementBadge>, fRecurringDebit: Boolean, fChannels: Set<String>,
+    fAccountIds: Set<String>, fMerchants: Set<String>,
     fMinCents: String, fMaxCents: String,
-    onApply: (String, Set<String>, String?, Boolean?, ReimbursementBadge?, Boolean, String?, String?, String, String, String, LocalDate?, LocalDate?) -> Unit,
+    onApply: (String, Set<String>, Set<String>, Set<Boolean>, Set<ReimbursementBadge>, Boolean, Set<String>, Set<String>, Set<String>, String, String, LocalDate?, LocalDate?) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
     var pickedRange by remember { mutableStateOf(range) }
     var types by remember { mutableStateOf(fTypes) }
-    var category by remember { mutableStateOf(fCategory) }
-    var necessity by remember { mutableStateOf(fNecessity) }
-    var reimbursement by remember { mutableStateOf(fReimbursement) }
+    var selectedCategories by remember { mutableStateOf(fCategories) }
+    var necessities by remember { mutableStateOf(fNecessities) }
+    var reimbursements by remember { mutableStateOf(fReimbursements) }
     var recurringDebit by remember { mutableStateOf(fRecurringDebit) }
-    var channel by remember { mutableStateOf(fChannel) }
-    var accountId by remember { mutableStateOf(fAccountId) }
-    var merchant by remember { mutableStateOf(fMerchant) }
+    var selectedChannels by remember { mutableStateOf(fChannels) }
+    var selectedAccountIds by remember { mutableStateOf(fAccountIds) }
+    var selectedMerchants by remember { mutableStateOf(fMerchants) }
     var min by remember { mutableStateOf(fMinCents) }
     var max by remember { mutableStateOf(fMaxCents) }
     var pickedStart by remember { mutableStateOf(customStart ?: defaultMonth.atDay(1)) }
@@ -1686,25 +1844,48 @@ private fun FilterDialog(
     var showCustomEndPicker by remember { mutableStateOf(false) }
     var showAdvanced by remember {
         mutableStateOf(
-            category != null || necessity != null || reimbursement != null || recurringDebit ||
-                channel != null || accountId != null ||
-                merchant.isNotBlank() || min.isNotBlank() || max.isNotBlank()
+            selectedCategories.isNotEmpty() || necessities.isNotEmpty() || reimbursements.isNotEmpty() || recurringDebit ||
+                selectedChannels.isNotEmpty() || selectedAccountIds.isNotEmpty() ||
+                selectedMerchants.isNotEmpty() || min.isNotBlank() || max.isNotBlank()
         )
     }
     val customRangeValid = pickedRange != "CUSTOM" || !pickedStart.isAfter(pickedEnd)
-    val selectedFilterCount = listOf(
-        pickedRange != "ALL",
-        types.isNotEmpty(),
-        category != null,
-        necessity != null,
-        reimbursement != null,
-        recurringDebit,
-        channel != null,
-        accountId != null,
-        merchant.isNotBlank(),
-        min.isNotBlank(),
-        max.isNotBlank()
-    ).count { it }
+    val selectedFilterCount =
+        (if (pickedRange != "ALL") 1 else 0) +
+            types.size + selectedCategories.size + necessities.size + reimbursements.size +
+            (if (recurringDebit) 1 else 0) + selectedChannels.size + selectedAccountIds.size +
+            selectedMerchants.size + (if (min.isNotBlank()) 1 else 0) + (if (max.isNotBlank()) 1 else 0)
+    val baseCategoryOptions = transactionCategoryFilterOptions(categories)
+    val visibleCategoryOptions = baseCategoryOptions.mapIndexed { index, option ->
+        option.copy(
+            label = if (privacyEnabled) privacyObfuscatedText(option.label, 920 + index) else option.label
+        )
+    }
+    val categoryById = categories.associateBy { it.id }
+    val selectedCategoryFallbacks = selectedCategories
+        .filterNot { selected -> baseCategoryOptions.any { it.value == selected } }
+        .sorted()
+        .mapIndexed { index, selected ->
+            val category = categories.firstOrNull { it.id == selected || it.name == selected }
+            val parentName = category?.parentId?.let(categoryById::get)?.name
+            val displayLabel = category?.let {
+                if (parentName == null) it.name else "$parentName / ${it.name}"
+            } ?: selected
+            TransactionFilterOption(
+                value = selected,
+                label = if (privacyEnabled) privacyObfuscatedText(displayLabel, 930 + index) else displayLabel
+            )
+        }
+    val categoryOptions = visibleCategoryOptions + selectedCategoryFallbacks
+    val channelOptions = channels.mapIndexed { index, value ->
+        TransactionFilterOption(value, if (privacyEnabled) privacyObfuscatedText(value, 941 + index) else value)
+    }
+    val accountOptions = accounts.filterNot { it.archived }.mapIndexed { index, account ->
+        TransactionFilterOption(account.id, if (privacyEnabled) privacyObfuscatedText(account.name, 951 + index) else account.name)
+    }
+    val merchantOptions = merchants.mapIndexed { index, value ->
+        TransactionFilterOption(value, if (privacyEnabled) privacyObfuscatedText(value, 970 + index) else value)
+    }
     Sheet(title = "筛选", onDismiss = onDismiss) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -1732,6 +1913,7 @@ private fun FilterDialog(
                             selected = pickedRange == value,
                             onClick = { pickedRange = value },
                             label = { Text(label) },
+                            colors = strongTransactionsFilterChipColors(),
                             modifier = Modifier
                         )
                     }
@@ -1763,12 +1945,14 @@ private fun FilterDialog(
                     listOf(
                         "支出" to "EXPENSE", "收入" to "INCOME", "退款" to "REFUND",
                         "手续费" to "FEE", "报销到账" to "REIMBURSEMENT",
-                        "借款到账" to "LOAN_DISBURSEMENT", "贷款还款" to "LOAN_PAYMENT", "提前还款" to "LOAN_PREPAYMENT"
+                        "借款到账" to "LOAN_DISBURSEMENT", "贷款还款" to "LOAN_PAYMENT", "提前还款" to "LOAN_PREPAYMENT",
+                        "账户转账" to TRANSFER_FILTER_TYPE
                     ).forEach { (label, t) ->
                         FilterChip(
                             selected = t in types,
                             onClick = { types = if (t in types) types - t else types + t },
                             label = { Text(label) },
+                            colors = strongTransactionsFilterChipColors(),
                             modifier = Modifier
                         )
                     }
@@ -1782,9 +1966,18 @@ private fun FilterDialog(
                 if (showAdvanced) {
                 Text("高级筛选", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("必要性", style = MaterialTheme.typography.labelLarge)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
-                    FilterChip(selected = necessity == true, onClick = { necessity = if (necessity == true) null else true }, label = { Text("必要") })
-                    FilterChip(selected = necessity == false, onClick = { necessity = if (necessity == false) null else false }, label = { Text("非必要") })
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(UiTokens.ItemGap),
+                    verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)
+                ) {
+                    listOf(true to "必要", false to "非必要").forEach { (value, label) ->
+                        FilterChip(
+                            selected = value in necessities,
+                            onClick = { necessities = if (value in necessities) necessities - value else necessities + value },
+                            label = { Text(label) },
+                            colors = strongTransactionsFilterChipColors()
+                        )
+                    }
                 }
                 Text("报销状态", style = MaterialTheme.typography.labelLarge)
                 FlowRow(
@@ -1793,17 +1986,13 @@ private fun FilterDialog(
                 ) {
                     ReimbursementBadge.entries.forEach { badge ->
                         FilterChip(
-                            selected = reimbursement == badge,
+                            selected = badge in reimbursements,
                             onClick = {
-                                reimbursement = if (reimbursement == badge) null else badge
-                                if (reimbursement != null) pickedRange = "ALL"
+                                reimbursements = if (badge in reimbursements) reimbursements - badge else reimbursements + badge
+                                if (reimbursements.isNotEmpty()) pickedRange = "ALL"
                             },
                             label = { Text(badge.label) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                labelColor = ReimbursementYellow,
-                                selectedLabelColor = ReimbursementYellow,
-                                selectedContainerColor = ReimbursementYellow.copy(alpha = 0.13f)
-                            ),
+                            colors = strongTransactionsFilterChipColors(),
                             modifier = Modifier
                         )
                     }
@@ -1816,53 +2005,32 @@ private fun FilterDialog(
                         if (recurringDebit) pickedRange = "ALL"
                     },
                     label = { Text(RECURRING_DEBIT_LABEL) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        labelColor = RecurringDebitOrange,
-                        selectedLabelColor = RecurringDebitOrange,
-                        selectedContainerColor = RecurringDebitOrange.copy(alpha = 0.13f)
-                    ),
+                    colors = strongTransactionsFilterChipColors(),
                     modifier = Modifier
                 )
-                Text("分类", style = MaterialTheme.typography.labelLarge)
-                TextButton(onClick = { category = null }) { Text(if (category == null) "不限分类（已选）" else "不限分类") }
-                CategoryGrid(
-                    parents = categories.filter { it.parentId == null && !it.isArchived && it.kind == "EXPENSE" },
-                    childrenOf = { parentId -> categories.filter { it.parentId == parentId && !it.isArchived && it.kind == "EXPENSE" } },
-                    selectedCategoryId = categories.firstOrNull { it.name == category && !it.isArchived }?.id,
-                    onSelect = { category = it.name },
-                    onAddChild = {},
-                    onReorder = {},
-                    showAddChild = false,
-                    selectParentOnExpand = true
+                MultiSelectFilterField(
+                    label = "分类",
+                    selectedValues = selectedCategories,
+                    options = categoryOptions,
+                    onSelectedValuesChange = { selectedCategories = it }
                 )
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
-                    SelectDropdownField(
-                        label = "支付渠道",
-                        selectedLabel = if (privacyEnabled && channel != null) privacyObfuscatedText(channel.orEmpty(), 940) else channel ?: "不限渠道",
-                        options = listOf("" to "不限渠道") + channels.mapIndexed { index, value ->
-                            value to if (privacyEnabled) privacyObfuscatedText(value, 941 + index) else value
-                        },
-                        onSelected = { channel = it.ifBlank { null } },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    SelectDropdownField(
-                        label = "资金账户",
-                        selectedLabel = accounts.firstOrNull { it.id == accountId }?.name?.let { name ->
-                            if (privacyEnabled) privacyObfuscatedText(name, 950) else name
-                        } ?: "不限账户",
-                        options = listOf("" to "不限账户") + accounts.filter { !it.archived }.mapIndexed { index, account ->
-                            account.id to if (privacyEnabled) privacyObfuscatedText(account.name, 951 + index) else account.name
-                        },
-                        onSelected = { accountId = it.ifBlank { null } },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                OutlinedTextField(
-                    value = merchant,
-                    onValueChange = { merchant = it },
-                    label = { Text("商户/来源包含") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                MultiSelectFilterField(
+                    label = "支付渠道",
+                    selectedValues = selectedChannels,
+                    options = channelOptions,
+                    onSelectedValuesChange = { selectedChannels = it }
+                )
+                MultiSelectFilterField(
+                    label = "资金账户",
+                    selectedValues = selectedAccountIds,
+                    options = accountOptions,
+                    onSelectedValuesChange = { selectedAccountIds = it }
+                )
+                MultiSelectFilterField(
+                    label = "商户/来源",
+                    selectedValues = selectedMerchants,
+                    options = merchantOptions,
+                    onSelectedValuesChange = { selectedMerchants = it }
                 )
                 Text("金额区间", style = MaterialTheme.typography.labelLarge)
                 Column(verticalArrangement = Arrangement.spacedBy(UiTokens.ItemGap)) {
@@ -1874,7 +2042,7 @@ private fun FilterDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f).height(UiTokens.MinimumTouch)) { Text("清空") }
                     Button(
-                        onClick = { onApply(pickedRange, types, category, necessity, reimbursement, recurringDebit, channel, accountId, merchant.trim(), min, max, pickedStart, pickedEnd) },
+                        onClick = { onApply(pickedRange, types, selectedCategories, necessities, reimbursements, recurringDebit, selectedChannels, selectedAccountIds, selectedMerchants, min, max, pickedStart, pickedEnd) },
                         enabled = customRangeValid,
                         modifier = Modifier.weight(1f).height(UiTokens.MinimumTouch)
                     ) { Text("应用") }

@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.16",
-  "name": "资产大王 v0.1.16",
-  "body": "修复统计页二级分类必要性与汇总口径不一致的问题，必要消费显示为绿色、非必要消费显示为红色；趋势图移除左侧重复数值，并放大图例、扩展绘图区。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.16",
+  "tag_name": "v0.1.17",
+  "name": "资产大王 v0.1.17",
+  "body": "流水新增退款与已退款标记；筛选支持交易类型、一级/二级分类、必要性、报销状态、支付渠道、资金账户和商户/来源多选，修复非必要筛选漏掉分类默认值以及转账混入的问题，并增强隐私模式与历史分类兼容。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.17",
   "assets": [
     {
-      "name": "assets-king-v0.1.16.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.16/assets-king-v0.1.16.apk",
+      "name": "assets-king-v0.1.17.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.17/assets-king-v0.1.17.apk",
       "size": 31565070,
-      "digest": "sha256:406ed7f0cc9baffc0ab8c06096a9d137d48f1c5920eb64c00570d23641eaebfe"
+      "digest": "sha256:ce17050560e7e3ab6a910957535dc9cb17dce985e35d40ae1c91e0484333694d"
     }
   ]
 }

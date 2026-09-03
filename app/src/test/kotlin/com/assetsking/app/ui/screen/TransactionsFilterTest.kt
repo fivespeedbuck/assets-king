@@ -41,6 +41,161 @@ class TransactionsFilterTest {
         assertTrue(matchesCategoryFilter("房租", "房租", categories))
         assertFalse(matchesCategoryFilter("餐饮", "居住生活", categories))
         assertTrue(matchesCategoryFilter("房租", null, categories))
+        assertTrue(matchesCategoryFilter("rent", "housing", categories))
+        assertTrue(matchesCategoryFilter("rent", "居住生活", categories))
+        assertTrue(matchesCategoryFilter("房租", "housing", categories))
+    }
+
+    @Test
+    fun multipleCategoryFiltersUseOrAndStillExpandSelectedParents() {
+        val diningChild = CategoryEntity("snack", "零食/嘴馋加餐", "零食", "food", "cookie")
+        val categories = listOf(housing, rent, food, diningChild)
+
+        assertTrue(matchesCategoryFilters("房租", setOf("housing", "snack"), categories))
+        assertTrue(matchesCategoryFilters("snack", setOf("housing", "snack"), categories))
+        assertFalse(matchesCategoryFilters("food", setOf("rent"), categories))
+        assertTrue(matchesCategoryFilters("餐饮", emptySet(), categories))
+    }
+
+    @Test
+    fun categoryPickerContainsSelectableParentAndChildWithClearLabels() {
+        val archivedChild = rent.copy(id = "archived", name = "旧房租", isArchived = true)
+
+        val options = transactionCategoryFilterOptions(listOf(housing, rent, food, archivedChild))
+
+        assertTrue(TransactionFilterOption("housing", "居住生活") in options)
+        assertTrue(TransactionFilterOption("rent", "居住生活 / 房租") in options)
+        assertTrue(TransactionFilterOption("food", "餐饮") in options)
+        assertFalse(options.any { it.value == "archived" })
+    }
+
+    @Test
+    fun archivedCategoriesRemainMatchableForHistoricalDrillDown() {
+        val archivedParent = housing.copy(isArchived = true)
+        val archivedChild = rent.copy(isArchived = true)
+        val categories = listOf(archivedParent, archivedChild, food)
+
+        assertTrue(matchesCategoryFilter("房租", "housing", categories))
+        assertTrue(matchesCategoryFilter("rent", "居住生活", categories))
+        assertTrue(matchesCategoryFilter("rent", "housing", categories))
+        assertFalse(matchesCategoryFilter("food", "housing", categories))
+    }
+
+    @Test
+    fun necessityFiltersShareTheEffectiveCategoryDefaultAndAllowMultipleChoices() {
+        val optional = CategoryEntity(
+            id = "snack",
+            name = "零食/嘴馋加餐",
+            shortName = "零食",
+            parentId = "food",
+            iconKey = "cookie",
+            defaultNecessary = false
+        )
+        val defaultOptional = filterTransaction("default-optional", category = optional.name)
+        val explicitNecessary = defaultOptional.copy(id = "override", necessity = true)
+        val income = defaultOptional.copy(id = "income", type = TransactionType.INCOME.name)
+
+        assertTrue(matchesNecessityFilters(defaultOptional, setOf(false), optional))
+        assertFalse(matchesNecessityFilters(explicitNecessary, setOf(false), optional))
+        assertTrue(matchesNecessityFilters(explicitNecessary, setOf(true), optional))
+        assertTrue(matchesNecessityFilters(defaultOptional, setOf(true, false), optional))
+        assertFalse(matchesNecessityFilters(income, setOf(true, false), optional))
+        assertTrue(matchesNecessityFilters(income, emptySet(), optional))
+    }
+
+    @Test
+    fun channelAccountAndMerchantSelectionsUseOrWithinEachField() {
+        assertTrue(matchesNamedFilters("微信支付", setOf("支付宝", "微信支付")))
+        assertTrue(matchesNamedFilters("微信支付", setOf("微信支付")))
+        assertFalse(matchesNamedFilters("银行卡", setOf("支付宝", "微信支付")))
+        assertFalse(matchesNamedFilters(null, setOf("微信支付")))
+        assertTrue(matchesNamedFilters(null, emptySet()))
+    }
+
+    @Test
+    fun reimbursementSelectionsUseOrWithinTheField() {
+        val pending = filterTransaction("pending", category = "打车").copy(isReimbursable = true)
+        val reimbursed = filterTransaction("reimbursed", category = "打车").copy(
+            isReimbursable = true,
+            reimbursedCents = 1_000L
+        )
+
+        assertTrue(
+            matchesReimbursementFilters(
+                pending,
+                setOf(ReimbursementBadge.PENDING, ReimbursementBadge.SETTLED)
+            )
+        )
+        assertTrue(
+            matchesReimbursementFilters(
+                reimbursed,
+                setOf(ReimbursementBadge.PENDING, ReimbursementBadge.SETTLED)
+            )
+        )
+        assertFalse(matchesReimbursementFilters(pending, setOf(ReimbursementBadge.SETTLED)))
+    }
+
+    @Test
+    fun accountSelectionsUseOrAndTransfersMatchEitherEndpoint() {
+        val selectedAccounts = setOf("wechat", "bank")
+
+        assertTrue(matchesAccountFilters(selectedAccounts, "wechat"))
+        assertFalse(matchesAccountFilters(selectedAccounts, "cash"))
+        assertTrue(matchesAccountFilters(selectedAccounts, "cash", "bank"))
+        assertFalse(matchesAccountFilters(selectedAccounts, "cash", "alipay"))
+        assertTrue(matchesAccountFilters(emptySet(), "cash", "alipay"))
+    }
+
+    @Test
+    fun ordinaryTransactionsAndTransfersCanBeSelectedTogether() {
+        assertTrue(
+            transferMatchesTransactionOnlyFilters(
+                selectedTypes = setOf(TransactionType.EXPENSE.name, TRANSFER_FILTER_TYPE),
+                selectedCategories = emptySet(),
+                selectedNecessities = emptySet(),
+                selectedReimbursements = emptySet(),
+                recurringDebitOnly = false,
+                selectedChannels = emptySet(),
+                selectedMerchants = emptySet()
+            )
+        )
+    }
+
+    @Test
+    fun transactionOnlyFiltersNeverLeakAccountTransfersIntoResults() {
+        assertTrue(
+            transferMatchesTransactionOnlyFilters(
+                selectedTypes = setOf(TRANSFER_FILTER_TYPE),
+                selectedCategories = emptySet(),
+                selectedNecessities = emptySet(),
+                selectedReimbursements = emptySet(),
+                recurringDebitOnly = false,
+                selectedChannels = emptySet(),
+                selectedMerchants = emptySet()
+            )
+        )
+        assertFalse(
+            transferMatchesTransactionOnlyFilters(
+                selectedTypes = setOf(TransactionType.EXPENSE.name),
+                selectedCategories = emptySet(),
+                selectedNecessities = emptySet(),
+                selectedReimbursements = emptySet(),
+                recurringDebitOnly = false,
+                selectedChannels = emptySet(),
+                selectedMerchants = emptySet()
+            )
+        )
+        assertFalse(
+            transferMatchesTransactionOnlyFilters(
+                selectedTypes = setOf(TRANSFER_FILTER_TYPE),
+                selectedCategories = emptySet(),
+                selectedNecessities = setOf(false),
+                selectedReimbursements = emptySet(),
+                recurringDebitOnly = false,
+                selectedChannels = emptySet(),
+                selectedMerchants = emptySet()
+            )
+        )
     }
 
     @Test
@@ -172,5 +327,18 @@ class TransactionsFilterTest {
         occurredAt = 1L,
         isReimbursable = marked,
         reimbursedCents = reimbursed
+    )
+
+    private fun filterTransaction(
+        id: String,
+        category: String,
+        type: String = TransactionType.EXPENSE.name
+    ) = TransactionEntity(
+        id = id,
+        accountId = "cash",
+        amountCents = 1_000L,
+        type = type,
+        category = category,
+        occurredAt = 1L
     )
 }
