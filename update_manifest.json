@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.18",
-  "name": "资产大王 v0.1.18",
-  "body": "统计页收支与还款趋势的月份横轴改为按数据位置均匀采样：3 个月显示 3 个刻度，6 个月和 12 个月最多显示 4 个刻度，并固定包含首月和末月。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.18",
+  "tag_name": "v0.1.19",
+  "name": "资产大王 v0.1.19",
+  "body": "优化待确认录入：用途前置、日期后移，订单平台与支付渠道默认收起，键盘和保存区不再遮挡；修复历史商户分类与资金账户复用、已删除商户重新出现、招商账户尾号冲突及微信支付渠道异常，并增强非交易通知降噪和余额变化展示。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.19",
   "assets": [
     {
-      "name": "assets-king-v0.1.18.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.18/assets-king-v0.1.18.apk",
-      "size": 31565070,
-      "digest": "sha256:daf04c734fdd21dd38c653f9e21a9bc600640e745040fd8699a28bf710428ccd"
+      "name": "assets-king-v0.1.19.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.19/assets-king-v0.1.19.apk",
+      "size": 31581454,
+      "digest": "sha256:f7e02ac7b1ea5556193c476205a09c5bc88811875435a02a78d2b485b2e4f162"
     }
   ]
 }

@@ -3,6 +3,7 @@ package com.assetsking.app.ui.screen
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LoanPlanEntity
+import com.assetsking.usecase.AccountInference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -22,6 +23,8 @@ class EditCategoryPresentationTest {
     fun uncommonPaymentChannelUsesTheCustomInputPath() {
         assertEquals(false, isCustomPaymentChannel("支付宝"))
         assertEquals(false, isCustomPaymentChannel(""))
+        assertEquals(false, isCustomPaymentChannel("微信支付"))
+        assertEquals("微信", paymentChannelForEditor("财付通-微信支付"))
         assertEquals(true, isCustomPaymentChannel("数字人民币"))
         assertEquals(false, shouldUseCustomPaymentChannelEditor("数字人民币", setOf("数字人民币")))
         assertEquals(true, shouldUseCustomPaymentChannelEditor("抖音支付", emptySet()))
@@ -34,6 +37,20 @@ class EditCategoryPresentationTest {
         val loan = AccountEntity("loan", "招行消费贷", "LOAN", 3_000L)
 
         assertEquals(listOf("cash", "card"), fundingAccounts(listOf(cash, card, loan)).map { it.id })
+    }
+
+    @Test
+    fun loanWithSameTailDoesNotMakeFundingAccountAmbiguous() {
+        val bank = AccountEntity("bank", "招商银行", "ASSET", 1_000L, cardTail = "3683")
+        val loan = AccountEntity("loan", "招商闪电贷", "LOAN", 3_000L, cardTail = "3683")
+        val candidates = fundingAccounts(listOf(bank, loan)).map {
+            AccountInference.Candidate(it.id, it.name, it.cardTail)
+        }
+
+        val resolution = AccountInference.resolveBankAccount("3683", "招商", candidates)
+
+        assertEquals("bank", resolution.accountId)
+        assertEquals(false, resolution.isAmbiguous)
     }
 
     @Test

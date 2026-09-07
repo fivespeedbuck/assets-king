@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import com.assetsking.database.AccountEntity
 import com.assetsking.database.CategoryEntity
 import com.assetsking.database.LedgerRepository
+import com.assetsking.database.LearnedRule
 import com.assetsking.database.LendingOriginType
 import com.assetsking.database.LendingPlanEntity
 import com.assetsking.database.LendingPlanStatus
@@ -16,6 +17,59 @@ import com.assetsking.model.TransactionType
 import com.assetsking.usecase.ParsedNotification
 import com.assetsking.usecase.ReimbursementMatchCandidate
 import com.assetsking.usecase.uniqueExactReimbursementMatch
+
+internal data class LearnedMerchantPrefill(
+    val accountId: String?,
+    val categoryId: String?,
+    val kind: EditorKind,
+    val incomeSub: IncomeSub
+)
+
+internal fun learnedMerchantPrefill(
+    learned: LearnedRule,
+    categories: List<CategoryEntity>,
+    ordinaryAccounts: List<AccountEntity>,
+    currentKind: EditorKind,
+    currentIncomeSub: IncomeSub,
+    parsedIsRefund: Boolean,
+    bankEvidenceBlocksLearnedAccount: Boolean
+): LearnedMerchantPrefill {
+    var targetKind = currentKind
+    var targetIncomeSub = currentIncomeSub
+    if (!parsedIsRefund) {
+        when (runCatching { TransactionType.valueOf(learned.type) }.getOrNull()) {
+            TransactionType.INCOME -> {
+                targetKind = EditorKind.INCOME
+                targetIncomeSub = IncomeSub.INCOME
+            }
+            TransactionType.REFUND -> {
+                targetKind = EditorKind.INCOME
+                targetIncomeSub = IncomeSub.REFUND
+            }
+            TransactionType.EXPENSE -> targetKind = EditorKind.EXPENSE
+            else -> Unit
+        }
+    }
+    val expectedCategoryKind = if (
+        targetKind == EditorKind.INCOME && targetIncomeSub == IncomeSub.INCOME
+    ) {
+        "INCOME"
+    } else {
+        "EXPENSE"
+    }
+    return LearnedMerchantPrefill(
+        accountId = learned.accountId.takeIf {
+            !bankEvidenceBlocksLearnedAccount && ordinaryAccounts.any { account ->
+                account.id == learned.accountId && !account.archived
+            }
+        },
+        categoryId = categories.firstOrNull {
+            it.name == learned.category && it.kind == expectedCategoryKind && !it.isArchived
+        }?.id,
+        kind = targetKind,
+        incomeSub = targetIncomeSub
+    )
+}
 
 /**
  * Loads associations needed by the editor without keeping the database read in the main
@@ -54,6 +108,7 @@ internal fun TransactionEditorAssociationEffects(
 @Composable
 internal fun TransactionEditorPrefillEffects(
     pendingNotificationId: String?,
+    merchantText: String,
     categories: List<CategoryEntity>,
     pendingCategoryName: String?,
     catKind: String,
@@ -64,6 +119,7 @@ internal fun TransactionEditorPrefillEffects(
     ordinaryAccounts: List<AccountEntity>,
     repository: LedgerRepository,
     savedDraftPresent: Boolean,
+    bankEvidenceBlocksLearnedAccount: Boolean,
     kind: EditorKind,
     incomeSub: IncomeSub,
     onCategoryIdChanged: (String?) -> Unit,
@@ -72,7 +128,8 @@ internal fun TransactionEditorPrefillEffects(
     onAccountIdChanged: (String) -> Unit,
     onDirectionChosenChanged: (Boolean) -> Unit,
     onKindChanged: (EditorKind) -> Unit,
-    onIncomeSubChanged: (IncomeSub) -> Unit
+    onIncomeSubChanged: (IncomeSub) -> Unit,
+    onInitialLearnedPrefillEvaluated: () -> Unit
 ) {
     LaunchedEffect(categories, editingTransaction?.id) {
         if (!editingCategoryInitialized && categories.isNotEmpty()) {
@@ -96,51 +153,38 @@ internal fun TransactionEditorPrefillEffects(
     }
 
     // 学习规则只负责预填，绝不自动落账。解析出的“退款”证据优先于历史商户类型。
-    LaunchedEffect(pendingNotificationId, categories, ordinaryAccounts) {
-        if (editingTransaction != null || savedDraftPresent) return@LaunchedEffect
-        val parsedNotification = parsed ?: return@LaunchedEffect
-        val merchant = parsedNotification.merchant ?: return@LaunchedEffect
-        val learned = repository.matchLearnedRule(merchant) ?: return@LaunchedEffect
-        ordinaryAccounts.firstOrNull { it.id == learned.accountId && !it.archived }?.let {
-            onAccountIdChanged(it.id)
+    LaunchedEffect(pendingNotificationId, merchantText, categories, ordinaryAccounts) {
+        if (editingTransaction != null || savedDraftPresent || pendingNotificationId == null) {
+            return@LaunchedEffect
         }
-
-        var learnedKind = kind
-        var learnedIncomeSub = incomeSub
-        if (parsedNotification.isRefund != true) {
-            when (runCatching { TransactionType.valueOf(learned.type) }.getOrNull()) {
-                TransactionType.INCOME -> {
-                    onDirectionChosenChanged(true)
-                    onKindChanged(EditorKind.INCOME)
-                    learnedKind = EditorKind.INCOME
-                    onIncomeSubChanged(IncomeSub.INCOME)
-                    learnedIncomeSub = IncomeSub.INCOME
-                }
-                TransactionType.REFUND -> {
-                    onDirectionChosenChanged(true)
-                    onKindChanged(EditorKind.INCOME)
-                    learnedKind = EditorKind.INCOME
-                    onIncomeSubChanged(IncomeSub.REFUND)
-                    learnedIncomeSub = IncomeSub.REFUND
-                }
-                TransactionType.EXPENSE -> {
-                    onDirectionChosenChanged(true)
-                    onKindChanged(EditorKind.EXPENSE)
-                    learnedKind = EditorKind.EXPENSE
-                }
-                else -> Unit
-            }
+        if (categories.isEmpty() || ordinaryAccounts.isEmpty()) return@LaunchedEffect
+        val merchant = merchantText.trim()
+        if (merchant.isEmpty()) {
+            onInitialLearnedPrefillEvaluated()
+            return@LaunchedEffect
         }
-        val expectedKind = if (
-            learnedKind == EditorKind.INCOME && learnedIncomeSub == IncomeSub.INCOME
-        ) {
-            "INCOME"
-        } else {
-            "EXPENSE"
+        val learned = repository.matchLearnedRule(merchant)
+        if (learned == null) {
+            onInitialLearnedPrefillEvaluated()
+            return@LaunchedEffect
         }
-        categories.firstOrNull {
-            it.name == learned.category && it.kind == expectedKind && !it.isArchived
-        }?.let { onCategoryIdChanged(it.id) }
+        val prefill = learnedMerchantPrefill(
+            learned = learned,
+            categories = categories,
+            ordinaryAccounts = ordinaryAccounts,
+            currentKind = kind,
+            currentIncomeSub = incomeSub,
+            parsedIsRefund = parsed?.isRefund == true,
+            bankEvidenceBlocksLearnedAccount = bankEvidenceBlocksLearnedAccount
+        )
+        prefill.accountId?.let(onAccountIdChanged)
+        prefill.categoryId?.let(onCategoryIdChanged)
+        if (prefill.kind != kind || prefill.incomeSub != incomeSub) {
+            onDirectionChosenChanged(true)
+            onKindChanged(prefill.kind)
+            onIncomeSubChanged(prefill.incomeSub)
+        }
+        onInitialLearnedPrefillEvaluated()
     }
 }
 

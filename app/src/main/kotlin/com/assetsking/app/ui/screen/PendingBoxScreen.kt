@@ -499,7 +499,7 @@ private fun confirmItem(
 
 private fun inferAccountId(item: PendingItem, accounts: List<AccountEntity>, merchantLastAccount: Map<String, String>): String? =
     run {
-        val candidates = accounts.filterNot { it.archived }
+        val candidates = fundingAccounts(accounts)
             .map { AccountInference.Candidate(it.id, it.name, it.cardTail) }
         val bankResolution = AccountInference.resolveBankAccount(item.parsed.cardTail, item.parsed.bankHint, candidates)
         AccountInference.infer(

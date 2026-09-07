@@ -33,6 +33,23 @@ class BalanceChangePresentationTest {
     }
 
     @Test
+    fun balanceChangeAlwaysKeepsFlowAmountArithmeticallyConsistent() {
+        val evidence = ParsedNotification(
+            amountCents = 183L,
+            merchant = "测试商户",
+            isExpense = true,
+            bankHint = "招商银行",
+            balanceCents = 65_423L,
+            cardTail = "3683"
+        )
+
+        val change = balanceChangeFromEvidence(account, TransactionType.EXPENSE, 183L, evidence)
+
+        assertEquals(BalanceChange(65_606L, 65_423L), change)
+        assertEquals(183L, change!!.beforeCents - change.afterCents)
+    }
+
+    @Test
     fun missingOrWrongCardEvidenceIsHidden() {
         val missing = ParsedNotification(100L, null, true, null)
         val wrongTail = missing.copy(balanceCents = 1_000L, cardTail = "9999")

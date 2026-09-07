@@ -60,9 +60,11 @@ object AccountInference {
         sourceLabel: String?,
         parsedChannel: String? = null
     ): String {
-        parsedChannel?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        parsedChannel?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            return if (it == "微信支付" || it == "财付通" || it == "财付通-微信支付") "微信" else it
+        }
         return when (packageName) {
-            "com.tencent.mm" -> "微信支付"
+            "com.tencent.mm" -> "微信"
             "com.eg.android.AlipayGphone" -> "支付宝"
             else -> ""
         }

@@ -27,8 +27,13 @@ import com.assetsking.ui.component.FormField
 
 internal val commonPaymentChannels = listOf("微信", "支付宝", "云闪付", "银行卡", "现金")
 
+internal fun paymentChannelForEditor(channel: String?): String = when (val value = channel?.trim().orEmpty()) {
+    "微信支付", "财付通", "财付通-微信支付" -> "微信"
+    else -> value
+}
+
 internal fun isCustomPaymentChannel(channel: String): Boolean =
-    channel.isNotBlank() && channel !in commonPaymentChannels
+    paymentChannelForEditor(channel).let { it.isNotBlank() && it !in commonPaymentChannels }
 
 internal fun shouldUseCustomPaymentChannelEditor(channel: String, savedChannels: Set<String>): Boolean =
     isCustomPaymentChannel(channel) && channel !in savedChannels

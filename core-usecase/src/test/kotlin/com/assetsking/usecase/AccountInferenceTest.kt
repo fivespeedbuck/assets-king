@@ -67,7 +67,8 @@ class AccountInferenceTest {
         assertEquals("", AccountInference.channelLabel("sms", "招商银行"))
         assertEquals("", AccountInference.channelLabel("com.cmb.pb", "招商银行"))
         assertEquals("支付宝", AccountInference.channelLabel("sms", "招商银行", "支付宝"))
-        assertEquals("微信支付", AccountInference.channelLabel("com.cmb.pb", "招商银行", "微信支付"))
+        assertEquals("微信", AccountInference.channelLabel("com.cmb.pb", "招商银行", "微信支付"))
+        assertEquals("微信", AccountInference.channelLabel("com.tencent.mm", "微信"))
     }
 
     @Test

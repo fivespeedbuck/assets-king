@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,6 +35,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -79,11 +79,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.assetsking.app.LedgerViewModel
@@ -111,6 +117,8 @@ import com.assetsking.ui.format.formatTime
 import com.assetsking.ui.format.transactionCategoryLabel
 import com.assetsking.ui.format.replaceLocalDate
 import com.assetsking.ui.format.replaceLocalTime
+import com.assetsking.ui.theme.ExpenseRed
+import com.assetsking.ui.theme.IncomeGreen
 import com.assetsking.usecase.AccountInference
 import com.assetsking.usecase.NotificationParser
 import com.assetsking.usecase.PendingConfirmationPolicy
@@ -183,6 +191,8 @@ fun TransactionEditorScreen(
     onBack: () -> Unit
 ) {
     val editorContext = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val draftStore = remember(editorContext) { TransactionEditorDraftStore(editorContext) }
     val draftKey = transactionEditorDraftKey(
         pendingNotificationId = pendingItem?.notification?.id,
@@ -191,6 +201,11 @@ fun TransactionEditorScreen(
     )
     val savedDraft = remember(draftKey) { draftStore.load(draftKey) }
     val draftGeneration = remember(draftStore, draftKey) { draftStore.openSession(draftKey) }
+    // 页面或草稿恢复时清掉系统恢复的旧焦点；键盘只在用户主动点击输入框后出现。
+    LaunchedEffect(draftKey) {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
     val submissionId = remember(draftKey) {
         savedDraft?.submissionId ?: UUID.randomUUID().toString()
     }
@@ -287,14 +302,14 @@ fun TransactionEditorScreen(
     }
     var channel by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(
-            savedDraft?.channel ?: editingTransaction?.channel.orEmpty().ifBlank {
+            paymentChannelForEditor(savedDraft?.channel ?: editingTransaction?.channel.orEmpty().ifBlank {
                 if (pendingItem != null) AccountInference.channelLabel(
                     pendingItem.notification.packageName,
                     pendingItem.notification.sourceLabel,
                     parsed?.paymentChannel
                 )
                 else "微信"
-            }
+            })
         )
     }
     var customChannelSelected by remember(pendingItem?.notification?.id, editingTransaction?.id, draftKey) {
@@ -317,6 +332,9 @@ fun TransactionEditorScreen(
     var merchantText by remember(pendingItem?.notification?.id, editingTransaction?.id) {
         mutableStateOf(savedDraft?.merchantText ?: editingTransaction?.merchant.orEmpty().ifBlank { parsed?.merchant.orEmpty() })
     }
+    val bankEvidenceBlocksLearnedAccount = pendingItem?.let {
+        it.bankEvidenceAmbiguous || !parsed?.cardTail.isNullOrBlank() || !parsed?.bankHint.isNullOrBlank()
+    } == true
     val editingCategoryKind = if (editingTransaction?.type == TransactionType.INCOME.name) "INCOME" else "EXPENSE"
     var categoryId by remember(editingTransaction?.id, pendingItem?.notification?.id, draftKey) {
         mutableStateOf(
@@ -352,6 +370,11 @@ fun TransactionEditorScreen(
         )
     }
     var balanceResolutionInitialized by remember(draftKey) { mutableStateOf(false) }
+    var initialLearnedPrefillEvaluated by remember(draftKey) {
+        mutableStateOf(
+            pendingItem == null || savedDraft != null || parsed?.merchant.isNullOrBlank()
+        )
+    }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -520,10 +543,10 @@ fun TransactionEditorScreen(
         editingLending = editingTransaction?.lendingPlanId != null,
         editingAny = editingTransaction != null
     )
-    val merchantSuggestions = remember(merchantText, merchants, transactions) {
+    val merchantSuggestions = remember(merchantText, merchants) {
         historyTextSuggestions(
             query = merchantText,
-            candidates = transactions.mapNotNull { it.merchant } + merchants.map { it.id }
+            candidates = merchantSuggestionCandidates(merchants)
         )
     }
     val noteSuggestions = remember(note, transactions) {
@@ -571,6 +594,7 @@ fun TransactionEditorScreen(
 
     TransactionEditorPrefillEffects(
         pendingNotificationId = pendingItem?.notification?.id,
+        merchantText = merchantText,
         categories = categories,
         pendingCategoryName = pendingCategoryName,
         catKind = catKind,
@@ -581,6 +605,7 @@ fun TransactionEditorScreen(
         ordinaryAccounts = ordinaryAccounts,
         repository = repository,
         savedDraftPresent = savedDraft != null,
+        bankEvidenceBlocksLearnedAccount = bankEvidenceBlocksLearnedAccount,
         kind = kind,
         incomeSub = incomeSub,
         onCategoryIdChanged = { categoryId = it },
@@ -589,15 +614,19 @@ fun TransactionEditorScreen(
         onAccountIdChanged = { accountId = it },
         onDirectionChosenChanged = { directionChosen = it },
         onKindChanged = { kind = it },
-        onIncomeSubChanged = { incomeSub = it }
+        onIncomeSubChanged = { incomeSub = it },
+        onInitialLearnedPrefillEvaluated = { initialLearnedPrefillEvaluated = true }
     )
 
-    // 首次组合时冻结入口值；恢复草稿时只记录解析器字段，绝不把用户草稿冒充原始预填。
-    val pendingPrefillEntryDraft = remember(pendingItem?.notification?.id) {
-        editorDraft.takeIf { pendingItem != null && savedDraft == null }
+    // 等待初始商户学习规则评估完成后再冻结入口值，避免把异步预填前的空分类误记成最终入口预填。
+    // 恢复草稿时仍只记录解析器字段，绝不把用户草稿冒充原始预填。
+    val pendingPrefillEntryDraft = remember(pendingItem?.notification?.id, initialLearnedPrefillEvaluated) {
+        editorDraft.takeIf { pendingItem != null && savedDraft == null && initialLearnedPrefillEvaluated }
     }
     RecordPendingPrefillBaselineEffect(
-        notificationId = pendingItem?.notification?.id,
+        notificationId = pendingItem?.notification?.id?.takeIf {
+            savedDraft != null || initialLearnedPrefillEvaluated
+        },
         entryDraft = pendingPrefillEntryDraft,
         restoredFromSavedDraft = savedDraft != null,
         parsed = parsed,
@@ -680,6 +709,53 @@ fun TransactionEditorScreen(
         assetBalanceShortfallCents = assetBalanceShortfallCents
     )
 
+    fun submitEditor() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        if (missing.isNotEmpty() || saving) return
+        if (!draftStore.flush(draftKey, draftGeneration, editorDraft)) {
+            saveError = "无法保存提交状态，请重试"
+            return
+        }
+        saving = true
+        saveError = null
+        saveEditor(
+            editingTransaction = editingTransaction,
+            kind = kind,
+            incomeSub = incomeSub,
+            repaySub = repaySub,
+            lendingSub = lendingSub,
+            amountCents = amountCents,
+            occurredAt = occurredAt,
+            accountId = accountId,
+            toAccountId = toAccountId,
+            channel = channel,
+            orderPlatform = orderPlatform,
+            merchantText = merchantText,
+            selectedCategoryName = selectedCategoryName,
+            selectedRefundSource = selectedRefundSource,
+            effectiveNecessity = effectiveNecessity,
+            necessity = necessity,
+            isReimbursable = isReimbursable,
+            note = note,
+            loanPlanId = loanPlanId,
+            lendingPlanId = lendingPlanId,
+            principalCents = principalCents,
+            interestCents = interestCents,
+            feeCents = feeCents,
+            transferFeeCents = transferFeeCents,
+            expenseIds = expenseIds.value,
+            bankBalanceForSave = bankBalanceForSave,
+            refundOfId = refundOfId,
+            pendingItem = pendingItem,
+            submissionId = submissionId,
+            viewModel = viewModel,
+            onSavingChanged = { saving = it },
+            onError = { saveError = it },
+            onDone = finishDone
+        )
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -687,61 +763,6 @@ fun TransactionEditorScreen(
                 title = { Text(if (editingTransaction != null) "编辑流水" else kind.label) },
                 navigationIcon = {
                     IconButton(onClick = finishBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回") }
-                }
-            )
-        },
-        bottomBar = {
-            EditorSaveBar(
-                missing = missing,
-                showMissing = amountExpr.isNotBlank() || pendingItem != null,
-                amountCents = amountCents,
-                saveError = saveError,
-                saving = saving,
-                editingTransaction = editingTransaction,
-                onSave = {
-                    if (missing.isEmpty() && !saving) {
-                        if (!draftStore.flush(draftKey, draftGeneration, editorDraft)) {
-                            saveError = "无法保存提交状态，请重试"
-                            return@EditorSaveBar
-                        }
-                        saving = true
-                        saveError = null
-                        saveEditor(
-                            editingTransaction = editingTransaction,
-                            kind = kind,
-                            incomeSub = incomeSub,
-                            repaySub = repaySub,
-                            lendingSub = lendingSub,
-                            amountCents = amountCents,
-                            occurredAt = occurredAt,
-                            accountId = accountId,
-                            toAccountId = toAccountId,
-                            channel = channel,
-                            orderPlatform = orderPlatform,
-                            merchantText = merchantText,
-                            selectedCategoryName = selectedCategoryName,
-                            selectedRefundSource = selectedRefundSource,
-                            effectiveNecessity = effectiveNecessity,
-                            necessity = necessity,
-                            isReimbursable = isReimbursable,
-                            note = note,
-                            loanPlanId = loanPlanId,
-                            lendingPlanId = lendingPlanId,
-                            principalCents = principalCents,
-                            interestCents = interestCents,
-                            feeCents = feeCents,
-                            transferFeeCents = transferFeeCents,
-                            expenseIds = expenseIds.value,
-                            bankBalanceForSave = bankBalanceForSave,
-                            refundOfId = refundOfId,
-                            pendingItem = pendingItem,
-                            submissionId = submissionId,
-                            viewModel = viewModel,
-                            onSavingChanged = { saving = it },
-                            onError = { saveError = it },
-                            onDone = finishDone
-                        )
-                    }
                 }
             )
         }
@@ -761,7 +782,8 @@ fun TransactionEditorScreen(
                 lendingSub = lendingSub,
                 amountExpr = amountExpr,
                 evaluated = evaluated,
-                occurredAt = occurredAt,
+                purpose = note,
+                purposeSuggestions = noteSuggestions,
                 onKindSelected = { selectedKind ->
                     directionChosen = true
                     if (kind != selectedKind) {
@@ -788,8 +810,7 @@ fun TransactionEditorScreen(
                     }
                 },
                 onAmountChange = { amountExpr = it.filter { c -> c.isDigit() || c in ".-+×÷*/" } },
-                onDatePickerRequested = { showDatePicker = true },
-                onTimePickerRequested = { showTimePicker = true }
+                onPurposeChanged = { note = it }
             )
 
             EditorReadOnlyBalanceChange(
@@ -888,7 +909,7 @@ fun TransactionEditorScreen(
             val showsCategory = kind == EditorKind.EXPENSE ||
                 (kind == EditorKind.INCOME && incomeSub == IncomeSub.INCOME)
             if (showsCategory) {
-                EditorCategoryAndNotesSection(
+                EditorCategorySection(
                     parents = parents,
                     childrenOf = childrenOf,
                     selectedCategoryId = categoryId,
@@ -896,8 +917,6 @@ fun TransactionEditorScreen(
                     effectiveNecessity = effectiveNecessity,
                     editingTransaction = editingTransaction,
                     isReimbursable = isReimbursable,
-                    note = note,
-                    noteSuggestions = noteSuggestions,
                     onSelectCategory = { categoryId = it.id },
                     onClearCategory = { categoryId = null },
                     onAddChild = { parentId ->
@@ -906,8 +925,7 @@ fun TransactionEditorScreen(
                     },
                     onReorderCategories = { viewModel.reorderCategories(it) },
                     onNecessityChanged = { necessity = it },
-                    onReimbursableChanged = { isReimbursable = it },
-                    onNoteChanged = { note = it }
+                    onReimbursableChanged = { isReimbursable = it }
                 )
             }
 
@@ -954,13 +972,19 @@ fun TransactionEditorScreen(
                 )
             }
 
-            if (!showsCategory) {
-                EditorNotesSection(
-                    note = note,
-                    noteSuggestions = noteSuggestions,
-                    onNoteChanged = { note = it }
-                )
-            }
+            EditorDateTimeSection(
+                occurredAt = occurredAt,
+                onDatePickerRequested = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    showDatePicker = true
+                },
+                onTimePickerRequested = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    showTimePicker = true
+                }
+            )
 
             if (editingTransaction != null) {
                 OutlinedButton(
@@ -997,6 +1021,16 @@ fun TransactionEditorScreen(
                     onBalanceResolution = { balanceResolution = it }
                 )
             }
+
+            EditorSaveBar(
+                missing = missing,
+                showMissing = amountExpr.isNotBlank() || pendingItem != null,
+                amountCents = amountCents,
+                saveError = saveError,
+                saving = saving,
+                editingTransaction = editingTransaction,
+                onSave = ::submitEditor
+            )
         }
     }
 
@@ -1031,7 +1065,7 @@ private fun inferPendingAccountId(
     merchantLastAccount: Map<String, String>
 ): String? {
     val parsed = pendingItem.parsed
-    val candidates = accounts.filterNot { it.archived }
+    val candidates = fundingAccounts(accounts)
         .map { AccountInference.Candidate(it.id, it.name, it.cardTail) }
     val bankResolution = AccountInference.resolveBankAccount(parsed.cardTail, parsed.bankHint, candidates)
     return AccountInference.infer(
@@ -1097,17 +1131,30 @@ private fun BalanceChangeReadOnly(
 ) {
     val change = balanceChangeFromEvidence(account, type, amountCents, evidence) ?: return
     val before = formatMoney(change.beforeCents)
+    val flow = formatMoney(kotlin.math.abs(change.afterCents - change.beforeCents))
     val after = formatMoney(change.afterCents)
-    val amountSize = when (maxOf(before.length, after.length)) {
-        in 0..10 -> 22.sp
-        in 11..13 -> 20.sp
-        in 14..16 -> 18.sp
+    val flowIsIncome = change.afterCents >= change.beforeCents
+    val amountSize = when (before.length + flow.length + after.length) {
+        in 0..25 -> 22.sp
+        in 26..31 -> 20.sp
+        in 32..37 -> 18.sp
         else -> 16.sp
     }
-    var fittedSize by remember(before, after) { mutableStateOf(amountSize) }
+    var fittedSize by remember(before, flow, after) { mutableStateOf(amountSize) }
+    val text = buildAnnotatedString {
+        append(before)
+        append(" -- ")
+        withStyle(SpanStyle(color = if (flowIsIncome) IncomeGreen else ExpenseRed)) {
+            append(flow)
+        }
+        append(" --> ")
+        append(after)
+    }
     Text(
-        text = "$before → $after",
-        modifier = Modifier.fillMaxWidth().semantics { stateDescription = "余额变化，从 $before 到 $after" },
+        text = text,
+        modifier = Modifier.fillMaxWidth().semantics {
+            stateDescription = "余额变化，从 $before，${if (flowIsIncome) "入账" else "支出"} $flow，到 $after"
+        },
         style = MaterialTheme.typography.titleLarge.copy(fontSize = fittedSize),
         fontWeight = FontWeight.Bold,
         maxLines = 1,
@@ -1147,15 +1194,17 @@ private fun EditorBasicInformationSection(
     lendingSub: LendingSub,
     amountExpr: String,
     evaluated: Double?,
-    occurredAt: Long,
+    purpose: String,
+    purposeSuggestions: List<String>,
     onKindSelected: (EditorKind) -> Unit,
     onIncomeSubSelected: (IncomeSub) -> Unit,
     onRepaySubSelected: (RepaySub) -> Unit,
     onLendingSubSelected: (LendingSub) -> Unit,
     onAmountChange: (String) -> Unit,
-    onDatePickerRequested: () -> Unit,
-    onTimePickerRequested: () -> Unit
+    onPurposeChanged: (String) -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     EditorSectionCard(title = "基本信息") {
         if (editingTransaction?.let(::isRecurringDebit) == true) {
             Text(
@@ -1240,7 +1289,11 @@ private fun EditorBasicInformationSection(
             label = { Text("金额") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                focusManager.clearFocus()
+                keyboardController?.hide()
+            })
         )
         if (amountExpr.any { it in "+-×÷*/" }) {
             Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.CenterStart) {
@@ -1254,15 +1307,15 @@ private fun EditorBasicInformationSection(
                 )
             }
         }
-        Text("日期与时间", fontWeight = FontWeight.Medium)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onDatePickerRequested, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                Text(formatTime(occurredAt).substringBefore(' '))
-            }
-            OutlinedButton(onClick = onTimePickerRequested, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                Text(formatTime(occurredAt).substringAfter(' '))
-            }
-        }
+        SuggestionField(
+            value = purpose,
+            onValueChange = onPurposeChanged,
+            suggestions = purposeSuggestions,
+            label = "用途（可选）",
+            required = false,
+            suggestionHint = "历史用途",
+            singleLine = true
+        )
     }
 }
 
@@ -1295,28 +1348,10 @@ private fun EditorAccountAndMerchantSection(
     onTransferFeeChanged: (String) -> Unit,
     onMerchantChanged: (String) -> Unit
 ) {
-    EditorSectionCard(title = "账户与渠道") {
+    var advancedExpanded by remember(kind, incomeSub, repaySub) { mutableStateOf(false) }
+    EditorSectionCard(title = "账户与对象") {
         val supportsOrderPlatform = kind == EditorKind.EXPENSE ||
             (kind == EditorKind.INCOME && incomeSub in setOf(IncomeSub.INCOME, IncomeSub.REFUND))
-        if (supportsOrderPlatform) {
-            OrderPlatformDropdownField(
-                selectedPlatform = orderPlatform,
-                savedPlatforms = savedOrderPlatforms,
-                customPlatformSelected = customOrderPlatformSelected,
-                onPlatformSelected = onOrderPlatformSelected,
-                onCustomPlatformSelected = onCustomOrderPlatformSelected,
-                modifier = Modifier.fillMaxWidth()
-            )
-            if (customOrderPlatformSelected) {
-                OutlinedTextField(
-                    value = orderPlatform,
-                    onValueChange = onOrderPlatformSelected,
-                    label = { Text("自定义订单平台") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
-        }
         if (kind == EditorKind.TRANSFER || (kind == EditorKind.REPAY && repaySub == RepaySub.CREDIT_CARD)) {
             val fromTargets = ordinaryAccounts.filter { it.type == AccountType.ASSET.name && !it.archived }
             val toTargets = if (kind == EditorKind.TRANSFER) {
@@ -1340,21 +1375,6 @@ private fun EditorAccountAndMerchantSection(
                     modifier = Modifier.weight(1f)
                 )
             }
-            PaymentChannelDropdownField(
-                selectedChannel = channel,
-                savedChannels = savedPaymentChannels,
-                customChannelSelected = customChannelSelected,
-                onChannelSelected = onChannelSelected,
-                onCustomChannelSelected = onCustomChannelSelected
-            )
-            if (customChannelSelected) {
-                OutlinedTextField(
-                    value = channel,
-                    onValueChange = onChannelSelected,
-                    label = { Text("自定义支付渠道") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
             if (kind == EditorKind.TRANSFER && pendingItemPresent) {
                 OutlinedTextField(
                     value = transferFeeExpr,
@@ -1369,27 +1389,17 @@ private fun EditorAccountAndMerchantSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        } else if (kind == EditorKind.LENDING) {
-            AccountChannelFields(
-                accounts = ordinaryAccounts.filter { it.type == AccountType.ASSET.name },
-                selectedAccountId = accountId,
-                selectedChannel = channel,
-                savedChannels = savedPaymentChannels,
-                customChannelSelected = customChannelSelected,
-                onAccountSelected = onAccountSelected,
-                onChannelSelected = onChannelSelected,
-                onCustomChannelSelected = onCustomChannelSelected
-            )
         } else {
-            AccountChannelFields(
-                accounts = ordinaryAccounts,
+            AccountDropdownField(
+                label = "资金账户",
+                accounts = if (kind == EditorKind.LENDING) {
+                    ordinaryAccounts.filter { it.type == AccountType.ASSET.name }
+                } else {
+                    fundingAccounts(ordinaryAccounts)
+                },
                 selectedAccountId = accountId,
-                selectedChannel = channel,
-                savedChannels = savedPaymentChannels,
-                customChannelSelected = customChannelSelected,
                 onAccountSelected = onAccountSelected,
-                onChannelSelected = onChannelSelected,
-                onCustomChannelSelected = onCustomChannelSelected
+                modifier = Modifier.fillMaxWidth()
             )
         }
         SuggestionField(
@@ -1406,6 +1416,56 @@ private fun EditorAccountAndMerchantSection(
             suggestionHint = "历史商户",
             singleLine = true
         )
+        TextButton(onClick = { advancedExpanded = !advancedExpanded }) {
+            Text(if (advancedExpanded) "收起更多信息" else "更多信息")
+            Icon(
+                if (advancedExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null
+            )
+        }
+        if (advancedExpanded) {
+            if (supportsOrderPlatform) {
+                OrderPlatformDropdownField(
+                    selectedPlatform = orderPlatform,
+                    savedPlatforms = savedOrderPlatforms,
+                    customPlatformSelected = customOrderPlatformSelected,
+                    onPlatformSelected = onOrderPlatformSelected,
+                    onCustomPlatformSelected = onCustomOrderPlatformSelected,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (customOrderPlatformSelected) {
+                    OutlinedTextField(
+                        value = orderPlatform,
+                        onValueChange = onOrderPlatformSelected,
+                        label = { Text("自定义订单平台") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+            PaymentChannelDropdownField(
+                selectedChannel = channel,
+                savedChannels = savedPaymentChannels,
+                customChannelSelected = customChannelSelected,
+                onChannelSelected = onChannelSelected,
+                onCustomChannelSelected = onCustomChannelSelected,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (customChannelSelected) {
+                OutlinedTextField(
+                    value = channel,
+                    onValueChange = onChannelSelected,
+                    label = { Text("自定义支付渠道") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+            Text(
+                "订单平台和支付渠道由通知自动识别，通常无需修改。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -1592,7 +1652,7 @@ private fun EditorBusinessAssociationSection(
 }
 
 @Composable
-private fun EditorCategoryAndNotesSection(
+private fun EditorCategorySection(
     parents: List<CategoryEntity>,
     childrenOf: (String?) -> List<CategoryEntity>,
     selectedCategoryId: String?,
@@ -1600,17 +1660,14 @@ private fun EditorCategoryAndNotesSection(
     effectiveNecessity: Boolean,
     editingTransaction: TransactionEntity?,
     isReimbursable: Boolean,
-    note: String,
-    noteSuggestions: List<String>,
     onSelectCategory: (CategoryEntity) -> Unit,
     onClearCategory: () -> Unit,
     onAddChild: (String) -> Unit,
     onReorderCategories: (List<String>) -> Unit,
     onNecessityChanged: (Boolean) -> Unit,
-    onReimbursableChanged: (Boolean) -> Unit,
-    onNoteChanged: (String) -> Unit
+    onReimbursableChanged: (Boolean) -> Unit
 ) {
-    EditorSectionCard(title = "分类与备注") {
+    EditorSectionCard(title = "分类与属性") {
         CategoryGrid(
             parents = parents,
             childrenOf = childrenOf,
@@ -1666,15 +1723,6 @@ private fun EditorCategoryAndNotesSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        SuggestionField(
-            value = note,
-            onValueChange = onNoteChanged,
-            suggestions = noteSuggestions,
-            label = "备注（可选）",
-            required = false,
-            suggestionHint = "历史备注",
-            singleLine = false
-        )
     }
 }
 
@@ -1824,21 +1872,20 @@ private fun EditorReimbursementSection(
 }
 
 @Composable
-private fun EditorNotesSection(
-    note: String,
-    noteSuggestions: List<String>,
-    onNoteChanged: (String) -> Unit
+private fun EditorDateTimeSection(
+    occurredAt: Long,
+    onDatePickerRequested: () -> Unit,
+    onTimePickerRequested: () -> Unit
 ) {
-    EditorSectionCard(title = "备注") {
-        SuggestionField(
-            value = note,
-            onValueChange = onNoteChanged,
-            suggestions = noteSuggestions,
-            label = "备注（可选）",
-            required = false,
-            suggestionHint = "历史备注",
-            singleLine = false
-        )
+    EditorSectionCard(title = "日期与时间", supportingText = "系统已按通知时间预填，通常无需修改") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onDatePickerRequested, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Text(formatTime(occurredAt).substringBefore(' '))
+            }
+            OutlinedButton(onClick = onTimePickerRequested, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Text(formatTime(occurredAt).substringAfter(' '))
+            }
+        }
     }
 }
 
@@ -1854,7 +1901,7 @@ private fun EditorSaveBar(
 ) {
     Column(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
-            .imePadding().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 12.dp)
+            .padding(top = 8.dp, bottom = 12.dp)
     ) {
         if (missing.isNotEmpty() && showMissing) {
             Text(
@@ -2240,7 +2287,7 @@ internal fun ManagedTransactionDetailSheet(
             Text(if (transaction.refundOfId == null) "原消费：未关联" else "原消费：已关联")
         }
         Text("日期与时间：${formatTime(transaction.occurredAt)}")
-        transaction.note?.let { Text("备注：$it") }
+        transaction.note?.let { Text("用途：$it") }
         Spacer(Modifier.height(16.dp))
         Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("关闭") }
     }
@@ -2477,20 +2524,31 @@ internal fun SuggestionField(
     suggestionHint: String,
     singleLine: Boolean
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     Column {
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
             label = { Text(if (required) "$label *" else label) },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = singleLine
+            singleLine = singleLine,
+            keyboardOptions = if (singleLine) KeyboardOptions(imeAction = ImeAction.Done) else KeyboardOptions.Default,
+            keyboardActions = KeyboardActions(onDone = {
+                focusManager.clearFocus()
+                keyboardController?.hide()
+            })
         )
         if (suggestions.isNotEmpty() && value.isNotBlank()) {
             Column {
                 suggestions.forEach { s ->
                     Row(
                         Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
-                            .clickable { onValueChange(s) }
+                            .clickable {
+                                onValueChange(s)
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
                             .padding(vertical = 8.dp, horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2649,6 +2707,10 @@ internal fun historyTextSuggestions(
     val (prefix, contains) = unique.partition { it.startsWith(normalized, ignoreCase = true) }
     return (prefix + contains.filter { it.contains(normalized, ignoreCase = true) }).take(limit)
 }
+
+/** 商户建议只来自当前商户库；历史流水文字不能让已删除的商户映射重新出现。 */
+internal fun merchantSuggestionCandidates(merchants: List<MerchantEntity>): List<String> =
+    merchants.map { it.id }
 
 internal fun loanPlanDisplayName(plan: LoanPlanEntity, accounts: List<AccountEntity>): String =
     accounts.firstOrNull { it.id == plan.accountId }?.name ?: "贷款计划"

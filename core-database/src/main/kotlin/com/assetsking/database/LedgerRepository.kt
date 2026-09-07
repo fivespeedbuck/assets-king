@@ -691,6 +691,14 @@ class LedgerRepository(
         database.rawNotificationDao().updateStatus(id, status)
     }
 
+    /** 用户在待确认箱明确删除：保留原始证据和永久墓碑，并与系统自动忽略区分。 */
+    suspend fun ignoreNotificationByUser(id: String) = database.withTransaction {
+        val notification = database.rawNotificationDao().findById(id) ?: return@withTransaction
+        if (notification.status != "PENDING_CONFIRMATION") return@withTransaction
+        database.rawNotificationDao().updateProcessingNote(id, "用户从待确认箱删除")
+        database.rawNotificationDao().updateStatus(id, "IGNORED")
+    }
+
     /** 同额转出+转入两条通知合并确认「账户转账」（REQ 待确认交易类型§4）。 */
     suspend fun confirmTransferFromNotifications(
         outNotificationId: String,

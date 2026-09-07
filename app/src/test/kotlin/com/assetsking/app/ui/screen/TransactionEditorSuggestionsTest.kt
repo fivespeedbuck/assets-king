@@ -1,9 +1,13 @@
 package com.assetsking.app.ui.screen
 
 import com.assetsking.database.TransactionEntity
+import com.assetsking.database.AccountEntity
+import com.assetsking.database.CategoryEntity
+import com.assetsking.database.LearnedRule
 import com.assetsking.database.LendingPlanEntity
 import com.assetsking.database.LendingPlanStatus
 import com.assetsking.database.LendingOriginType
+import com.assetsking.database.MerchantEntity
 import com.assetsking.model.TransactionType
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,6 +15,42 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TransactionEditorSuggestionsTest {
+    @Test
+    fun selectedHistoricalMerchantAppliesLearnedCategoryAndAccount() {
+        val prefill = learnedMerchantPrefill(
+            learned = LearnedRule("cmb", TransactionType.EXPENSE.name, "外卖"),
+            categories = listOf(
+                CategoryEntity("food", "餐饮", "餐饮", null, "restaurant"),
+                CategoryEntity("takeout", "外卖", "外卖", "food", "restaurant")
+            ),
+            ordinaryAccounts = listOf(AccountEntity("cmb", "招商银行", "ASSET", 0L, cardTail = "3683")),
+            currentKind = EditorKind.EXPENSE,
+            currentIncomeSub = IncomeSub.INCOME,
+            parsedIsRefund = false,
+            bankEvidenceBlocksLearnedAccount = false
+        )
+
+        assertEquals("cmb", prefill.accountId)
+        assertEquals("takeout", prefill.categoryId)
+        assertEquals(EditorKind.EXPENSE, prefill.kind)
+    }
+
+    @Test
+    fun bankEvidenceKeepsItsAccountWhileMerchantStillAppliesCategory() {
+        val prefill = learnedMerchantPrefill(
+            learned = LearnedRule("wechat", TransactionType.EXPENSE.name, "外卖"),
+            categories = listOf(CategoryEntity("takeout", "外卖", "外卖", "food", "restaurant")),
+            ordinaryAccounts = listOf(AccountEntity("wechat", "微信零钱", "ASSET", 0L)),
+            currentKind = EditorKind.EXPENSE,
+            currentIncomeSub = IncomeSub.INCOME,
+            parsedIsRefund = false,
+            bankEvidenceBlocksLearnedAccount = true
+        )
+
+        assertNull(prefill.accountId)
+        assertEquals("takeout", prefill.categoryId)
+    }
+
     @Test
     fun oneCharacterQueryPrioritizesPrefixThenContainsAndDeduplicates() {
         assertEquals(
@@ -68,6 +108,16 @@ class TransactionEditorSuggestionsTest {
                 principalCents = null,
                 splitDifferenceCents = null
             ).contains("借出金额须等于计划本金")
+        )
+    }
+
+    @Test
+    fun deletedMerchantCannotReturnFromHistoricalTransactionSuggestions() {
+        val activeMerchants = listOf(MerchantEntity(id = "韦力德健身"))
+
+        assertEquals(
+            listOf("韦力德健身"),
+            historyTextSuggestions("韦", merchantSuggestionCandidates(activeMerchants))
         )
     }
 

@@ -1000,7 +1000,7 @@ class LedgerViewModel(
 
     /** 忽略通知 */
     fun ignoreNotification(notificationId: String) {
-        viewModelScope.launch { repository.updateNotificationStatus(notificationId, "IGNORED") }
+        viewModelScope.launch { repository.ignoreNotificationByUser(notificationId) }
     }
 
     /** 用户确认/手动记账后学习：记住 商户→(账户,收支类型,分类) */
