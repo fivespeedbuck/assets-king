@@ -81,6 +81,7 @@ fun RecurringRulesSection(
     onSave: (RecurringRuleEntity) -> Unit,
     onDelete: (String) -> Unit,
     onClaim: ((transactionId: String, ruleId: String) -> Unit)? = null,
+    claimingTransactionId: String? = null,
     fixedType: TransactionType? = null
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
@@ -140,8 +141,20 @@ fun RecurringRulesSection(
                     Text("待认领 ${candidates.size} 笔", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     candidates.take(3).forEach { candidate ->
                         val label = candidate.note?.takeIf { it.isNotBlank() } ?: candidate.merchant ?: "未命名流水"
-                        TextButton(onClick = { onClaim(candidate.id, rule.id) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("认领 ${formatTime(candidate.occurredAt)} · $label · ${formatMoney(candidate.amountCents)}", modifier = Modifier.weight(1f))
+                        val claiming = claimingTransactionId == candidate.id
+                        OutlinedButton(
+                            onClick = { onClaim(candidate.id, rule.id) },
+                            enabled = claimingTransactionId == null,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(if (claiming) "关联中…" else "关联这笔流水", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${formatTime(candidate.occurredAt)} · $label · ${formatMoney(candidate.amountCents)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }

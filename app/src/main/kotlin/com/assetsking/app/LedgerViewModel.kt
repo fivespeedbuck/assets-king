@@ -570,8 +570,12 @@ class LedgerViewModel(
         viewModelScope.launch { repository.toggleReimbursable(id, isReimbursable) }
     }
 
-    fun linkToRecurringRule(transactionId: String, ruleId: String?) {
-        viewModelScope.launch { repository.linkToRecurringRule(transactionId, ruleId) }
+    fun linkToRecurringRule(
+        transactionId: String,
+        ruleId: String?,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
+        launchWrite(onResult) { repository.linkToRecurringRule(transactionId, ruleId) }
     }
 
     fun saveRecurringRule(rule: RecurringRuleEntity) {

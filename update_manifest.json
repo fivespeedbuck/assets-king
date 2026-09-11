@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.19",
-  "name": "资产大王 v0.1.19",
-  "body": "优化待确认录入：用途前置、日期后移，订单平台与支付渠道默认收起，键盘和保存区不再遮挡；修复历史商户分类与资金账户复用、已删除商户重新出现、招商账户尾号冲突及微信支付渠道异常，并增强非交易通知降噪和余额变化展示。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.19",
+  "tag_name": "v0.1.20",
+  "name": "资产大王 v0.1.20",
+  "body": "修复周期账单认领：按钮改为明确整行操作，处理中防重复点击并反馈成功或失败；合并流水列表重复的“周期扣款”标签。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.20",
   "assets": [
     {
-      "name": "assets-king-v0.1.19.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.19/assets-king-v0.1.19.apk",
-      "size": 31581454,
-      "digest": "sha256:f7e02ac7b1ea5556193c476205a09c5bc88811875435a02a78d2b485b2e4f162"
+      "name": "assets-king-v0.1.20.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.20/assets-king-v0.1.20.apk",
+      "size": 31581458,
+      "digest": "sha256:3aadbad897dab2524909e7db1cc0a70424bf3fb20060e48f73c26cdb64a0de10"
     }
   ]
 }

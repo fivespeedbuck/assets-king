@@ -47,4 +47,19 @@ class TransactionLinkPresentationTest {
         )
         assertEquals("周期扣款", TransactionLinkBadge.RECURRING_PAYMENT.label)
     }
+
+    @Test
+    fun recurringIncomeDoesNotPretendToBeARecurringDebit() {
+        val transaction = TransactionEntity(
+            id = "recurring-income",
+            accountId = "cash",
+            amountCents = 8_800L,
+            type = "INCOME",
+            category = "工资",
+            occurredAt = 1L,
+            recurringRuleId = "monthly-income"
+        )
+
+        assertEquals(emptyList(), transactionLinkBadges(transaction))
+    }
 }

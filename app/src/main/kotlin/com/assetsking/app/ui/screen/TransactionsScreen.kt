@@ -932,7 +932,6 @@ private fun TransactionListRow(
         else -> cashFlowColor
     }
     val reimbursementBadge = reimbursementBadge(tx)
-    val recurringDebit = isRecurringDebit(tx)
     val linkBadges = transactionLinkBadges(tx)
     val orderPlatform = tx.orderPlatform ?: inferOrderPlatform(null, null, tx.merchant)
     val displayMerchant = merchantForDisplay(tx.merchant, orderPlatform)
@@ -1011,17 +1010,6 @@ private fun TransactionListRow(
                         color = ReimbursementYellow,
                         modifier = Modifier
                             .background(ReimbursementYellow.copy(alpha = 0.12f), RoundedCornerShape(50))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-                if (recurringDebit) {
-                    Text(
-                        RECURRING_DEBIT_LABEL,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = RecurringDebitOrange,
-                        modifier = Modifier
-                            .background(RecurringDebitOrange.copy(alpha = 0.12f), RoundedCornerShape(50))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }

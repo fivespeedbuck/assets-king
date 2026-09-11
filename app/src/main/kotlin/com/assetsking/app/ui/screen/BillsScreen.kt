@@ -22,6 +22,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -29,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +61,7 @@ import java.time.YearMonth
 import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * 账单页：本月的固定支出一条一条摆出来。
@@ -88,6 +92,25 @@ fun BillsScreen(
     val claimedTxs = monthSummary.claimedTransactions
     val pendingRules = monthSummary.pendingRules
     var showRules by remember { mutableStateOf(false) }
+    var recurringLinkInFlight by remember { mutableStateOf<String?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val onRecurringLink: (String, String?) -> Unit = { transactionId, ruleId ->
+        if (recurringLinkInFlight == null) {
+            recurringLinkInFlight = transactionId
+            viewModel.linkToRecurringRule(transactionId, ruleId) { result ->
+                recurringLinkInFlight = null
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        result.fold(
+                            onSuccess = { if (ruleId == null) "已取消关联" else "已关联这笔流水" },
+                            onFailure = { error -> "操作失败：${error.message ?: "请重试"}" }
+                        )
+                    )
+                }
+            }
+        }
+    }
     BackHandler(onBack = onBack)
     Scaffold(
         topBar = {
@@ -100,6 +123,7 @@ fun BillsScreen(
                 }
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MaterialTheme.colorScheme.background
     ) { contentPadding ->
         LazyColumn(
@@ -161,7 +185,8 @@ fun BillsScreen(
                         transactions = transactions,
                         onSave = viewModel::saveRecurringRule,
                         onDelete = viewModel::deleteRecurringRule,
-                        onClaim = viewModel::linkToRecurringRule,
+                        onClaim = { transactionId, ruleId -> onRecurringLink(transactionId, ruleId) },
+                        claimingTransactionId = recurringLinkInFlight,
                         fixedType = TransactionType.EXPENSE
                     )
                 }
@@ -171,7 +196,16 @@ fun BillsScreen(
                 item { Text("本月暂无待扣", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             items(pendingRules, key = { it.id }) { rule ->
-                RecurringRuleStatusCard(rule, transactions, pendingItems, accounts, viewModel, fmt)
+                RecurringRuleStatusCard(
+                    rule = rule,
+                    transactions = transactions,
+                    pendingItems = pendingItems,
+                    accounts = accounts,
+                    viewModel = viewModel,
+                    fmt = fmt,
+                    recurringLinkInFlight = recurringLinkInFlight,
+                    onRecurringLink = onRecurringLink
+                )
             }
             item { Text("本月已扣记录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
             if (claimedTxs.isEmpty()) {
@@ -224,7 +258,9 @@ private fun RecurringRuleStatusCard(
     pendingItems: List<PendingItem>,
     accounts: List<AccountEntity>,
     viewModel: LedgerViewModel,
-    fmt: SimpleDateFormat
+    fmt: SimpleDateFormat,
+    recurringLinkInFlight: String?,
+    onRecurringLink: (String, String?) -> Unit
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
     val privacyIndex = rule.id.hashCode()
@@ -287,15 +323,22 @@ private fun RecurringRuleStatusCard(
                                     ?: candidate.merchant?.takeIf { it.isNotBlank() }
                                     ?: "未命名流水"
                                 val accountName = accounts.firstOrNull { it.id == candidate.accountId }?.name ?: "未知账户"
-                                TextButton(
-                                    onClick = { viewModel.linkToRecurringRule(candidate.id, rule.id) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                                val claiming = recurringLinkInFlight == candidate.id
+                                OutlinedButton(
+                                    onClick = { onRecurringLink(candidate.id, rule.id) },
+                                    enabled = recurringLinkInFlight == null,
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text(
-                                        "匹配：${if (privacyEnabled) privacyObfuscatedText(candidateName, 2760 + privacyIndex + candidateIndex) else candidateName} · " +
-                                            "${if (privacyEnabled) privacyObfuscatedText(accountName, 2780 + privacyIndex + candidateIndex) else accountName} · " +
-                                            "实际 ${if (privacyEnabled) privacyFakeAmount(2800 + privacyIndex + candidateIndex) else formatMoney(candidate.amountCents)}"
-                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(if (claiming) "关联中…" else "关联这笔流水", fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            "${if (privacyEnabled) privacyObfuscatedText(candidateName, 2760 + privacyIndex + candidateIndex) else candidateName} · " +
+                                                "${if (privacyEnabled) privacyObfuscatedText(accountName, 2780 + privacyIndex + candidateIndex) else accountName} · " +
+                                                "实际 ${if (privacyEnabled) privacyFakeAmount(2800 + privacyIndex + candidateIndex) else formatMoney(candidate.amountCents)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -308,9 +351,15 @@ private fun RecurringRuleStatusCard(
                         }
                         if (claimedTx != null) {
                             TextButton(
-                                onClick = { viewModel.linkToRecurringRule(claimedTx.id, null) },
+                                onClick = { onRecurringLink(claimedTx.id, null) },
+                                enabled = recurringLinkInFlight == null,
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                            ) { Text("取消关联", style = MaterialTheme.typography.labelSmall) }
+                            ) {
+                                Text(
+                                    if (recurringLinkInFlight == claimedTx.id) "取消中…" else "取消关联",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
                     }
                     when {

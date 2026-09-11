@@ -21,5 +21,5 @@ internal fun transactionLinkBadges(transaction: TransactionEntity): List<Transac
         )
     }
     if (transaction.lendingPlanId != null) add(TransactionLinkBadge.LENDING_PLAN)
-    if (transaction.recurringRuleId != null) add(TransactionLinkBadge.RECURRING_PAYMENT)
+    if (isRecurringDebit(transaction)) add(TransactionLinkBadge.RECURRING_PAYMENT)
 }
