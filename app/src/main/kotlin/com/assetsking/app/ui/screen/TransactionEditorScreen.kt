@@ -2100,6 +2100,10 @@ private fun saveEditor(
             },
             if (incomeSub == IncomeSub.REFUND) {
                 selectedRefundSource?.transaction?.necessity ?: editingTransaction?.necessity
+            } else if (kind == EditorKind.EXPENSE) {
+                // 界面始终明确选中“必要”或“非必要”；新增流水也保存这个最终选择，
+                // 避免同名分类或之后修改分类默认值让历史流水变成未判定。
+                effectiveNecessity
             } else {
                 necessity
             },

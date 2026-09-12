@@ -914,96 +914,56 @@ class LedgerRepository(
                 bankBalanceCents = bankBalanceCents,
                 bankCardTail = bankCardTail
             )
-            // 周期账单反向认领：规则可能先于真实扣款自动记过一笔（同账户+同类型+金额±20%+前后5天）。
-            // 认到就不再造第二笔，只把通知标 LINKED —— 否则规则+短信把同一笔记两遍。
-            // ponytail: 同账户同金额同周的两笔真实消费会被误认领，宁可漏记不要虚增。
-            val ruleTxCandidates = buildList {
-                database.transactionDao().findInRange(
-                    postedAt - 5L * 24 * 60 * 60 * 1000, postedAt + 5L * 24 * 60 * 60 * 1000
-                ).forEach { candidate ->
-                    val ruleId = candidate.recurringRuleId ?: return@forEach
-                    val rule = database.recurringRuleDao().findById(ruleId) ?: return@forEach
-                    if (
-                        candidate.type == type.name &&
-                        recurringAccountMatches(rule.accountId, accountId) &&
-                        recurringMerchantMatches(rule.merchant, merchant) &&
-                        recurringChannelMatches(rule.channel, channel) &&
-                        recurringOrderPlatformMatches(rule.orderPlatform, orderPlatform) &&
-                        recurringAmountMatches(amountCents, candidate.amountCents)
-                    ) add(candidate)
-                }
-            }
-            val ruleTx = ruleTxCandidates.singleOrNull()
-            if (ruleTx == null) {
-                // 确认即认领：只有账户、类型、商户、金额与日期共同命中且候选唯一时才自动挂规则。
-                // 同日同额多条规则保持未关联，交给“待核实”，避免把真实支出认到错误计划。
-                val ruleId = uniqueRecurringRuleFor(
-                    type = type,
-                    accountId = accountId,
-                    amountCents = amountCents,
-                    merchant = merchant,
-                    channel = channel,
-                    orderPlatform = orderPlatform,
-                    postedAt = postedAt
-                )?.id
-                if (type == TransactionType.LOAN_PAYMENT) {
-                    // 贷款扣款自动匹配期次（REQ 贷款页 §6-8）：确认时按金额+日期匹配最接近的
-                    // 未还期次，匹配上即标记已还并记实际本金/利息/手续费；对不上挂最近计划、
-                    // 本金暂按全额（待确认页允许确认前修改，§8）。
-                    val match = suggestLoanMatch(amountCents, postedAt)
-                    val plan = match?.first
-                    val inst = match?.second
-                    if (plan != null && inst != null && inst.total.cents == amountCents) {
-                        addTransaction(
-                            accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
-                            occurredAt = postedAt,
-                            principalCents = inst.principal.cents,
-                            interestCents = inst.interest.cents,
-                            feeCents = inst.fee.cents,
-                            loanPlanId = plan.id,
-                            necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
-                            evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
-                            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
-                        )
-                        markInstallmentPaid(plan, inst.number, inst.principal.cents)
-                    } else {
-                        addTransaction(
-                            accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
-                            occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
-                            necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
-                            evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
-                            allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
-                        )
-                    }
+            // 通知确认始终创建本次真实资金流水。周期计划本身不自动造流水，因此不能再用
+            // 前后数日的旧周期流水“反向认领”通知；否则连续两天同额扣款会把今天吞到昨天。
+            // 只有当前通知与唯一规则的计划日期也匹配时，才把新流水顺带关联该规则。
+            val ruleId = uniqueRecurringRuleFor(
+                type = type,
+                accountId = accountId,
+                amountCents = amountCents,
+                merchant = merchant,
+                channel = channel,
+                orderPlatform = orderPlatform,
+                postedAt = postedAt
+            )?.id
+            if (type == TransactionType.LOAN_PAYMENT) {
+                // 贷款扣款自动匹配期次（REQ 贷款页 §6-8）：确认时按金额+日期匹配最接近的
+                // 未还期次，匹配上即标记已还并记实际本金/利息/手续费；对不上挂最近计划、
+                // 本金暂按全额（待确认页允许确认前修改，§8）。
+                val match = suggestLoanMatch(amountCents, postedAt)
+                val plan = match?.first
+                val inst = match?.second
+                if (plan != null && inst != null && inst.total.cents == amountCents) {
+                    addTransaction(
+                        accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
+                        occurredAt = postedAt,
+                        principalCents = inst.principal.cents,
+                        interestCents = inst.interest.cents,
+                        feeCents = inst.fee.cents,
+                        loanPlanId = plan.id,
+                        necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
+                        evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
+                        allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
+                    )
+                    markInstallmentPaid(plan, inst.number, inst.principal.cents)
                 } else {
                     addTransaction(
-                        accountId, amountCents, type, category, merchant, note,
-                        occurredAt = postedAt, recurringRuleId = ruleId,
-                        refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
-                        necessity = necessity, isReimbursable = isReimbursable,
-                        channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
+                        accountId, amountCents, type, TransactionCategory.UNCATEGORIZED.name, merchant, note,
+                        occurredAt = postedAt, principalCents = amountCents, loanPlanId = plan?.id,
+                        necessity = necessity, channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
                         evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
                         allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                     )
                 }
             } else {
-                database.transactionDao().attachNotification(ruleTx.id, notificationId)
-                evidenceRecorder.link(
-                    groupId = evidenceGroupId,
-                    subjectType = EvidenceSubjectType.TRANSACTION,
-                    subjectId = ruleTx.id,
-                    subjectRole = "CONFIRMED_RECURRING_EVENT",
-                    sources = evidenceSources,
-                    linkedAt = postedAt
-                )
-                evidenceRecorder.lifecycle(
-                    subjectType = EvidenceSubjectType.TRANSACTION,
-                    subjectId = ruleTx.id,
-                    action = EvidenceAction.LINKED,
-                    occurredAt = postedAt,
-                    payload = JSONObject()
-                        .put("notificationId", notificationId)
-                        .put("recurringRuleId", ruleTx.recurringRuleId)
+                addTransaction(
+                    accountId, amountCents, type, category, merchant, note,
+                    occurredAt = postedAt, recurringRuleId = ruleId,
+                    refundOfId = refundOfId.takeIf { type == TransactionType.REFUND },
+                    necessity = necessity, isReimbursable = isReimbursable,
+                    channel = channel, orderPlatform = orderPlatform, notificationId = notificationId,
+                    evidenceSources = evidenceSources, evidenceGroupId = evidenceGroupId,
+                    allowAuthoritativeBalanceOverride = allowAuthoritativeBalanceOverride
                 )
             }
             database.rawNotificationDao().updateStatus(notificationId, "LINKED")

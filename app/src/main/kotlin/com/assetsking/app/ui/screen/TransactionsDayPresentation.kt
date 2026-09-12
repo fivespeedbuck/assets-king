@@ -4,7 +4,7 @@ import com.assetsking.database.CategoryEntity
 import com.assetsking.database.TransactionEntity
 import com.assetsking.model.RecordStatus
 import com.assetsking.model.TransactionType
-import kotlin.math.roundToInt
+import kotlin.math.floor
 
 /** 流水连续列表与月历共用的单日资金移动和消费结构口径。 */
 internal data class TransactionsDayPresentation(
@@ -18,12 +18,28 @@ internal data class TransactionsDayPresentation(
     val spendingCents: Long get() = necessaryCents + optionalCents + unclassifiedCents
 
     val necessaryPercent: Int?
-        get() = spendingCents.takeIf { it > 0L && unclassifiedCents == 0L }?.let {
-            ((necessaryCents.toDouble() / it.toDouble()) * 100.0).roundToInt().coerceIn(0, 100)
-        }
+        get() = spendingPercentages()?.get(0)
 
     val optionalPercent: Int?
-        get() = necessaryPercent?.let { 100 - it }
+        get() = spendingPercentages()?.get(1)
+
+    val unclassifiedPercent: Int?
+        get() = spendingPercentages()?.get(2)
+
+    /** 最大余数法分配整数百分比，三段始终精确合计 100。 */
+    private fun spendingPercentages(): IntArray? {
+        val total = spendingCents.takeIf { it > 0L } ?: return null
+        val exact = doubleArrayOf(necessaryCents.toDouble(), optionalCents.toDouble(), unclassifiedCents.toDouble())
+            .map { it * 100.0 / total.toDouble() }
+        val allocated = IntArray(exact.size) { floor(exact[it]).toInt() }
+        val order = exact.indices.sortedWith(
+            compareByDescending<Int> { exact[it] - allocated[it] }.thenBy { it }
+        )
+        repeat(100 - allocated.sum()) { offset ->
+            allocated[order[offset % order.size]] += 1
+        }
+        return allocated
+    }
 }
 
 internal fun transactionsDayPresentation(
@@ -85,9 +101,20 @@ internal fun transactionsDayPresentation(
 private fun effectiveNecessity(
     transaction: TransactionEntity,
     categories: List<CategoryEntity>
-): Boolean? = transaction.necessity ?: categories.firstOrNull {
-    !it.isArchived && (it.id == transaction.category || it.name == transaction.category)
-}?.defaultNecessary
+): Boolean? {
+    transaction.necessity?.let { return it }
+    val activeCategories = categories.filterNot { it.isArchived }
+    activeCategories.firstOrNull { it.id == transaction.category }?.let { return it.defaultNecessary }
+
+    // 旧流水只保存分类名称。同名分类默认值不一致时没有足够证据判断，必须保留为“未判定”，
+    // 不能依赖数据库返回顺序静默抢第一个。
+    val matchingDefaults = activeCategories.asSequence()
+        .filter { it.name == transaction.category }
+        .map { it.defaultNecessary }
+        .distinct()
+        .toList()
+    return matchingDefaults.singleOrNull()
+}
 
 internal fun transactionSpendingNecessity(
     transaction: TransactionEntity,

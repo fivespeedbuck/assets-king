@@ -76,17 +76,56 @@ class TransactionsDayPresentationTest {
     }
 
     @Test
-    fun unknownNecessityIsNeitherFadedNorForcedIntoTheRatio() {
+    fun unknownNecessityKeepsKnownRatiosVisibleAndTheThreePartsTotalOneHundred() {
         val unknown = tx("unknown", 2_500L, "EXPENSE", category = "missing")
         val summary = transactionsDayPresentation(
-            transactions = listOf(unknown, tx("known", 7_500L, "EXPENSE", category = "necessary")),
+            transactions = listOf(
+                unknown.copy(amountCents = 3_475L),
+                tx("necessary", 11_699L, "EXPENSE", category = "necessary"),
+                tx("optional", 1_980L, "EXPENSE", category = "optional")
+            ),
             categories = categories
         )
 
-        assertEquals(2_500L, summary.unclassifiedCents)
-        assertNull(summary.necessaryPercent)
-        assertNull(summary.optionalPercent)
+        assertEquals(3_475L, summary.unclassifiedCents)
+        assertEquals(68, summary.necessaryPercent)
+        assertEquals(12, summary.optionalPercent)
+        assertEquals(20, summary.unclassifiedPercent)
+        assertEquals(100, summary.necessaryPercent!! + summary.optionalPercent!! + summary.unclassifiedPercent!!)
         assertNull(transactionSpendingNecessity(unknown, null))
+    }
+
+    @Test
+    fun ambiguousLegacyCategoryNameIsNotResolvedByDatabaseOrder() {
+        val duplicateCategories = listOf(
+            CategoryEntity("pet-insurance", "保险", "保险", "pet", "paw", defaultNecessary = null),
+            CategoryEntity("insurance", "保险", "保险", null, "shield", defaultNecessary = true)
+        )
+
+        val summary = transactionsDayPresentation(
+            transactions = listOf(tx("pet-insurance", 3_475L, "EXPENSE", category = "保险")),
+            categories = duplicateCategories
+        )
+
+        assertEquals(3_475L, summary.unclassifiedCents)
+        assertEquals(0, summary.necessaryPercent)
+        assertEquals(0, summary.optionalPercent)
+        assertEquals(100, summary.unclassifiedPercent)
+    }
+
+    @Test
+    fun integerPercentRoundingStillTotalsOneHundred() {
+        val summary = transactionsDayPresentation(
+            transactions = listOf(
+                tx("necessary-cent", 1L, "EXPENSE", category = "necessary"),
+                tx("optional-cents", 199L, "EXPENSE", category = "optional")
+            ),
+            categories = categories
+        )
+
+        assertEquals(1, summary.necessaryPercent)
+        assertEquals(99, summary.optionalPercent)
+        assertEquals(0, summary.unclassifiedPercent)
     }
 
     @Test

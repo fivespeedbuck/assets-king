@@ -1133,6 +1133,53 @@ class LedgerRepositoryIntegrationTest {
     }
 
     @Test
+    fun incomingRecurringChargeNeverAttachesToThePreviousDaysSameAmountTransaction() = runBlocking {
+        val zone = ZoneId.systemDefault()
+        val todayAtNoon = LocalDate.now(zone).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
+        val yesterdayAtNoon = LocalDate.now(zone).minusDays(1).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
+        val rule = recurringRule(todayAtNoon).copy(
+            id = "pet-insurance-rule",
+            amountCents = 3_475L,
+            merchant = "宠物保险",
+            category = "保险"
+        )
+        database.recurringRuleDao().upsert(rule)
+        database.transactionDao().insert(
+            TransactionEntity(
+                id = "yesterdays-pet-insurance",
+                accountId = "cash",
+                amountCents = 3_475L,
+                type = TransactionType.EXPENSE.name,
+                category = "保险",
+                merchant = "宠物保险",
+                occurredAt = yesterdayAtNoon,
+                recurringRuleId = rule.id
+            )
+        )
+        val notification = pendingNotification("todays-pet-insurance").copy(postedAt = todayAtNoon)
+        database.rawNotificationDao().insert(notification)
+        seedCash(10_000L)
+
+        repository.confirmNotification(
+            notificationId = notification.id,
+            accountId = "cash",
+            amountCents = 3_475L,
+            type = TransactionType.EXPENSE,
+            category = "保险",
+            merchant = "宠物保险",
+            note = null
+        )
+
+        val oldTransaction = requireNotNull(database.transactionDao().findById("yesterdays-pet-insurance"))
+        val newTransaction = database.transactionDao().all().single { it.notificationId == notification.id }
+        assertEquals(null, oldTransaction.notificationId)
+        assertEquals(todayAtNoon, newTransaction.occurredAt)
+        assertEquals(rule.id, newTransaction.recurringRuleId)
+        assertEquals(2, database.transactionDao().all().size)
+        assertEquals("LINKED", database.rawNotificationDao().findById(notification.id)?.status)
+    }
+
+    @Test
     fun editingTransactionPersistsPaymentChannel() = runBlocking {
         database.transactionDao().insert(sampleExpense("editable-channel"))
 

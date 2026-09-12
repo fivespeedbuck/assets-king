@@ -1,14 +1,14 @@
 {
-  "tag_name": "v0.1.20",
-  "name": "资产大王 v0.1.20",
-  "body": "修复周期账单认领：按钮改为明确整行操作，处理中防重复点击并反馈成功或失败；合并流水列表重复的“周期扣款”标签。",
-  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.20",
+  "tag_name": "v0.1.21",
+  "name": "资产大王 v0.1.21",
+  "body": "修复周期通知跨日误挂导致确认漏账；日流水在含未判定项时仍显示必要/非必要比例及未判定第三段；新增消费保存最终必要性。",
+  "html_url": "https://github.com/fivespeedbuck/assets-king/releases/tag/v0.1.21",
   "assets": [
     {
-      "name": "assets-king-v0.1.20.apk",
-      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.20/assets-king-v0.1.20.apk",
+      "name": "assets-king-v0.1.21.apk",
+      "browser_download_url": "https://github.com/fivespeedbuck/assets-king/releases/download/v0.1.21/assets-king-v0.1.21.apk",
       "size": 31581458,
-      "digest": "sha256:3aadbad897dab2524909e7db1cc0a70424bf3fb20060e48f73c26cdb64a0de10"
+      "digest": "sha256:eb8eb84ef6ce959f8259a298f4da5243e21509ca1ba7c6db35fce9df00aa6749"
     }
   ]
 }

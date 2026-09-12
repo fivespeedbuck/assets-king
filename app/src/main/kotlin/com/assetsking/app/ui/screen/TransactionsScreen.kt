@@ -1441,8 +1441,22 @@ private fun TransactionDayHeader(
     privacyIndex: Int
 ) {
     val privacyEnabled = LocalPrivacyEnabled.current
-    val necessaryPercent = if (privacyEnabled) privacyFakePercent(650 + privacyIndex) else summary.necessaryPercent
-    val optionalPercent = necessaryPercent?.let { 100 - it }
+    val hasUnclassifiedSpending = summary.unclassifiedPercent?.let { it > 0 } == true
+    val necessaryPercent = if (privacyEnabled) {
+        privacyFakePercent(650 + privacyIndex).let { if (hasUnclassifiedSpending) it.coerceIn(5, 90) else it }
+    } else {
+        summary.necessaryPercent
+    }
+    val unclassifiedPercent = if (privacyEnabled && hasUnclassifiedSpending) {
+        privacyFakePercent(655 + privacyIndex).coerceIn(5, 95 - (necessaryPercent ?: 0))
+    } else {
+        summary.unclassifiedPercent
+    }
+    val optionalPercent = if (privacyEnabled) {
+        necessaryPercent?.let { (100 - it - (unclassifiedPercent ?: 0)).coerceAtLeast(0) }
+    } else {
+        summary.optionalPercent
+    }
     val fakeNetPositive = privacyFakePercent(640 + privacyIndex) % 2 == 0
     val netPositive = if (privacyEnabled) fakeNetPositive else summary.netCents >= 0L
     val net = if (privacyEnabled) {
@@ -1459,6 +1473,9 @@ private fun TransactionDayHeader(
             withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) { append("$necessaryPercent%") }
             withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) { append(" · ") }
             withStyle(SpanStyle(color = FlowRed)) { append("$optionalPercent%") }
+            if (unclassifiedPercent != null && unclassifiedPercent > 0) {
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) { append(" · ?$unclassifiedPercent%") }
+            }
         }
     }
     val summaryDescription = buildString {
@@ -1466,6 +1483,9 @@ private fun TransactionDayHeader(
         append(net.trimStart('+', '-', '−'))
         if (necessaryPercent != null && optionalPercent != null) {
             append("，必要 $necessaryPercent%，非必要 $optionalPercent%")
+            if (unclassifiedPercent != null && unclassifiedPercent > 0) {
+                append("，未判定 $unclassifiedPercent%")
+            }
         }
     }
     val summaryFontSize = when {
